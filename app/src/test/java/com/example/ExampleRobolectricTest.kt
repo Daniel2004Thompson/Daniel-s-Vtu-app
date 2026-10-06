@@ -54,7 +54,8 @@ class ExampleRobolectricTest {
       }
     }
 
-    // Verify key UI elements are displayed
+    // Verify key UI elements and new app icon artwork are displayed
+    composeTestRule.onNodeWithTag("splash_app_icon_image", useUnmergedTree = true).assertIsDisplayed()
     composeTestRule.onNodeWithText("Daniel VTU").assertIsDisplayed()
     composeTestRule.onNodeWithText("Instant Airtime, Data & Utility Payments").assertIsDisplayed()
     composeTestRule.onNodeWithText("Bank-Grade 256-bit Security").assertIsDisplayed()

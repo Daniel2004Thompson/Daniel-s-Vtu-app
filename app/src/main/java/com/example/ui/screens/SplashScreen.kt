@@ -16,13 +16,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -57,10 +60,8 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.ui.theme.VtuCyan
 import com.example.ui.theme.VtuGoldAccent
-import com.example.ui.theme.VtuGreenLight
 import com.example.ui.theme.VtuGreenPrimary
 import com.example.ui.theme.VtuGreenSecondary
-import com.example.ui.theme.VtuNavyPrimary
 import kotlinx.coroutines.delay
 
 @Composable
@@ -72,10 +73,10 @@ fun SplashScreen(
 
     val infiniteTransition = rememberInfiniteTransition(label = "splash_pulse")
     val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 0.95f,
-        targetValue = 1.06f,
+        initialValue = 0.97f,
+        targetValue = 1.03f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
+            animation = tween(1400, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "pulse_scale"
@@ -84,7 +85,7 @@ fun SplashScreen(
         initialValue = 0.25f,
         targetValue = 0.55f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
+            animation = tween(1400, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "glow_alpha"
@@ -92,7 +93,7 @@ fun SplashScreen(
 
     LaunchedEffect(Unit) {
         startAnimation = true
-        delay(2000L)
+        delay(2200L)
         onSplashFinished()
     }
 
@@ -102,10 +103,9 @@ fun SplashScreen(
             .background(
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF040D1A),
-                        Color(0xFF0A192F),
-                        Color(0xFF0D2538),
-                        Color(0xFF003824)
+                        Color(0xFF2C3548),
+                        Color(0xFF1A2334),
+                        Color(0xFF0A101E)
                     )
                 )
             )
@@ -115,23 +115,22 @@ fun SplashScreen(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() }
             ) {
-                // Allow tapping to skip splash
                 onSplashFinished()
             }
             .testTag("splash_screen_container"),
         contentAlignment = Alignment.Center
     ) {
-        // Decorative ambient glow behind central logo
+        // Decorative ambient glow behind central splash artwork
         Box(
             modifier = Modifier
-                .size(240.dp)
+                .size(340.dp)
                 .scale(pulseScale)
                 .alpha(glowAlpha)
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            VtuGreenSecondary.copy(alpha = 0.45f),
-                            VtuGreenPrimary.copy(alpha = 0.15f),
+                            Color(0xFF2EE59D).copy(alpha = 0.38f),
+                            VtuGreenPrimary.copy(alpha = 0.14f),
                             Color.Transparent
                         )
                     ),
@@ -142,47 +141,53 @@ fun SplashScreen(
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(horizontal = 32.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 40.dp)
         ) {
-            // App Logo Container
+            // Prominent Daniel's VTU Services Icon & Splash Artwork Card
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .size(116.dp)
+                    .size(240.dp)
+                    .scale(pulseScale)
                     .shadow(
-                        elevation = 20.dp,
-                        shape = RoundedCornerShape(28.dp),
-                        ambientColor = VtuGreenPrimary,
+                        elevation = 24.dp,
+                        shape = RoundedCornerShape(32.dp),
+                        ambientColor = Color(0xFF2EE59D),
                         spotColor = VtuGreenSecondary
                     )
-                    .clip(RoundedCornerShape(28.dp))
-                    .background(Color(0xFF0C2138))
+                    .clip(RoundedCornerShape(32.dp))
+                    .background(Color(0xFF1A2334))
                     .border(
                         width = 2.dp,
                         brush = Brush.linearGradient(
                             listOf(
-                                VtuGreenSecondary,
-                                VtuCyan.copy(alpha = 0.6f),
-                                VtuGreenPrimary
+                                Color(0xFF39E596),
+                                VtuCyan.copy(alpha = 0.55f),
+                                Color(0xFF236A52)
                             )
                         ),
-                        shape = RoundedCornerShape(28.dp)
+                        shape = RoundedCornerShape(32.dp)
                     )
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.img_vtu_icon),
-                    contentDescription = "Daniel VTU App Logo",
+                    contentDescription = "Daniel's VTU Services App Icon",
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("splash_app_icon_image")
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
             // App Name
             Text(
                 text = "Daniel VTU",
-                style = MaterialTheme.typography.headlineMedium.copy(
+                style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.ExtraBold,
                     letterSpacing = 0.5.sp
                 ),
@@ -190,7 +195,7 @@ fun SplashScreen(
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Tagline
             Text(
@@ -202,15 +207,15 @@ fun SplashScreen(
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Pill Badge: Fast • Reliable • Secure
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0xFF102A43).copy(alpha = 0.85f))
-                    .border(1.dp, Color(0xFF244A6F), RoundedCornerShape(20.dp))
+                    .background(Color(0xFF151E2E).copy(alpha = 0.9f))
+                    .border(1.dp, Color(0xFF236A52), RoundedCornerShape(20.dp))
                     .padding(horizontal = 14.dp, vertical = 6.dp)
             ) {
                 Icon(
@@ -243,7 +248,7 @@ fun SplashScreen(
                 Icon(
                     imageVector = Icons.Default.Shield,
                     contentDescription = null,
-                    tint = VtuGreenSecondary,
+                    tint = Color(0xFF2EE59D),
                     modifier = Modifier.size(13.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
@@ -260,15 +265,15 @@ fun SplashScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 36.dp)
+                .padding(bottom = 24.dp)
         ) {
             CircularProgressIndicator(
                 modifier = Modifier.size(24.dp),
-                color = VtuGreenSecondary,
+                color = Color(0xFF2EE59D),
                 strokeWidth = 2.5.dp
             )
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             Row(
                 verticalAlignment = Alignment.CenterVertically
@@ -286,14 +291,6 @@ fun SplashScreen(
                     color = Color(0xFF8C9BAE)
                 )
             }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = "v1.0.0",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFF5A6B7C)
-            )
         }
     }
 }

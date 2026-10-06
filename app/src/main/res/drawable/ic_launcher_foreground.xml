@@ -6,4 +6,3 @@
         android:drawable="@drawable/img_vtu_icon"
         android:gravity="center" />
 </layer-list>
-
