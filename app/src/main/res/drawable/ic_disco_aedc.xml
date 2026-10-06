@@ -1,0 +1,71 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Top-Right Navy Oval Badge -->
+    <path
+        android:fillColor="#070D6E"
+        android:pathData="M167,34 C173,34 177,40 177,47 C177,54 173,60 167,60 C161,60 157,54 157,47 C157,40 161,34 167,34 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M161,45 H173 V49 H161 Z" />
+
+    <!-- Bold Dark Navy "AEDC" Wordmark -->
+    <!-- Letter A (Rounded Apex) -->
+    <path
+        android:fillColor="#070D6E"
+        android:pathData="M48,58 C50,54 54,54 56,58 L76,112 H64 L59,98 H43 L48,88 H56 L51,74 L36,112 H24 Z" />
+
+    <!-- Letter E (Slanted Right Ends & Rounded Left Spine) -->
+    <path
+        android:fillColor="#070D6E"
+        android:pathData="M88,56 H116 L111,68 H91 V78 H110 V89 H91 V100 H112 L117,112 H88 C81,112 78,108 78,101 V67 C78,60 81,56 88,56 Z" />
+
+    <!-- Letter D (Rounded Right Corner) -->
+    <path
+        android:fillColor="#070D6E"
+        android:pathData="M114,56 H138 C147,56 151,61 151,70 V98 C151,107 147,112 138,112 H114 L119,100 H136 C138,100 139,98 139,95 V73 C139,70 138,68 136,68 H125 V96 H114 Z" />
+
+    <!-- Letter C (Rounded Left Spine) -->
+    <path
+        android:fillColor="#070D6E"
+        android:pathData="M166,56 H188 V68 H168 C166,68 165,70 165,73 V95 C165,98 166,100 168,100 H188 V112 H166 C157,112 153,107 153,98 V70 C153,61 157,56 166,56 Z" />
+
+    <!-- Subtitle: Abuja Electricity Distribution Company -->
+    <path
+        android:fillColor="#111111"
+        android:pathData="M8,122 H34 V128 H8 Z M39,122 H84 V128 H39 Z M89,122 H144 V128 H89 Z M149,122 H194 V128 H149 Z" />
+
+    <!-- 6 Signature Colored Horizontal Bars Below Subtitle -->
+    <!-- Bar 1: Orange-Red -->
+    <path
+        android:fillColor="#E94E1B"
+        android:pathData="M24,136 H46 V141 H24 Z" />
+    <!-- Bar 2: Cyan-Blue -->
+    <path
+        android:fillColor="#009FE3"
+        android:pathData="M51,136 H73 V141 H51 Z" />
+    <!-- Bar 3: Lime-Green -->
+    <path
+        android:fillColor="#95C11F"
+        android:pathData="M78,136 H100 V141 H78 Z" />
+    <!-- Bar 4: Golden-Yellow -->
+    <path
+        android:fillColor="#F9B233"
+        android:pathData="M105,136 H127 V141 H105 Z" />
+    <!-- Bar 5: Deep Navy -->
+    <path
+        android:fillColor="#1D4477"
+        android:pathData="M132,136 H154 V141 H132 Z" />
+    <!-- Bar 6: Bright Red -->
+    <path
+        android:fillColor="#E30613"
+        android:pathData="M159,136 H181 V141 H159 Z" />
+</vector>

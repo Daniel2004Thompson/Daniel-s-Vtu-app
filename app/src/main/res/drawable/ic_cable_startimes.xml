@@ -1,0 +1,134 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Background (no camera watermark) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- StarTimes 4-Ribbon Pinwheel Diamond Emblem -->
+    <!-- Top-Left Ribbon (Dark Navy at top vertex to Sky Cyan at left vertex) -->
+    <path
+        android:pathData="M52,82 V62 C52,55 55,50 60,45 L82,23 C86,19 91,18 95,23 L103,46 L92,63 C88,69 83,73 76,75 L52,82 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="92"
+                android:startY="22"
+                android:endX="54"
+                android:endY="80"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#003366" />
+                <item android:offset="0.52" android:color="#0075BF" />
+                <item android:offset="1.0" android:color="#00B0F0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Top-Right Ribbon (Bright Yellow at top vertex to Orange-Red at right vertex) -->
+    <path
+        android:pathData="M88,19 H108 C115,19 120,22 125,27 L147,49 C151,53 152,58 147,62 L124,70 L107,59 C101,55 97,50 95,43 L88,19 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="90"
+                android:startY="21"
+                android:endX="148"
+                android:endY="61"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FFE100" />
+                <item android:offset="0.52" android:color="#F58220" />
+                <item android:offset="1.0" android:color="#E62625" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Bottom-Right Ribbon (Sky Cyan at right vertex to Dark Navy at bottom vertex) -->
+    <path
+        android:pathData="M148,56 V76 C148,83 145,88 140,93 L118,115 C114,119 109,120 105,115 L97,92 L108,75 C112,69 117,65 124,63 L148,56 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="146"
+                android:startY="58"
+                android:endX="106"
+                android:endY="116"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#00B0F0" />
+                <item android:offset="0.52" android:color="#0075BF" />
+                <item android:offset="1.0" android:color="#003366" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Bottom-Left Ribbon (Orange-Red at left vertex to Bright Yellow at bottom vertex) -->
+    <path
+        android:pathData="M112,119 H92 C85,119 80,116 75,111 L53,89 C49,85 48,80 53,76 L76,68 L93,79 C99,83 103,88 105,95 L112,119 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="52"
+                android:startY="77"
+                android:endX="110"
+                android:endY="117"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#E62625" />
+                <item android:offset="0.52" android:color="#F58220" />
+                <item android:offset="1.0" android:color="#FFE100" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Center 4-Pointed White Star Cutout -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M100,42 C102.5,61 107,66.5 126,69 C107,71.5 102.5,77 100,96 C97.5,77 93,71.5 74,69 C93,66.5 97.5,61 100,42 Z" />
+
+    <!-- Complete Bold Black "StarTimes" Wordmark (S-t-a-r-T-i-m-e-s) -->
+    <!-- S -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M24,136 C16.5,136 12,139.8 12,145.2 C12,150.8 16.5,153.2 23.2,154.8 C28.2,156.0 30.2,157.6 30.2,160.5 C30.2,163.5 27.4,165.4 22.5,165.4 C17.8,165.4 14.2,163.8 12.0,162.2 L10.2,166.8 C13.0,168.8 17.4,170.0 22.6,170.0 C31.0,170.0 36.4,166.0 36.4,159.8 C36.4,154.2 32.4,151.4 25.0,149.6 C20.0,148.4 18.0,147.0 18.0,144.6 C18.0,142.0 20.2,140.5 24.5,140.5 C28.2,140.5 31.2,141.6 33.2,142.8 L35.0,138.4 C32.4,136.8 28.6,136 24,136 Z" />
+
+    <!-- t -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M42.5,139 V145.5 H38.8 V150.0 H42.5 V162.2 C42.5,167.2 45.2,170.0 50.6,170.0 C52.6,170.0 54.4,169.7 55.5,169.2 V164.8 C54.4,165.2 53.0,165.4 51.8,165.4 C49.2,165.4 48.0,163.8 48.0,161.0 V150.0 H54.6 V145.5 H48.0 V139 Z" />
+
+    <!-- a -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#0D0D0D"
+        android:pathData="M68.5,144.8 C63.8,144.8 60.0,146.0 58.0,147.5 L59.6,151.4 C61.5,150.2 64.4,149.2 67.6,149.2 C72.0,149.2 74.0,151.0 74.0,154.0 V154.8 H67.4 C60.8,154.8 57.0,157.8 57.0,162.6 C57.0,167.2 60.8,170.0 66.2,170.0 C70.0,170.0 72.8,168.5 74.4,166.5 V169.8 H79.6 V154.0 C79.6,147.6 75.8,144.8 68.5,144.8 Z M74.0,161.4 C74.0,164.2 71.2,166.2 67.5,166.2 C64.4,166.2 62.5,164.6 62.5,162.4 C62.5,159.8 64.6,158.5 68.4,158.5 H74.0 Z" />
+
+    <!-- r -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M84.8,145.5 V169.8 H90.4 V156.0 C90.4,152.0 93.0,150.0 96.8,150.0 C97.8,150.0 98.8,150.2 99.6,150.4 V145.0 C95.2,144.8 92.2,146.6 90.4,149.5 V145.5 Z" />
+
+    <!-- T (Wide top crossbar spanning above r and i) -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M93.5,136.2 V141.6 H104.5 V169.8 H110.8 V141.6 H121.8 V136.2 Z" />
+
+    <!-- i -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M117.2,145.5 H122.8 V169.8 H117.2 Z" />
+
+    <!-- m -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M128.0,145.5 V169.8 H133.4 V154.2 C133.4,151.0 135.2,149.4 138.0,149.4 C140.6,149.4 142.0,151.0 142.0,154.2 V169.8 H147.4 V154.2 C147.4,151.0 149.2,149.4 152.0,149.4 C154.6,149.4 156.0,151.0 156.0,154.2 V169.8 H161.4 V153.2 C161.4,147.8 158.2,144.8 153.2,144.8 C149.6,144.8 147.2,146.4 145.6,148.6 C144.2,146.2 141.8,144.8 138.8,144.8 C135.6,144.8 133.4,146.4 132.8,148.2 V145.5 Z" />
+
+    <!-- e -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#0D0D0D"
+        android:pathData="M172.0,144.8 C166.4,144.8 162.8,149.2 162.8,157.4 C162.8,165.4 166.6,170.0 172.8,170.0 C176.2,170.0 178.8,169.0 180.4,167.6 L178.8,163.8 C177.2,165.0 175.2,165.6 173.2,165.6 C169.6,165.6 167.8,163.2 167.6,159.2 H180.6 V156.6 C180.6,149.2 177.2,144.8 172.0,144.8 Z M167.6,155.2 C168.0,151.4 169.6,149.2 172.0,149.2 C174.4,149.2 175.8,151.4 176.0,155.2 Z" />
+
+    <!-- s -->
+    <path
+        android:fillColor="#0D0D0D"
+        android:pathData="M189.2,144.8 C184.4,144.8 181.4,147.5 181.4,151.6 C181.4,155.6 184.2,157.4 188.4,158.8 C191.2,159.8 192.4,160.8 192.4,162.8 C192.4,164.8 190.6,166.0 187.8,166.0 C185.0,166.0 182.6,164.8 181.2,163.6 L179.6,167.6 C181.4,169.0 184.4,170.0 187.8,170.0 C193.2,170.0 196.8,167.0 196.8,162.4 C196.8,158.2 194.2,156.2 189.8,154.8 C187.0,153.8 185.8,152.8 185.8,151.2 C185.8,149.6 187.2,148.6 189.4,148.6 C191.6,148.6 193.6,149.4 194.8,150.4 L196.4,146.6 C194.6,145.4 192.0,144.8 189.2,144.8 Z" />
+</vector>

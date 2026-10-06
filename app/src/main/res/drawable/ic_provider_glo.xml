@@ -1,0 +1,111 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Glo Rich Green Background -->
+    <path
+        android:fillColor="#188832"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Crisp White Outer Ring of the 3D Globe -->
+    <path
+        android:fillColor="#E8F5E9"
+        android:pathData="M100,82m-45,0a45,45 0,1 1,90 0a45,45 0,1 1,-90 0" />
+
+    <!-- 3D Glossy Green Sphere -->
+    <path
+        android:pathData="M100,82m-42.5,0a42.5,42.5 0,1 1,85 0a42.5,42.5 0,1 1,-85 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="114"
+                android:centerY="56"
+                android:gradientRadius="72"
+                android:type="radial">
+                <item
+                    android:color="#A4F576"
+                    android:offset="0.0" />
+                <item
+                    android:color="#39B54A"
+                    android:offset="0.42" />
+                <item
+                    android:color="#0E6B24"
+                    android:offset="0.80" />
+                <item
+                    android:color="#053B12"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Upper-Right Glossy White Specular Highlight on Sphere -->
+    <path
+        android:fillColor="#88FFFFFF"
+        android:pathData="M98,44 C114,44 128,53 133,65 C125,57 112,51 98,50 C88,49 82,45 98,44 Z" />
+
+    <!-- Inner Bottom-Right Rim Glow -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#66A4F576"
+        android:strokeWidth="2.0"
+        android:pathData="M72,114 A40,40 0 0,0 136,98" />
+
+    <!-- 'g' inside sphere -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#FFFFFF"
+        android:pathData="M78.5,70 C71.0,70 65.2,75.8 65.2,83.2 C65.2,90.6 71.0,96.2 78.5,96.2 C82.0,96.2 85.0,94.7 86.8,92.2 L86.8,96.0 C86.8,101.2 83.4,104.5 78.2,104.5 C74.2,104.5 71.4,102.9 69.8,100.3 L65.5,103.2 C68.0,107.2 72.4,109.2 78.2,109.2 C86.8,109.2 92.2,104.0 92.2,95.2 L92.2,70.8 L86.8,70.8 L86.8,74.2 C85.0,71.6 82.0,70 78.5,70 Z M78.8,75.2 C83.4,75.2 86.8,78.5 86.8,83.2 C86.8,87.8 83.4,91.2 78.8,91.2 C74.2,91.2 70.8,87.8 70.8,83.2 C70.8,78.5 74.2,75.2 78.8,75.2 Z" />
+
+    <!-- 'l' inside sphere with top-left horizontal serif -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M95.5,58 H103.5 V95.8 H98.0 V63.0 H95.5 Z" />
+
+    <!-- 'o' inside sphere -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#FFFFFF"
+        android:pathData="M120.5,70 C112.6,70 106.5,75.8 106.5,83.2 C106.5,90.6 112.6,96.4 120.5,96.4 C128.4,96.4 134.5,90.6 134.5,83.2 C134.5,75.8 128.4,70 120.5,70 Z M120.5,75.2 C125.2,75.2 129.0,78.5 129.0,83.2 C129.0,87.8 125.2,91.2 120.5,91.2 C115.8,91.2 112.0,87.8 112.0,83.2 C112.0,78.5 115.8,75.2 120.5,75.2 Z" />
+
+    <!-- Bold White 'Unlimited' Text Below Globe -->
+    <!-- U -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M52,141 H55.6 V150.2 C55.6,152.6 57.0,154.0 59.2,154.0 C61.4,154.0 62.8,152.6 62.8,150.2 V141 H66.4 V150.4 C66.4,154.8 63.6,157.2 59.2,157.2 C54.8,157.2 52,154.8 52,150.4 Z" />
+    <!-- n -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M69.2,145.0 H72.5 V146.8 C73.4,145.5 74.8,144.7 76.6,144.7 C79.5,144.7 81.4,146.6 81.4,149.8 V157 H77.9 V150.4 C77.9,148.6 76.9,147.6 75.4,147.6 C73.8,147.6 72.7,148.7 72.7,150.5 V157 H69.2 Z" />
+    <!-- l -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M84.0,140.5 H87.5 V157 H84.0 Z" />
+    <!-- i -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M90.2,140.5 H93.7 V143.4 H90.2 Z M90.2,145.0 H93.7 V157 H90.2 Z" />
+    <!-- m -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M96.4,145.0 H99.7 V146.7 C100.6,145.4 101.9,144.7 103.6,144.7 C105.3,144.7 106.6,145.4 107.4,146.8 C108.4,145.4 109.9,144.7 111.7,144.7 C114.5,144.7 116.3,146.5 116.3,149.7 V157 H112.9 V150.3 C112.9,148.6 112.0,147.6 110.6,147.6 C109.2,147.6 108.1,148.6 108.1,150.3 V157 H104.7 V150.3 C104.7,148.6 103.8,147.6 102.4,147.6 C100.9,147.6 99.9,148.6 99.9,150.3 V157 H96.4 Z" />
+    <!-- i -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M119.0,140.5 H122.5 V143.4 H119.0 Z M119.0,145.0 H122.5 V157 H119.0 Z" />
+    <!-- t -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M125.6,141.8 H129.0 V145.0 H131.4 V147.7 H129.0 V152.8 C129.0,153.8 129.5,154.3 130.5,154.3 H131.4 V157 H129.8 C126.9,157 125.6,155.7 125.6,153.0 V147.7 H124.2 V145.0 H125.6 Z" />
+    <!-- e -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#FFFFFF"
+        android:pathData="M138.2,144.7 C141.9,144.7 144.2,147.2 144.2,151.0 V152.0 H135.6 C136.0,153.6 137.1,154.5 138.8,154.5 C140.0,154.5 141.0,154.0 141.7,153.2 L143.9,155.0 C142.7,156.5 140.9,157.2 138.5,157.2 C134.7,157.2 132.2,154.6 132.2,151.0 C132.2,147.3 134.7,144.7 138.2,144.7 Z M135.6,149.7 H140.9 C140.7,148.2 139.7,147.3 138.2,147.3 C136.8,147.3 135.9,148.2 135.6,149.7 Z" />
+    <!-- d -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#FFFFFF"
+        android:pathData="M154.6,140.5 H158.0 V157 H154.7 V155.3 C153.8,156.5 152.3,157.2 150.5,157.2 C147.2,157.2 144.9,154.6 144.9,151.0 C144.9,147.3 147.2,144.7 150.5,144.7 C152.3,144.7 153.7,145.4 154.6,146.5 Z M151.4,147.6 C149.5,147.6 148.3,149.0 148.3,151.0 C148.3,153.0 149.5,154.3 151.4,154.3 C153.3,154.3 154.6,153.0 154.6,151.0 C154.6,149.0 153.3,147.6 151.4,147.6 Z" />
+</vector>

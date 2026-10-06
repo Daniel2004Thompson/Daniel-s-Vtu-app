@@ -1,0 +1,78 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Base -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Outer Golden-Yellow WAEC Radiant Sunburst Star (#FFE600) -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M100,2 L109,32 L123,8 L124,38 L146,14 L138,45 L168,26 L151,55 L184,44 L161,69 L194,68 L167,85 L198,95 L168,103 L196,121 L164,119 L188,145 L155,134 L173,167 L142,147 L152,184 L126,158 L128,194 L109,165 L100,198 L91,165 L72,194 L74,158 L48,184 L58,147 L27,167 L45,134 L12,145 L36,119 L4,121 L32,103 L2,95 L33,85 L6,68 L39,69 L16,44 L49,55 L32,26 L62,45 L54,14 L76,38 L77,8 L91,32 Z" />
+
+    <!-- Inner Royal-Navy Blue WAEC Star (#23338B) -->
+    <path
+        android:fillColor="#23338B"
+        android:pathData="M100,14 L107,39 L120,19 L120,44 L140,24 L133,50 L158,35 L144,59 L173,50 L153,72 L182,71 L158,86 L186,95 L159,102 L183,118 L155,116 L176,139 L147,129 L162,158 L136,140 L144,173 L122,150 L124,182 L107,156 L100,186 L93,156 L76,182 L78,150 L56,173 L64,140 L38,158 L53,129 L24,139 L45,116 L17,118 L41,102 L14,95 L42,86 L18,71 L47,72 L27,50 L56,59 L42,35 L67,50 L60,24 L80,44 L80,19 L93,39 Z" />
+
+    <!-- Outer Yellow Circular Band (#FFE600) -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M100,100m-56,0a56,56 0,1 1,112 0a56,56 0,1 1,-112 0" />
+
+    <!-- Blue Ring Band with "THE WEST AFRICAN EXAMINATIONS COUNCIL" Ring (#23338B) -->
+    <path
+        android:fillColor="#23338B"
+        android:pathData="M100,100m-51,0a51,51 0,1 1,102 0a51,51 0,1 1,-102 0" />
+
+    <!-- Dashed Yellow Circular Inscription Ring Representing Council Text -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFE600"
+        android:strokeWidth="5.5"
+        android:pathData="M56,100a44,44 0,1 1,88 0a44,44 0,1 1,-88 0" />
+
+    <!-- Blue Radial Cuts Creating Letter-Segments Around the Ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#23338B"
+        android:strokeWidth="2.2"
+        android:pathData="M100,52 L100,60 M115,54 L112,62 M129,61 L124,67 M139,71 L133,76 M146,85 L138,88 M148,100 L140,100 M146,115 L138,112 M139,129 L133,124 M129,139 L124,133 M115,146 L112,138 M100,148 L100,140 M85,146 L88,138 M71,139 L76,133 M61,129 L67,124 M54,115 L62,112 M52,100 L60,100 M54,85 L62,88 M61,71 L67,76 M71,61 L76,67 M85,54 L88,62" />
+
+    <!-- Inner Yellow Ring Framing the Center Seal -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M100,100m-39,0a39,39 0,1 1,78 0a39,39 0,1 1,-78 0" />
+
+    <!-- Center Royal-Navy Blue Disk (#23338B) -->
+    <path
+        android:fillColor="#23338B"
+        android:pathData="M100,100m-35,0a35,35 0,1 1,70 0a35,35 0,1 1,-70 0" />
+
+    <!-- Stacked Iconic Yellow 'wa' (top row) and 'ec' (bottom row) -->
+    <!-- 'w' (top-left) -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M69,73 L75,73 L79,89 L83,75 L88,75 L92,89 L96,73 L102,73 L95,97 L89,97 L85.5,84 L82,97 L76,97 Z" />
+
+    <!-- 'a' (top-right) -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#FFE600"
+        android:pathData="M106,79 C109,75.5 113.5,74 118.5,74 C125,74 128.5,77.5 128.5,83.5 L128.5,93 C128.5,94.5 129.2,95.5 130.5,96 L125.5,97.5 C124,97 123,95.8 122.7,94.5 C120.5,96.5 117.5,97.5 114,97.5 C108.5,97.5 105,94.5 105,90 C105,85 109.5,82.5 117.5,82.5 L122,82.5 L122,81.5 C122,79.2 120.2,78 117.2,78 C114.2,78 111.8,79.2 109.5,81.5 Z M122,86.5 L117.5,86.5 C113.5,86.5 111.5,87.8 111.5,90 C111.5,92 113.2,93.2 116,93.2 C119.5,93.2 122,91 122,88 Z" />
+
+    <!-- 'e' (bottom-left) -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#FFE600"
+        android:pathData="M86,102 C93.5,102 98.5,107 98.5,114.5 C98.5,115.5 98.4,116.5 98.2,117.2 L80.5,117.2 C81.2,120.8 83.8,122.8 87.8,122.8 C91,122.8 93.5,121.5 95.5,119.8 L98,124 C95,126.5 91.2,127.8 86.8,127.8 C78.5,127.8 73.5,122.5 73.5,115 C73.5,107.2 78.5,102 86,102 Z M80.5,112.5 L91.8,112.5 C91.5,109 89.3,106.8 86,106.8 C82.8,106.8 80.9,109 80.5,112.5 Z" />
+
+    <!-- 'c' (bottom-right) -->
+    <path
+        android:fillColor="#FFE600"
+        android:pathData="M115,102 C120.5,102 124.8,104.5 126.8,109 L120.8,111.5 C119.5,108.5 117.5,107.2 114.8,107.2 C110.8,107.2 108.2,110.2 108.2,115 C108.2,119.8 110.8,122.8 114.8,122.8 C117.6,122.8 119.7,121.3 121,118.5 L127,121 C124.8,125.5 120.5,127.8 114.8,127.8 C106.8,127.8 101.2,122.5 101.2,115 C101.2,107.2 106.8,102 115,102 Z" />
+</vector>

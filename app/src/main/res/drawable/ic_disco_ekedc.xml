@@ -1,0 +1,72 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Outer Navy Rectangular Frame & Horizontal Divider -->
+    <path
+        android:fillColor="#1E1B6A"
+        android:pathData="M14,38 H186 V162 H14 Z" />
+    <!-- Upper White Compartment -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M18,42 H182 V128 H18 Z" />
+    <!-- Lower White Compartment -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M18,133 H182 V158 H18 Z" />
+
+    <!-- Bold Deep Navy "EKEDC" Letters -->
+    <!-- First E (Segmented Top Bar + Bottom U-Block) -->
+    <path
+        android:fillColor="#1E1B6A"
+        android:pathData="M26,56 H52 V69 H26 Z M26,75 H52 V88 H39 V98 H52 V112 H26 Z" />
+
+    <!-- K (Chevron Stem) -->
+    <path
+        android:fillColor="#1E1B6A"
+        android:pathData="M67,56 H81 L66,84 L81,112 H67 L54,88 V80 Z" />
+
+    <!-- Second E -->
+    <path
+        android:fillColor="#1E1B6A"
+        android:pathData="M86,56 H112 V69 H99 V78 H110 V90 H99 V99 H112 V112 H86 Z" />
+
+    <!-- D -->
+    <path
+        android:fillColor="#1E1B6A"
+        android:pathData="M116,56 H134 C146,56 153,66 153,84 C153,102 146,112 134,112 H116 Z M129,69 V99 H133 C138,99 140,94 140,84 C140,74 138,69 133,69 Z" />
+
+    <!-- C -->
+    <path
+        android:fillColor="#1E1B6A"
+        android:pathData="M178,56V71 C175,69 172,68 169,68 C163,68 160,74 160,84 C160,94 163,100 169,100 C172,100 175,99 178,97 V112 C174,113 170,113 166,113 C154,113 147,102 147,84 C147,66 154,55 166,55 C170,55 174,55 178,56 Z" />
+
+    <!-- Diagonal Yellow Lightning Bolt with Red Outline Slicing Through K & E -->
+    <path
+        android:fillColor="#FFF200"
+        android:strokeColor="#D71920"
+        android:strokeWidth="2.4"
+        android:strokeLineJoin="round"
+        android:pathData="M106,46 L74,88 H84 L55,121 L82,82 H72 L90,56 L86,74 Z" />
+
+    <!-- Bottom Banner Red Text: EKO ELECTRICITY DISTRIBUTION PLC -->
+    <!-- EKO -->
+    <path
+        android:fillColor="#C4161C"
+        android:pathData="M24,140 H30 V142.5 H26.5 V144.5 H29.5 V146.5 H26.5 V148.5 H30 V151 H24 Z M32,140 H34.5 V144.5 L37.5,140 H40.5 L37,145 L40.5,151 H37.5 L34.5,146 V151 H32 Z M45,140 C48,140 50,142 50,145.5 C50,149 48,151 45,151 C42,151 40,149 40,145.5 C40,142 42,140 45,140 Z M45,142.5 C43.5,142.5 42.5,143.8 42.5,145.5 C42.5,147.2 43.5,148.5 45,148.5 C46.5,148.5 47.5,147.2 47.5,145.5 C47.5,143.8 46.5,142.5 45,142.5 Z" />
+    <!-- ELECTRICITY -->
+    <path
+        android:fillColor="#C4161C"
+        android:pathData="M55,140 H61 V142.5 H57.5 V144.5 H60.5 V146.5 H57.5 V148.5 H61 V151 H55 Z M63,140 H65.5 V148.5 H69 V151 H63 Z M71,140 H77 V142.5 H73.5 V144.5 H76.5 V146.5 H73.5 V148.5 H77 V151 H71 Z M83,140 C85,140 86.5,141 87,142.5 L85,143.5 C84.5,142.8 83.8,142.5 83,142.5 C81.5,142.5 80.5,143.8 80.5,145.5 C80.5,147.2 81.5,148.5 83,148.5 C83.8,148.5 84.5,148 85,147.2 L87,148.2 C86.5,150 85,151 83,151 C80,151 78,149 78,145.5 C78,142 80,140 83,140 Z M88,140 H95 V142.5 H92.8 V151 H90.2 V142.5 H88 Z M97,140 H101.5 C103.5,140 104.5,141 104.5,143 C104.5,144.5 103.8,145.5 102.5,146 L105,151 H102.2 L100,146.5 H99.5 V151 H97 Z M106.5,140 H109 V151 H106.5 Z" />
+    <!-- DISTRIBUTION PLC -->
+    <path
+        android:fillColor="#C4161C"
+        android:pathData="M114,140 H118.5 C121.5,140 123,142 123,145.5 C123,149 121.5,151 118.5,151 H114 Z M116.5,142.5 V148.5 H118.2 C119.8,148.5 120.5,147.5 120.5,145.5 C120.5,143.5 119.8,142.5 118.2,142.5 Z M125,140 H127.5 V151 H125 Z M130,140 H136 V142.5 H133 V151 H130.5 V142.5 H130 Z M138,140 H145 V142.5 H142.8 V151 H140.2 V142.5 H138 Z M147,140 H149.5 V151 H147 Z M152,140 H158 V151 H152 Z M163,140 H167.5 C169.5,140 170.5,141 170.5,143.2 C170.5,145.2 169.5,146.5 167.5,146.5 H165.5 V151 H163 Z M172,140 H174.5 V148.5 H178 V151 H172 Z" />
+</vector>

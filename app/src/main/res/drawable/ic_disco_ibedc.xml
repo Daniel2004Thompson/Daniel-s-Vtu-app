@@ -1,0 +1,75 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Deep Petrol-Blue Background Matching Uploaded IBEDC Image -->
+    <path
+        android:fillColor="#003359"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Orange Lightbulb with Human Filament (Left) -->
+    <!-- Bulb Outer & Human Arms Loop -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F39200"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M42,96 C35,96 28,84 25,70 C22,56 30,44 45,44 C60,44 68,56 65,70 C62,84 55,96 48,96" />
+
+    <!-- Human Raised Arms Filament Inside Bulb -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F39200"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M41,94 C41,80 39,74 31,66 C29,64 31,61 34,63 L45,70 L56,63 C59,61 61,64 59,66 C51,74 49,80 49,94" />
+
+    <!-- Human Head Circle Inside Bulb -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F39200"
+        android:strokeWidth="3.8"
+        android:pathData="M45,55 A4.5,4.5 0 1,1 44.9,55 Z" />
+
+    <!-- Two Orange Screw-Base Rings Below Bulb -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F39200"
+        android:strokeWidth="3.8"
+        android:pathData="M36,102 H54 C56,102 56,107 54,107 H36 C34,107 34,102 36,102 Z M37,111 H53 C55,111 55,116 53,116 H37 C35,116 35,111 37,111 Z" />
+
+    <!-- Bold Rounded White "IBEDC" Wordmark (Right) -->
+    <!-- I -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M68,84 C68,82 70,80 72,80 C74,80 76,82 76,84 V112 C76,114 74,116 72,116 C70,116 68,114 68,112 Z" />
+
+    <!-- B -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M82,81 H96 C103,81 107,84 107,89 C107,93 105,96 101,97 C106,98 109,101 109,106 C109,112 104,116 96,116 H82 Z M89,87 V95 H95 C98,95 100,93 100,91 C100,89 98,87 95,87 Z M89,101 V110 H96 C99,110 101,108 101,105.5 C101,103 99,101 96,101 Z" />
+
+    <!-- E -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M114,81 H134 V87 H121 V95 H132 V101 H121 V110 H135 V116 H114 Z" />
+
+    <!-- D -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M140,81 H153 C164,81 171,88 171,98.5 C171,109 164,116 153,116 H140 Z M147,87 V110 H153 C160,110 164,105 164,98.5 C164,92 160,87 153,87 Z" />
+
+    <!-- C -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M189,81 C193,81 196,82 198,85 L194,90 C192,88 190,87 188,87 C182,87 179,92 179,98.5 C179,105 182,110 188,110 C190,110 192,109 194,107 L198,112 C196,115 193,116 189,116 C179,116 172,109 172,98.5 C172,88 179,81 189,81 Z" />
+
+    <!-- Tagline Below: distributing power, changing lives... -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,128 H76 V132 H34 Z M80,128 H108 V132 H80 Z M114,128 H148 V132 H114 Z M152,128 H178 V132 H152 Z" />
+</vector>

@@ -1,0 +1,33 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- MTN Bright Yellow Background -->
+    <path
+        android:fillColor="#FFCB05"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Bold Black Oval Ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#050708"
+        android:strokeWidth="6.8"
+        android:pathData="M24,100a76,36 0,1 0,152 0a76,36 0,1 0,-152 0z" />
+
+    <!-- Crisp Upright Geometric Bold 'M' -->
+    <path
+        android:fillColor="#050708"
+        android:pathData="M50,117 L50,83 L60.5,83 L69,105.5 L77.5,83 L88,83 L88,117 L80.5,117 L80.5,93.5 L71.8,116.5 L66.2,116.5 L57.5,93.5 L57.5,117 Z" />
+
+    <!-- Crisp Upright Geometric Bold 'T' -->
+    <path
+        android:fillColor="#050708"
+        android:pathData="M93,83 L119,83 L119,90.2 L109.8,90.2 L109.8,117 L102.2,117 L102.2,90.2 L93,90.2 Z" />
+
+    <!-- Crisp Upright Geometric Bold 'N' -->
+    <path
+        android:fillColor="#050708"
+        android:pathData="M124,117 L124,83 L131.8,83 L144.5,105.5 L144.5,83 L152,83 L152,117 L144.2,117 L131.5,94.5 L131.5,117 Z" />
+</vector>

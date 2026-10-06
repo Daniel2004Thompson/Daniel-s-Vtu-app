@@ -1,0 +1,6 @@
+{
+  "name": "Daniel VTU",
+  "description": "VTU airtime, data bundle, and utility bill payments with Supabase authentication, biometric security, and instant notifications.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

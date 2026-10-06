@@ -1,0 +1,66 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Red Sparks Halo Around Lightbulb -->
+    <path
+        android:fillColor="#C4161C"
+        android:pathData="M34,74 L26,64 L32,62 L28,48 L36,48 L40,36 L48,39 L58,31 L64,36 L76,34 L78,40 L88,46 L82,50 L84,62 L76,64 L72,76 L66,72 L74,60 L72,48 L62,42 L50,42 L40,50 L38,62 Z" />
+
+    <!-- Golden-Yellow Lightbulb ("i" dot) -->
+    <path
+        android:fillColor="#FDB913"
+        android:pathData="M56,42 C45,42 38,50 38,60 C38,67 43,72 46,78 H66 C69,72 74,67 74,60 C74,50 67,42 56,42 Z" />
+
+    <!-- Lightbulb Screw Base -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M47,79 H65 V82 H47 Z M48,84 H64 V87 H48 Z M51,89 H61 C60,92 52,92 51,89 Z" />
+
+    <!-- Bold Black "ie" Monogram -->
+    <!-- Stem of "i" -->
+    <path
+        android:fillColor="#0B0B0B"
+        android:pathData="M47,94 H65 V146 H47 Z" />
+
+    <!-- Lowercase "e" with Diagonal Crossbar -->
+    <path
+        android:fillColor="#0B0B0B"
+        android:pathData="M96,96 C76,96 63,108 63,122 C63,137 76,147 96,147 C107,147 116,145 122,142 L119,132 C113,135 106,136 98,136 C87,136 79,132 77,125 L121,106 C116,99 107,96 96,96 Z M77,117 C78,109 85,105 95,105 C100,105 104,106 107,108 L77,121 Z" />
+
+    <!-- Sweeping Red & Yellow Lightning Ring Around "ie" -->
+    <!-- Upper-Right Golden Lightning Arc -->
+    <path
+        android:fillColor="#FDB913"
+        android:pathData="M62,58 L98,52 L92,62 L132,74 L122,82 L152,108 L138,110 L144,136 L124,148 L132,128 L124,102 L134,100 L108,78 L116,72 L82,62 Z" />
+
+    <!-- Outer Red Lightning Arc -->
+    <path
+        android:fillColor="#C4161C"
+        android:pathData="M94,58 C120,62 140,72 146,84 L132,86 C146,96 154,112 146,128 L158,126 L152,148 L138,140 L118,162 C130,146 134,132 132,120 L142,120 C140,104 130,90 114,82 L126,80 C116,70 104,64 94,58 Z" />
+
+    <!-- Bottom-Left Red & Yellow Lightning Tail -->
+    <path
+        android:fillColor="#C4161C"
+        android:pathData="M24,102 L34,132 L22,132 C34,152 54,166 80,168 L76,178 C98,178 118,172 132,162 C110,168 92,168 82,164 L84,156 C58,156 38,144 26,124 L14,124 Z" />
+    <path
+        android:fillColor="#FDB913"
+        android:pathData="M22,134 C34,154 56,168 84,170 L80,176 C104,176 124,166 138,150 L122,152 C108,164 88,168 68,164 L72,158 C50,156 34,146 22,134 Z" />
+
+    <!-- Bottom-Right "IKEJA ELECTRIC" Typography -->
+    <!-- IKEJA -->
+    <path
+        android:fillColor="#333333"
+        android:pathData="M116,144 H119 V158 H116 Z M123,144 H126 V150 L132,144 H136 L129,150 L136,158 H132 L126,151 V158 H123 Z M139,144 H149 V147 H142 V150 H148 V152 H142 V155 H149 V158 H139 Z M152,154 C152,156 154,158 157,158 C160,158 162,156 162,153 V144 H159 V153 C159,155 158,155 157,155 C155,155 155,154 155,153 Z M165,158 L170,144 H174 L179,158 H176 L175,155 H169 L168,158 Z" />
+    <!-- ELECTRIC -->
+    <path
+        android:fillColor="#333333"
+        android:pathData="M116,164 H125 V167 H119 V170 H124 V172 H119 V175 H125 V178 H116 Z M128,164 H131 V175 H137 V178 H128 Z M140,164 H149 V167 H143 V170 H148 V172 H143 V175 H149 V178 H140 Z M159,164 C154,164 151,167 151,171 C151,175 154,178 159,178 C162,178 164,177 165,175 L163,173 C162,175 160,175 159,175 C156,175 154,173 154,171 C154,169 156,167 159,167 C160,167 162,168 163,169 L165,167 C164,165 162,164 159,164 Z M167,164 H177 V167 H173.5 V178 H170.5 V167 H167 Z M180,164 H183 V178 H180 Z M193,164 C188,164 186,167 186,171 C186,175 188,178 193,178 C196,178 198,177 199,175 L197,173 C196,175 195,175 193,175 C191,175 189,173 189,171 C189,169 191,167 193,167 C195,167 196,168 197,169 L199,167 C198,165 196,164 193,164 Z" />
+</vector>

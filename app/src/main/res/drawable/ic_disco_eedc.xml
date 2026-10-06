@@ -1,0 +1,73 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Base -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Top Half: Power Substation Sky Banner (Matching Uploaded EEDC Image) -->
+    <path
+        android:pathData="M4,8 H196 V94 H4 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="100"
+                android:startY="8"
+                android:endX="100"
+                android:endY="94"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#1E5CB3" />
+                <item android:offset="0.65" android:color="#5291DC" />
+                <item android:offset="1.0" android:color="#9BC5F2" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Substation Ground Strip -->
+    <path
+        android:fillColor="#6D7278"
+        android:pathData="M4,82 H196 V94 H4 Z" />
+
+    <!-- Substation Gantries, Insulators & Transmission Towers -->
+    <path
+        android:fillColor="#1A2530"
+        android:pathData="M24,14 H28 V90 H24 Z M56,14 H60 V90 H56 Z M16,32 L68,42 V47 L16,37 Z M84,22 H88 V88 H84 Z M124,14 H128 V86 H124 Z M110,24 H142 V27 H110 Z M162,28 H165 V86 H162 Z" />
+    <path
+        android:fillColor="#CFD8DC"
+        android:pathData="M23,50 H29 V88 H23 Z M55,50 H61 V88 H55 Z M72,46 L82,66 L78,68 L68,48 Z M96,46 L86,66 L90,68 L100,48 Z" />
+
+    <!-- Bold Red "EEDC" Wordmark (Bottom Half) -->
+    <!-- First E (With Angled Right Tips) -->
+    <path
+        android:fillColor="#FF0000"
+        android:pathData="M22,108 H62 L56,118 H34 V125 H52 V134 H34 V142 H56 L62,152 H22 Z" />
+
+    <!-- Second E (With Angled Right Tips) -->
+    <path
+        android:fillColor="#FF0000"
+        android:pathData="M64,108 H104 L98,118 H76 V125 H94 V134 H76 V142 H98 L104,152 H64 Z" />
+
+    <!-- D -->
+    <path
+        android:fillColor="#FF0000"
+        android:pathData="M106,108 H126 C141,108 150,116 150,130 C150,144 141,152 126,152 H106 Z M118,118 V142 H125 C133,142 138,138 138,130 C138,122 133,118 125,118 Z" />
+
+    <!-- C -->
+    <path
+        android:fillColor="#FF0000"
+        android:pathData="M174,107 C180,107 185,109 188,111 V122 C184,119 180,117 174,117 C165,117 160,122 160,130 C160,138 165,143 174,143 C180,143 184,141 188,138 V149 C185,151 180,153 174,153 C158,153 148,144 148,130 C148,116 158,107 174,107 Z" />
+
+    <!-- Cyan-Blue Two-Line Subtitle: ENUGU ELECTRICITY / DISTRIBUTION COMPANY -->
+    <!-- Line 1: ENUGU ELECTRICITY -->
+    <path
+        android:fillColor="#008FD5"
+        android:pathData="M22,160 H72 V168 H22 Z M86,160 H188 V168 H86 Z" />
+    <!-- Line 2: DISTRIBUTION COMPANY -->
+    <path
+        android:fillColor="#008FD5"
+        android:pathData="M22,174 H114 V182 H22 Z M122,174 H188 V182 H122 Z" />
+</vector>

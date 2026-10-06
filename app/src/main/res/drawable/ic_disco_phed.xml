@@ -1,0 +1,91 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Left Green 8-Point Compass Star Emblem -->
+    <!-- 4 Main Cardinal Points (N, S, E, W) -->
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M48,46 L54,68 L48,154 L42,68 Z" />
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M48,154 L54,132 L48,46 L42,132 Z" />
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M8,100 L26,94 L88,100 L26,106 Z" />
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M88,100 L70,94 L8,100 L70,106 Z" />
+
+    <!-- 4 Diagonal Minor Points -->
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M24,66 L36,74 L72,134 L60,126 Z" />
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M72,66 L60,74 L24,134 L36,126 Z" />
+
+    <!-- Green Outer Circle Ring -->
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M48,66 A34,34 0 1,1 47.9,66 Z" />
+    <!-- White Inner Circle -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,73 A27,27 0 1,1 47.9,73 Z" />
+
+    <!-- Blue Stylized Figures & Central Lightning Bolt Inside Compass -->
+    <!-- Left Figure & Arm -->
+    <path
+        android:fillColor="#164194"
+        android:pathData="M31,91 C36,95 41,96 45,91 L48,76 L46,112 L48,128 L38,104 C35,98 33,94 31,91 Z" />
+    <path
+        android:fillColor="#164194"
+        android:pathData="M40,88 A3.2,3.2 0 1,1 39.9,88 Z" />
+
+    <!-- Right Figure & Arm -->
+    <path
+        android:fillColor="#164194"
+        android:pathData="M65,91 C60,95 55,96 51,91 L48,76 L51,102 L47,114 L57,100 C60,96 63,93 65,91 Z" />
+    <path
+        android:fillColor="#164194"
+        android:pathData="M56,88 A3.2,3.2 0 1,1 55.9,88 Z" />
+
+    <!-- White/Blue Lightning Bolt Cutout in Center -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,84 L44,102 H49 L46,120 L54,99 H49 Z" />
+
+    <!-- Bold Royal Blue "PHED" with Plug-Shaped "ED" -->
+    <!-- Letter P -->
+    <path
+        android:fillColor="#164194"
+        android:pathData="M90,74 H114 C124,74 130,80 130,89 C130,98 124,104 114,104 H99 V120 H90 Z M99,82 V96 H113 C118,96 121,93 121,89 C121,85 118,82 113,82 Z" />
+
+    <!-- Letter H -->
+    <path
+        android:fillColor="#164194"
+        android:pathData="M133,74 H142 V93 H157 V74 H166 V120 H157 V101 H142 V120 H133 Z" />
+
+    <!-- Plug Prongs ("=" forming E) + Solid D-Shaped Plug Body -->
+    <path
+        android:fillColor="#164194"
+        android:pathData="M169,85 H182 V92 H169 Z M169,102 H182 V109 H169 Z M182,74 H191 C196,74 199,83 199,97 C199,111 196,120 191,120 H182 Z" />
+
+    <!-- Green Horizontal Divider Line Under PHED -->
+    <path
+        android:fillColor="#1B9E3E"
+        android:pathData="M90,124 H198 V126 H90 Z" />
+
+    <!-- Blue Subtitle: PORT HARCOURT ELECTRICITY DISTRIBUTION COMPANY -->
+    <path
+        android:fillColor="#164194"
+        android:pathData="M90,129 H104 V134 H90 Z M107,129 H128 V134 H107 Z M131,129 H154 V134 H131 Z M157,129 H180 V134 H157 Z M183,129 H198 V134 H183 Z" />
+</vector>

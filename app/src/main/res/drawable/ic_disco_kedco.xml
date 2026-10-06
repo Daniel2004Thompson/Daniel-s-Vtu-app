@@ -1,0 +1,87 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Base -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Outer Bright Yellow Ring -->
+    <path
+        android:fillColor="#FFF200"
+        android:pathData="M100,10 A90,90 0 1,1 99.9,10 Z" />
+
+    <!-- Inner Silver/Grey Ring -->
+    <path
+        android:fillColor="#B3B3B3"
+        android:pathData="M100,17 A83,83 0 1,1 99.9,17 Z" />
+
+    <!-- Inner White Circle -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M100,20 A80,80 0 1,1 99.9,20 Z" />
+
+    <!-- Diagonal Yellow Lightning Bolt Edged in Silver Behind/Through K -->
+    <path
+        android:fillColor="#FFF200"
+        android:strokeColor="#A7A9AC"
+        android:strokeWidth="2.5"
+        android:strokeLineJoin="round"
+        android:pathData="M148,46 L102,92 H118 L86,136 L132,84 H116 Z" />
+
+    <!-- Bold Navy-Blue Gradient "K" -->
+    <path
+        android:pathData="M68,56 H86 V84 L110,56 H130 L102,88 L132,124 H110 L92,98 L86,104 V124 H68 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="100"
+                android:startY="56"
+                android:endX="100"
+                android:endY="124"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#282D96" />
+                <item android:offset="0.6" android:color="#1D206E" />
+                <item android:offset="1.0" android:color="#111344" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Re-draw Upper-Right Lightning Bolt Tip Over the Right Arm of K -->
+    <path
+        android:fillColor="#FFF200"
+        android:strokeColor="#A7A9AC"
+        android:strokeWidth="2.2"
+        android:strokeLineJoin="round"
+        android:pathData="M148,46 L102,92 H118 L108,104 L132,84 H116 Z" />
+
+    <!-- Bold Navy "K E D C O" Wordmark Below K -->
+    <!-- K -->
+    <path
+        android:fillColor="#1F2278"
+        android:pathData="M68,133 H71 V138 L76,133 H80 L74,139 L80,146 H76 L71,140 V146 H68 Z" />
+    <!-- E -->
+    <path
+        android:fillColor="#1F2278"
+        android:pathData="M84,133 H93 V136 H87 V138 H92 V141 H87 V143 H93 V146 H84 Z" />
+    <!-- D -->
+    <path
+        android:fillColor="#1F2278"
+        android:pathData="M98,133 H104 C108,133 110,135.5 110,139.5 C110,143.5 108,146 104,146 H98 Z M101,136 V143 H103.5 C105.5,143 107,141.8 107,139.5 C107,137.2 105.5,136 103.5,136 Z" />
+    <!-- C -->
+    <path
+        android:fillColor="#1F2278"
+        android:pathData="M121,133 C123,133 125,134 126,135.5 L123.5,137 C122.8,136.2 122,135.8 121,135.8 C118.8,135.8 117.5,137.2 117.5,139.5 C117.5,141.8 118.8,143.2 121,143.2 C122,143.2 122.8,142.8 123.5,142 L126,143.5 C125,145 123,146 121,146 C117,146 114.5,143.5 114.5,139.5 C114.5,135.5 117,133 121,133 Z" />
+    <!-- O -->
+    <path
+        android:fillColor="#1F2278"
+        android:pathData="M136,133 C140,133 142.5,135.5 142.5,139.5 C142.5,143.5 140,146 136,146 C132,146 129.5,143.5 129.5,139.5 C129.5,135.5 132,133 136,133 Z M136,135.8 C133.8,135.8 132.5,137.2 132.5,139.5 C132.5,141.8 133.8,143.2 136,143.2 C138.2,143.2 139.5,141.8 139.5,139.5 C139.5,137.2 138.2,135.8 136,135.8 Z" />
+
+    <!-- Subtitle: KANO ELECTRICITY / DISTRIBUTION COMPANY -->
+    <path
+        android:fillColor="#58595B"
+        android:pathData="M68,150 H112 V153 H68 Z M68,156 H128 V159 H68 Z" />
+</vector>

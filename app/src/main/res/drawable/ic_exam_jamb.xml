@@ -1,0 +1,126 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Left & Right Green Ribbon Tails (#00873E) -->
+    <path
+        android:fillColor="#00873E"
+        android:pathData="M34,132 L54,138 L54,192 L44,180 L34,192 Z" />
+    <path
+        android:fillColor="#00873E"
+        android:pathData="M146,138 L166,132 L166,192 L156,180 L146,192 Z" />
+
+    <!-- Main Green Circular Seal (#00873E) -->
+    <path
+        android:fillColor="#00873E"
+        android:pathData="M100,90m-72,0a72,72 0,1 1,144 0a72,72 0,1 1,-144 0" />
+
+    <!-- Outer White Ring Inside Green Seal -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:pathData="M100,90m-66,0a66,66 0,1 1,132 0a66,66 0,1 1,-132 0" />
+
+    <!-- Inner White Ring Framing the Central Emblem -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.2"
+        android:pathData="M100,90m-45,0a45,45 0,1 1,90 0a45,45 0,1 1,-90 0" />
+
+    <!-- Left and Right White Dots in the Outer Text Band -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M45,98m-3.2,0a3.2,3.2 0,1 1,6.4 0a3.2,3.2 0,1 1,-6.4 0" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M155,98m-3.2,0a3.2,3.2 0,1 1,6.4 0a3.2,3.2 0,1 1,-6.4 0" />
+
+    <!-- Curved White Inscription Band Accents ("JOINT ADMISSIONS AND" / "MATRICULATION BOARD") -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M49,82 A55,55 0 0,1 151,82" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#00873E"
+        android:strokeWidth="2"
+        android:pathData="M62,50 L66,60 M75,42 L78,52 M88,37 L90,48 M100,35 L100,46 M112,37 L110,48 M125,42 L122,52 M138,50 L134,60" />
+
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M56,114 A55,55 0 0,0 144,114" />
+
+    <!-- Light Green Map of Nigeria Silhouette in Center (#AED581) -->
+    <path
+        android:fillColor="#AED581"
+        android:pathData="M74,78 C74,72 82,69 90,71 C96,72 104,72 112,70 C119,69 124,74 123,82 C122,89 119,95 114,99 C108,103 102,107 95,107 C89,107 85,102 79,99 C74,96 73,86 74,78 Z" />
+
+    <!-- White Laurel Wreaths on Left and Right of Map -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M79,108 C65,96 65,73 78,61 M121,108 C135,96 135,73 122,61" />
+
+    <!-- White Torch Handle Rising Through Center of Nigeria Map -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M91,73 L109,73 L103,83 L103,110 L97,110 L97,83 Z" />
+
+    <!-- Torch Flame (Two-Tone Orange & Red-Orange) -->
+    <path
+        android:fillColor="#FF5722"
+        android:pathData="M91,72 C90,63 95,55 100,50 C106,56 110,63 109,72 Z" />
+    <path
+        android:fillColor="#D50000"
+        android:pathData="M100,50 C106,56 110,63 109,72 L100,72 Z" />
+
+    <!-- Bold White 'JAMB' Letters Below Torch -->
+    <!-- 'J' -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M80,113 h4 v8 c0,2.5 -1.5,4 -4,4 c-2,0 -3.5,-1 -4,-2.8 l2.8,-1.2 c0.3,0.8 0.7,1.2 1.2,1.2 c0.7,0 1.1,-0.5 1.1,-1.4 v-7.8 z" />
+    <!-- 'A' -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M91,113 h3.5 l4,11.5 h-3.2 l-0.7,-2.2 h-3.8 l-0.7,2.2 h-3.1 z M91.6,119.8 h2.3 l-1.15,-3.8 z" />
+    <!-- 'M' -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M100,113 h3.2 l2.3,6.5 l2.3,-6.5 h3.2 v11.5 h-2.8 v-6.8 l-2,5.5 h-1.4 l-2,-5.5 v6.8 h-2.8 z" />
+    <!-- 'B' -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#FFFFFF"
+        android:pathData="M113.5,113 h5 c2.2,0 3.6,1.1 3.6,2.8 c0,1.2 -0.7,2.1 -1.8,2.5 c1.4,0.4 2.2,1.4 2.2,2.8 c0,2 -1.5,3.4 -4,3.4 h-5 z M116.3,115.2 v2.3 h1.8 c0.8,0 1.3,-0.4 1.3,-1.15 c0,-0.7 -0.5,-1.15 -1.3,-1.15 z M116.3,119.5 v2.8 h2.1 c0.9,0 1.4,-0.5 1.4,-1.4 c0,-0.9 -0.5,-1.4 -1.4,-1.4 z" />
+
+    <!-- Bottom White Curved Ribbon Banner ("SERVICE AND INTEGRITY") -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#00873E"
+        android:strokeWidth="1.8"
+        android:pathData="M28,125 C50,156 80,168 100,168 C120,168 150,156 172,125 L160,154 C138,178 118,186 100,186 C82,186 62,178 40,154 Z" />
+
+    <!-- Dark Text Accent Arc on the White Banner -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1B1B1B"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:pathData="M44,143 C64,167 84,175 100,175 C116,175 136,167 156,143" />
+</vector>

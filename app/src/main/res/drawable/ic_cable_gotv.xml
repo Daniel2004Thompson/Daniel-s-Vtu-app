@@ -1,0 +1,96 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Warm White Background (no camera watermark) -->
+    <path
+        android:fillColor="#FFFDF9"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- GOtv Wide Bold Red "G" -->
+    <path
+        android:fillColor="#ED1C24"
+        android:pathData="M60,48 H42 C23,48 12,60 12,81 C12,102 23,115 44,115 C53,115 60,113 65,110 V77 H43 V88 H52 V103 C49,104 46,104.5 43,104.5 C31,104.5 25,95.5 25,81 C25,66.5 31,58.5 43,58.5 H60 Z" />
+
+    <!-- GOtv Wide Bold Red "O" -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#ED1C24"
+        android:pathData="M89,47 C72,47 62,60 62,81 C62,102 72,115 89,115 C106,115 116,102 116,81 C116,60 106,47 89,47 Z M89,58.5 C97.5,58.5 102.5,67 102.5,81 C102.5,95 97.5,103.5 89,103.5 C80.5,103.5 75.5,95 75.5,81 C75.5,67 80.5,58.5 89,58.5 Z" />
+
+    <!-- GOtv Connected Bold Green "tv" Ligature -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#00953B"
+        android:pathData="M117,47 H131 V63 H160 L170.5,98 L181,63 H192 L174.5,115 H130 C121,115 117,110 117,101 Z M131,73.5 V99.5 C131,102.5 133,104 137,104 H159.5 L150,73.5 Z" />
+
+    <!-- Bold Dark-Charcoal "Live it. Love it." Tagline (aligned under Otv, no camera icon on left) -->
+    <!-- "Live" -->
+    <!-- L -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M54.0,138.0 H58.2 V157.5 H65.8 V162.0 H54.0 Z" />
+    <!-- i -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M67.6,137.5 H71.6 V141.6 H67.6 Z M67.6,144.2 H71.6 V162.0 H67.6 Z" />
+    <!-- v -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M73.2,144.2 H77.2 L79.8,156.2 L82.4,144.2 H86.4 L82.0,162.0 H77.6 Z" />
+    <!-- e -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#231F20"
+        android:pathData="M93.5,143.8 C97.8,143.8 100.4,147.2 100.4,152.8 V154.4 H90.8 C91.2,157.0 92.5,158.4 94.6,158.4 C96.2,158.4 97.6,157.8 98.8,156.8 L100.0,160.2 C98.5,161.6 96.4,162.4 94.0,162.4 C89.4,162.4 86.8,158.8 86.8,153.1 C86.8,147.4 89.5,143.8 93.5,143.8 Z M90.8,151.2 H96.4 C96.2,148.8 95.2,147.4 93.5,147.4 C92.0,147.4 91.0,148.8 90.8,151.2 Z" />
+
+    <!-- "it." -->
+    <!-- i -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M105.0,137.5 H109.0 V141.6 H105.0 Z M105.0,144.2 H109.0 V162.0 H105.0 Z" />
+    <!-- t -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M112.0,139.8 H116.0 V144.2 H118.8 V148.0 H116.0 V156.0 C116.0,157.5 116.6,158.2 118.0,158.2 H119.0 V162.0 H117.0 C113.5,162.0 112.0,160.2 112.0,156.2 V148.0 H110.2 V144.2 H112.0 Z" />
+    <!-- . -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M120.5,157.2 H124.8 V162.0 H120.5 Z" />
+
+    <!-- "Love" -->
+    <!-- L -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M130.0,138.0 H134.2 V157.5 H141.8 V162.0 H130.0 Z" />
+    <!-- o -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#231F20"
+        android:pathData="M149.2,143.8 C153.6,143.8 156.4,147.4 156.4,153.1 C156.4,158.8 153.6,162.4 149.2,162.4 C144.8,162.4 142.0,158.8 142.0,153.1 C142.0,147.4 144.8,143.8 149.2,143.8 Z M149.2,147.6 C147.0,147.6 145.8,149.8 145.8,153.1 C145.8,156.4 147.0,158.6 149.2,158.6 C151.4,158.6 152.6,156.4 152.6,153.1 C152.6,149.8 151.4,147.6 149.2,147.6 Z" />
+    <!-- v -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M156.6,144.2 H160.6 L163.2,156.2 L165.8,144.2 H169.8 L165.4,162.0 H161.0 Z" />
+    <!-- e -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#231F20"
+        android:pathData="M176.8,143.8 C181.1,143.8 183.7,147.2 183.7,152.8 V154.4 H174.1 C174.5,157.0 175.8,158.4 177.9,158.4 C179.5,158.4 180.9,157.8 182.1,156.8 L183.3,160.2 C181.8,161.6 179.7,162.4 177.3,162.4 C172.7,162.4 170.1,158.8 170.1,153.1 C170.1,147.4 172.8,143.8 176.8,143.8 Z M174.1,151.2 H179.7 C179.5,148.8 178.5,147.4 176.8,147.4 C175.3,147.4 174.3,148.8 174.1,151.2 Z" />
+
+    <!-- "it." -->
+    <!-- i -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M185.6,137.5 H189.2 V141.6 H185.6 Z M185.6,144.2 H189.2 V162.0 H185.6 Z" />
+    <!-- t -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M191.0,139.8 H194.6 V144.2 H196.6 V148.0 H194.6 V156.0 C194.6,157.5 195.0,158.2 196.0,158.2 H196.6 V162.0 H195.0 C192.2,162.0 191.0,160.2 191.0,156.2 V148.0 H189.8 V144.2 H191.0 Z" />
+    <!-- . -->
+    <path
+        android:fillColor="#231F20"
+        android:pathData="M196.8,157.2 H200.0 V162.0 H196.8 Z" />
+</vector>

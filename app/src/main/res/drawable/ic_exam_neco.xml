@@ -1,0 +1,159 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Clean White Background -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M0,0h200v200h-200z" />
+
+    <!-- Lime-Green Diamond with Orange-Gold Border -->
+    <path
+        android:fillColor="#A8CF38"
+        android:strokeColor="#F48120"
+        android:strokeWidth="4.5"
+        android:pathData="M100,12 L186,96 L100,180 L14,96 Z" />
+
+    <!-- Arched "NATIONAL EXAMINATIONS COUNCIL" Emblem Band Inside Upper Diamond -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1E3518"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round"
+        android:pathData="M54,104 C50,74 70,48 100,48 C130,48 150,74 146,104" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#A8CF38"
+        android:strokeWidth="1.8"
+        android:pathData="M50,92 L58,92 M54,78 L62,81 M64,64 L70,69 M78,53 L82,60 M93,46 L94,54 M107,46 L106,54 M122,53 L118,60 M136,64 L130,69 M146,78 L138,81 M150,92 L142,92" />
+
+    <!-- Standing Open White Book Pages Behind Torch -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#263238"
+        android:strokeWidth="1.8"
+        android:pathData="M66,126 L70,84 L79,84 L79,126 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#263238"
+        android:strokeWidth="1.8"
+        android:pathData="M79,126 L79,76 L93,76 L93,126 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#263238"
+        android:strokeWidth="1.8"
+        android:pathData="M107,126 L107,76 L121,76 L121,126 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#263238"
+        android:strokeWidth="1.8"
+        android:pathData="M121,126 L121,84 L130,84 L134,126 Z" />
+
+    <!-- Central Dark Charcoal Torch Pillar -->
+    <path
+        android:fillColor="#2D3134"
+        android:pathData="M88,73 L112,73 L112,86 C112,92 108,96 104,98 L104,116 L96,116 L96,98 C92,96 88,92 88,86 Z" />
+
+    <!-- Torch Glowing Orange-Yellow Dome Cap -->
+    <path
+        android:strokeColor="#2D3134"
+        android:strokeWidth="1.5"
+        android:pathData="M88,71 L88,63 C88,56 93,52 100,52 C107,52 112,56 112,63 L112,71 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="88"
+                android:startY="62"
+                android:endX="112"
+                android:endY="62"
+                android:type="linear">
+                <item
+                    android:color="#F57F17"
+                    android:offset="0.0" />
+                <item
+                    android:color="#FFEE58"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Lower Ribbon Tails & Green Banner Wings -->
+    <!-- Left & Right Outer Ribbon Tails (Green/Yellow-Green) -->
+    <path
+        android:fillColor="#009E49"
+        android:pathData="M34,142 C44,136 56,136 66,144 L66,164 C54,158 42,160 34,168 Z" />
+    <path
+        android:fillColor="#009E49"
+        android:pathData="M166,142 C156,136 144,136 134,144 L134,164 C146,158 158,160 166,168 Z" />
+
+    <!-- Dark Ribbon Inner Folds -->
+    <path
+        android:fillColor="#2D3134"
+        android:pathData="M48,146 L72,152 L72,165 L48,158 Z" />
+    <path
+        android:fillColor="#2D3134"
+        android:pathData="M152,146 L128,152 L128,165 L152,158 Z" />
+
+    <!-- Main Green Ribbon Bands Flanking Medallion -->
+    <path
+        android:fillColor="#009E49"
+        android:pathData="M48,124 C58,118 72,118 82,122 L82,146 C70,142 58,142 48,148 Z" />
+    <path
+        android:fillColor="#009E49"
+        android:pathData="M152,124 C142,118 128,118 118,122 L118,146 C130,142 142,142 152,148 Z" />
+
+    <!-- Soft Pink Circular Medallion with Nigerian Coat of Arms (#FCE4EC) -->
+    <path
+        android:fillColor="#FADADD"
+        android:strokeColor="#2D3134"
+        android:strokeWidth="2"
+        android:pathData="M100,136m-27,0a27,27 0,1 1,54 0a27,27 0,1 1,-54 0" />
+
+    <!-- Red Eagle at Top of Coat of Arms -->
+    <path
+        android:fillColor="#C62828"
+        android:pathData="M92,120 L100,115 L108,120 L104,126 L96,126 Z" />
+
+    <!-- White Horses Supporting Shield -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#546E7A"
+        android:strokeWidth="1"
+        android:pathData="M82,144 L86,125 L92,129 L91,145 Z M118,144 L114,125 L108,129 L109,145 Z" />
+
+    <!-- Black Central Shield with White Y-Pall -->
+    <path
+        android:fillColor="#1C1C1C"
+        android:pathData="M93,127 L107,127 L107,138 C107,143 100,147 100,147 C100,147 93,143 93,138 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.2"
+        android:pathData="M94,128 L100,135 L106,128 M100,135 L100,146" />
+
+    <!-- Green & Gold Base Under Shield -->
+    <path
+        android:fillColor="#2E7D32"
+        android:pathData="M83,147 C90,144 110,144 117,147 L115,151 C108,149 92,149 85,151 Z" />
+
+    <!-- Bold Dark 'NECO' Text Below Medallion -->
+    <!-- 'N' -->
+    <path
+        android:fillColor="#2D3134"
+        android:pathData="M74,178 L76,166 L79.5,166 L83,174 L84.5,166 L87.5,166 L85.5,178 L82,178 L78.5,170 L77,178 Z" />
+    <!-- 'E' -->
+    <path
+        android:fillColor="#2D3134"
+        android:pathData="M90,168 h8 v2.5 h-5 v2.2 h4.5 v2.4 h-4.5 v2.4 h5.2 v2.5 h-8.2 z" />
+    <!-- 'C' -->
+    <path
+        android:fillColor="#2D3134"
+        android:pathData="M106,168 C108.5,168 110.2,169 111,170.8 L108.5,172 C108,170.9 107.1,170.4 106,170.4 C104.2,170.4 103,171.8 103,174 C103,176.2 104.2,177.6 106,177.6 C107.2,177.6 108.1,177 108.7,175.8 L111.2,177 C110.2,179 108.4,180.2 106,180.2 C102.4,180.2 100,177.8 100,174 C100,170.2 102.4,168 106,168 Z" />
+    <!-- 'O' -->
+    <path
+        android:fillType="evenOdd"
+        android:fillColor="#2D3134"
+        android:pathData="M119,166 C122.8,166 125.5,168.6 125.5,172.2 C125.5,175.8 122.8,178.5 119,178.5 C115.2,178.5 112.5,175.8 112.5,172.2 C112.5,168.6 115.2,166 119,166 Z M119,168.6 C117,168.6 115.6,170.1 115.6,172.2 C115.6,174.3 117,175.8 119,175.8 C121,175.8 122.4,174.3 122.4,172.2 C122.4,170.1 121,168.6 119,168.6 Z" />
+</vector>
