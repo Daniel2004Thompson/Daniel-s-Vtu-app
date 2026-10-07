@@ -71,8 +71,12 @@ fun LogoutScreen(
     val isSupabaseConfigured = viewModel.isSupabaseConfigured
     var showConfirmDialog by remember { mutableStateOf(false) }
 
+    androidx.activity.compose.BackHandler(onBack = onNavigateBack)
+
     androidx.compose.runtime.LaunchedEffect(currentUser?.id, currentUser?.email) {
-        viewModel.refreshRemoteBalance()
+        if (currentUser != null) {
+            viewModel.refreshRemoteBalance()
+        }
     }
 
     if (showConfirmDialog) {

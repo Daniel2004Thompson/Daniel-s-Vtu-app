@@ -62,6 +62,9 @@ import com.example.data.model.DataCategory
 import com.example.data.model.DataPlan
 import com.example.data.model.NetworkProvider
 import com.example.data.model.VtuCatalog
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import com.example.data.remote.GsubzVtuService
 import com.example.ui.theme.VtuCyan
 import com.example.ui.theme.VtuGoldAccent
 import com.example.ui.theme.VtuGreenPrimary
@@ -79,9 +82,35 @@ fun DataScreen(
     var phoneNumber by remember { mutableStateOf("") }
     var selectedPlan by remember { mutableStateOf<DataPlan?>(null) }
     var showNetworkPicker by remember { mutableStateOf(false) }
+    val livePlansByService by GsubzVtuService.liveServicePlans.collectAsState()
 
-    val filteredPlans = VtuCatalog.dataPlans.filter {
-        it.network == selectedNetwork && (selectedCategory == null || it.category == selectedCategory)
+    LaunchedEffect(selectedNetwork) {
+        val serviceIdsToSync = when (selectedNetwork) {
+            NetworkProvider.MTN -> listOf("mtn_sme", "mtn_gifting")
+            NetworkProvider.AIRTEL -> listOf("airtel_sme", "airtel_gifting")
+            NetworkProvider.GLO -> listOf("glo_data", "glo_sme")
+            NetworkProvider.NINEMOBILE -> listOf("etisalat_data")
+        }
+        for (sId in serviceIdsToSync) {
+            GsubzVtuService.fetchLivePlansForService(sId)
+        }
+    }
+
+    val filteredPlans = remember(selectedNetwork, selectedCategory, livePlansByService) {
+        VtuCatalog.dataPlans
+            .filter {
+                it.network == selectedNetwork && (selectedCategory == null || it.category == selectedCategory)
+            }
+            .map { catalogPlan ->
+                val liveMatch = livePlansByService[catalogPlan.gsubzServiceId.lowercase()]
+                    ?.firstOrNull { it.value == catalogPlan.planCode }
+                val livePrice = liveMatch?.price?.toDoubleOrNull()
+                if (livePrice != null && livePrice > 0.0) {
+                    catalogPlan.copy(price = livePrice)
+                } else {
+                    catalogPlan
+                }
+            }
     }
 
     if (showNetworkPicker) {
@@ -329,9 +358,10 @@ fun DataScreen(
                             title = "${plan.network.displayName} Data ${plan.dataAmount}",
                             serviceType = "DATA",
                             provider = plan.network.displayName,
-                            recipient = phoneNumber,
+                            recipient = phoneNumber.trim(),
                             amount = plan.price,
-                            planId = plan.id,
+                            planId = plan.planCode.ifBlank { plan.id },
+                            serviceId = plan.gsubzServiceId,
                             details = "${plan.dataAmount} • ${plan.validity} (${plan.category.label})"
                         )
                         onRequestPayment(pending)

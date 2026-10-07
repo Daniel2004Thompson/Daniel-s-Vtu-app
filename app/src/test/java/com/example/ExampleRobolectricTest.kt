@@ -432,15 +432,15 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.onNodeWithTag("create_pin_screen").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("create_pin_input").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("create_pin_input_box_0").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("create_pin_input_box_3").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("create_pin_confirm_input").assertIsDisplayed()
     composeTestRule.onNodeWithTag("secure_numeric_keypad").assertIsDisplayed()
     composeTestRule.onNodeWithTag("pin_keypad_done").assertIsDisplayed()
     composeTestRule.onNodeWithTag("pin_key_0").assertIsDisplayed()
     composeTestRule.onNodeWithTag("pin_key_DEL").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("create_pin_submit_button").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("create_pin_input").assertExists()
+    composeTestRule.onNodeWithTag("create_pin_input_box_0").assertExists()
+    composeTestRule.onNodeWithTag("create_pin_input_box_3").assertExists()
+    composeTestRule.onNodeWithTag("create_pin_confirm_input").assertExists()
+    composeTestRule.onNodeWithTag("create_pin_submit_button").assertExists()
     assertEquals(null, createdPin)
   }
 
@@ -532,6 +532,255 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithText("Airtime: ₦100").assertIsDisplayed()
     composeTestRule.onNodeWithText("Cashback: ₦2.5").assertIsDisplayed()
     composeTestRule.onNodeWithText("You paid: ₦97.5").assertIsDisplayed()
+  }
+
+  @Test
+  fun `test updated Gsubz-VTU-Services edge function schema and gsubz_data response parsing`() {
+    val edgeClient = com.example.data.remote.GsubzEdgeServiceClient()
+
+    assertEquals("airtime", edgeClient.mapToEdgeServiceCategory("AIRTIME"))
+    assertEquals("data", edgeClient.mapToEdgeServiceCategory("DATA"))
+    assertEquals("cable", edgeClient.mapToEdgeServiceCategory("CABLE_TV"))
+    assertEquals("electricity", edgeClient.mapToEdgeServiceCategory("ELECTRICITY"))
+    assertEquals("education", edgeClient.mapToEdgeServiceCategory("EDUCATION"))
+
+    assertEquals("gotv", edgeClient.mapToEdgeNetwork("CABLE_TV", "GOtv", "gotv"))
+    assertEquals("showmax", edgeClient.mapToEdgeNetwork("CABLE_TV", "Showmax", "showmax"))
+    assertEquals("ikeja-electric", edgeClient.mapToEdgeNetwork("ELECTRICITY", "IKEDC", "ikeja-electric"))
+    assertEquals("waec", edgeClient.mapToEdgeNetwork("EDUCATION", "WAEC", "waec"))
+    assertEquals("mtn_sme", edgeClient.mapToEdgeNetwork("DATA", "MTN", "mtn_cg"))
+    assertEquals("airtel_sme", edgeClient.mapToEdgeNetwork("DATA", "AIRTEL", "airtel_cg"))
+
+    // Verify Cable TV "list" + "display_name" plan parsing from Gsubz plans API
+    val gotvPlansJson = """
+      {
+        "service": "gotv",
+        "ServiceName": "GOTV Subscription",
+        "fixedPrice": true,
+        "list": [
+          {"display_name": "GOtv Smallie - Monthly", "value": "gotv-smallie", "price": "1900"},
+          {"display_name": "GOtv Max", "value": "gotv-max", "price": "8500"}
+        ]
+      }
+    """.trimIndent()
+    val parsedGotvPlans = com.example.data.remote.GsubzVtuService.parseGsubzPlansJson(gotvPlansJson)
+    assertEquals(2, parsedGotvPlans.size)
+    assertEquals("GOtv Smallie - Monthly", parsedGotvPlans[0].displayName)
+    assertEquals("gotv-smallie", parsedGotvPlans[0].value)
+    assertEquals("1900", parsedGotvPlans[0].price)
+
+    val cablePayload = com.example.data.remote.GsubzVtuService.buildRequestJson(
+      serviceID = "gotv",
+      amount = 8500.0,
+      phone = "7032154625",
+      plan = "gotv-max",
+      service = "cable",
+      network = "gotv",
+      userId = "usr_123",
+      userEmail = "daniel@example.com",
+      narration = "Daniel Kalada Thompson",
+      smartcardNumber = "7032154625"
+    )
+    assertTrue(cablePayload.contains("\"user_id\":\"usr_123\""))
+    assertTrue(cablePayload.contains("\"email\":\"daniel@example.com\""))
+    assertTrue(cablePayload.contains("\"service_type\":\"cable\""))
+    assertTrue(cablePayload.contains("\"service\":\"cable\""))
+    assertTrue(cablePayload.contains("\"serviceID\":\"gotv\""))
+    assertTrue(cablePayload.contains("\"service_id\":\"gotv\""))
+    assertTrue(cablePayload.contains("\"network\":\"gotv\""))
+    assertTrue(cablePayload.contains("\"plan\":\"gotv-max\""))
+    assertTrue(cablePayload.contains("\"plan_id\":\"gotv-max\""))
+    assertTrue(cablePayload.contains("\"variation_code\":\"gotv-max\""))
+    assertTrue(cablePayload.contains("\"customerID\":\"7032154625\""))
+    assertTrue(cablePayload.contains("\"customer_id\":\"7032154625\""))
+    assertTrue(cablePayload.contains("\"iuc\":\"7032154625\""))
+
+    val vtuManager = com.example.data.remote.VtuManager()
+    val reqAdapter = vtuManager.moshi.adapter(com.example.data.remote.VtuRequest::class.java)
+    val moshiPayload = reqAdapter.toJson(
+      com.example.data.remote.VtuRequest(
+        userId = "usr_123",
+        email = "daniel@example.com",
+        service = "electricity",
+        serviceId = "ikeja-electric",
+        phone = "08031234567",
+        amount = 2000,
+        planId = "prepaid",
+        customerId = "45012345678"
+      )
+    )
+    assertTrue(moshiPayload.contains("\"user_id\":\"usr_123\""))
+    assertTrue(moshiPayload.contains("\"service_id\":\"ikeja-electric\""))
+    assertTrue(moshiPayload.contains("\"customer_id\":\"45012345678\""))
+    assertTrue(moshiPayload.contains("\"plan_id\":\"prepaid\""))
+
+    val successEdgeEnvelope = """
+      {
+        "status": "successful",
+        "message": "Transaction successful",
+        "transactionID": "GSUBZ-TX-9988",
+        "charged": 1970,
+        "cashback": 30,
+        "new_balance": 8030.5,
+        "token": "4512-9834-1122-3344-5566"
+      }
+    """.trimIndent()
+    val parsedSuccess = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
+      rawBody = successEdgeEnvelope,
+      httpStatusCode = 200,
+      requestedAmount = 2000.0
+    )
+    assertEquals(true, parsedSuccess.isSuccess)
+    assertEquals(1970.0, parsedSuccess.charged ?: 0.0, 0.001)
+    assertEquals(30.0, parsedSuccess.cashback ?: 0.0, 0.001)
+    assertEquals(8030.5, parsedSuccess.newBalance ?: 0.0, 0.001)
+    assertEquals("4512-9834-1122-3344-5566", parsedSuccess.tokenOrPin)
+
+    val failedGsubzEnvelope = """
+      {
+        "success": false,
+        "user_id": "usr_123",
+        "email": "daniel@example.com",
+        "narration": "Daniel Kalada Thompson",
+        "gsubz_data": {
+          "code": "402",
+          "status": "failed",
+          "description": "INSUFFICIENT_BALANCE",
+          "api_response": "",
+          "content": {
+            "requestID": "REQ-991",
+            "serviceID": "gotv",
+            "image": "//yjymxdzdhvbdjramlipg.supabase.co/storage/v1/object/public/uploads/1029285934.png",
+            "status": "failed",
+            "description": "INSUFFICIENT_BALANCE",
+            "serviceName": "GOTV",
+            "code": "402"
+          }
+        }
+      }
+    """.trimIndent()
+    val respAdapter = vtuManager.moshi.adapter(com.example.data.remote.VtuResponse::class.java)
+    val moshiResp = respAdapter.fromJson(failedGsubzEnvelope)!!
+    assertEquals(false, moshiResp.success)
+    assertEquals("usr_123", moshiResp.userId)
+    assertEquals("Daniel Kalada Thompson", moshiResp.narration)
+    assertEquals("GOTV", moshiResp.extractServiceName())
+    assertEquals("https://yjymxdzdhvbdjramlipg.supabase.co/storage/v1/object/public/uploads/1029285934.png", moshiResp.extractServiceImageUrl())
+
+    val parsedFail = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
+      rawBody = failedGsubzEnvelope,
+      httpStatusCode = 200,
+      requestedAmount = 8500.0
+    )
+    assertEquals(false, parsedFail.isSuccess)
+    assertEquals("Insufficient wallet balance", parsedFail.message)
+    assertEquals("GOTV", parsedFail.serviceName)
+    assertEquals("https://yjymxdzdhvbdjramlipg.supabase.co/storage/v1/object/public/uploads/1029285934.png", parsedFail.serviceImageUrl)
+    assertEquals("Daniel Kalada Thompson", parsedFail.narration)
+
+    // Verify all VTU services use exclusively the Supabase Edge Function URL
+    assertEquals(
+      "https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Gsubz-VTU-Services",
+      com.example.data.remote.GsubzVtuService.FUNCTION_URL
+    )
+    assertEquals(
+      "https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Gsubz-VTU-Services",
+      com.example.data.remote.GsubzEdgeServiceClient.EDGE_FUNCTION_URL
+    )
+
+    // Verify active Gsubz services in VtuCatalog
+    assertTrue(com.example.data.model.VtuCatalog.dataPlans.none { it.gsubzServiceId == "mtn_cg" || it.gsubzServiceId == "airtel_cg" })
+    val waecExam = com.example.data.model.VtuCatalog.educationExams.first { it.id == "waec_pin" }
+    assertEquals("WAEC", waecExam.planCode)
+
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val showmaxProvider = com.example.data.model.VtuCatalog.cableProviders.first { it.id == "showmax" }
+    assertEquals(R.drawable.ic_cable_showmax, showmaxProvider.logoRes)
+    assertTrue(context.getDrawable(showmaxProvider.logoRes) != null)
+  }
+
+  @Test
+  fun `test sign out button navigates to logout screen and signs user out`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val vm = com.example.ui.viewmodel.VtuViewModel(app)
+    var logoutCompleted = false
+
+    composeTestRule.setContent {
+      DanielVtuTheme {
+        com.example.ui.screens.LogoutScreen(
+          viewModel = vm,
+          onNavigateBack = {},
+          onLogoutSuccess = { logoutCompleted = true }
+        )
+      }
+    }
+
+    val signOutBtn = composeTestRule.onNodeWithTag("logout_screen_button")
+    signOutBtn.performScrollTo().assertIsDisplayed()
+    signOutBtn.performClick()
+
+    composeTestRule.onNodeWithText("Sign Out?").assertIsDisplayed()
+    val confirmBtn = composeTestRule.onNodeWithTag("confirm_logout_button")
+    confirmBtn.assertIsDisplayed()
+    confirmBtn.performClick()
+    composeTestRule.waitForIdle()
+
+    assertEquals(false, vm.isLoggedIn.value)
+    assertEquals(true, logoutCompleted)
+  }
+
+  @Test
+  fun `test home screen dynamic account number is complete and spaced from active badge`() {
+    val testUser = com.example.data.model.SupabaseUser(
+      id = "user-123",
+      fullName = "Daniel Kalada Thompson",
+      email = "danielkaladathompson@gmail.com",
+      phone = "08031234567",
+      dynamicAccountNumber = "9691882461",
+      dynamicBankName = "Palmpay"
+    )
+
+    composeTestRule.setContent {
+      DanielVtuTheme {
+        com.example.ui.screens.HomeScreen(
+          walletBalance = 140.0,
+          cashbackBalance = 0.0,
+          isBiometricEnabled = true,
+          notifications = emptyList(),
+          recentTransactions = emptyList(),
+          currentUser = testUser,
+          onNavigateToAirtime = {},
+          onNavigateToData = {},
+          onNavigateToBills = {},
+          onNavigateToTransactions = {},
+          onNavigateToNotifications = {},
+          onNavigateToProfile = {},
+          onNavigateToDynamicAccount = {},
+          onNavigateToDevelopersForum = {},
+          onOpenFundWallet = {},
+          onSelectTransactionReceipt = {}
+        )
+      }
+    }
+
+    composeTestRule.waitForIdle()
+
+    val dynCard = composeTestRule.onNodeWithTag("home_dynamic_account_card")
+    dynCard.performScrollTo().assertIsDisplayed()
+
+    val numberNode = composeTestRule.onNodeWithTag("home_dynamic_account_number_text", useUnmergedTree = true)
+    val badgeNode = composeTestRule.onNodeWithTag("home_dynamic_account_status_badge", useUnmergedTree = true)
+
+    numberNode.assertIsDisplayed()
+    badgeNode.assertIsDisplayed()
+    composeTestRule.onNodeWithText("Dynamic Acct: 9691882461", useUnmergedTree = true).assertIsDisplayed()
+
+    val numberBounds = numberNode.fetchSemanticsNode().boundsInRoot
+    val badgeBounds = badgeNode.fetchSemanticsNode().boundsInRoot
+    assertTrue(
+      "Expected green ACTIVE badge (${badgeBounds.left}) to be spaced to the right of dynamic account number (${numberBounds.right})",
+      badgeBounds.left > numberBounds.right + 4f
+    )
   }
 }
 

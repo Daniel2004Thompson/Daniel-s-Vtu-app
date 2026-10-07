@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.auth.SupabaseProvider
 import com.example.data.model.AirtimeNetworkPricing
 import com.example.data.model.NetworkProvider
+import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Columns
 import kotlinx.coroutines.Dispatchers
@@ -29,24 +30,61 @@ import java.util.concurrent.TimeUnit
 @Serializable
 data class GsubzVtuRequest(
     val serviceID: String,
+    @SerialName("service_id") val serviceId: String = "",
     val amount: JsonPrimitive,
     val phone: String,
     val plan: String = "",
-    val customerID: String = ""
+    @SerialName("plan_id") val planId: String = "",
+    val service: String = "airtime",
+    val network: String = "",
+    @SerialName("user_id") val userId: String = "",
+    val email: String = "",
+    val narration: String = "",
+    val customerID: String = "",
+    @SerialName("customer_id") val customerId: String = "",
+    @SerialName("meter_number") val meterNumber: String = "",
+    val iuc: String = ""
+)
+
+@Serializable
+data class GsubzPlanItem(
+    val displayName: String = "",
+    val value: String = "",
+    val price: String = "",
+    val apiPrice: String = ""
 )
 
 @Serializable
 data class GsubzContentPayload(
+    val requestID: String? = null,
     val transactionID: String? = null,
+    val serviceID: String? = null,
     val status: String? = null,
+    val description: String? = null,
+    val code: String? = null,
     val serviceName: String? = null,
+    val image: String? = null,
     val amountPaid: Double? = null,
     val token: String? = null,
-    val pin: String? = null
+    val pin: String? = null,
+    @SerialName("purchased_code") val purchasedCode: String? = null
+)
+
+@Serializable
+data class GsubzDataEnvelope(
+    val code: String? = null,
+    val status: String? = null,
+    val description: String? = null,
+    @SerialName("api_response") val apiResponse: String? = null,
+    val content: GsubzContentPayload? = null
 )
 
 @Serializable
 data class GsubzVtuResponse(
+    val success: Boolean? = null,
+    @SerialName("user_id") val userId: String? = null,
+    val email: String? = null,
+    val narration: String? = null,
     val code: Int? = null,
     val status: String? = null,
     val description: String? = null,
@@ -56,6 +94,7 @@ data class GsubzVtuResponse(
     val airtimeValue: Double? = null,
     val cashback: Double? = null,
     val charged: Double? = null,
+    @SerialName("gsubz_data") val gsubzData: GsubzDataEnvelope? = null,
     val content: GsubzContentPayload? = null,
     @SerialName("new_balance") val newBalance: Double? = null,
     @SerialName("wallet_balance") val walletBalance: Double? = null,
@@ -89,11 +128,162 @@ object GsubzVtuService {
     private val _airtimePrices = MutableStateFlow<Map<NetworkProvider, AirtimeNetworkPricing>>(emptyMap())
     val airtimePrices: StateFlow<Map<NetworkProvider, AirtimeNetworkPricing>> = _airtimePrices.asStateFlow()
 
+    private val _liveServicePlans = MutableStateFlow<Map<String, List<GsubzPlanItem>>>(emptyMap())
+    val liveServicePlans: StateFlow<Map<String, List<GsubzPlanItem>>> = _liveServicePlans.asStateFlow()
+
+    val vtuManager: VtuManager by lazy {
+        VtuManager()
+    }
+
     @Volatile
     var lastOutgoingRequestBodyString: String = ""
 
     /**
-     * Reads cashback_percent and service_id for each network from the Supabase vtu_prices table
+     * Fetches plans for a specific VTU service strictly from the user's Supabase backend
+     * (`vtu_prices` table and `Gsubz-VTU-Services` edge function at
+     * `https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Gsubz-VTU-Services`),
+     * with no external Gsubz API URLs.
+     */
+    suspend fun fetchLivePlansForService(serviceId: String): List<GsubzPlanItem> = withContext(Dispatchers.IO) {
+        val cleanId = serviceId.trim().lowercase()
+        if (cleanId.isBlank()) return@withContext emptyList()
+
+        val baseUrl = SUPABASE_URL.trimEnd('/')
+        val anonKey = SupabaseProvider.rawKey
+        val activeToken = SupabaseProvider.resolveSessionAccessToken(null)
+        val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
+
+        // 1. Query Supabase vtu_prices table for active plans belonging to this service_id
+        try {
+            val url = "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price,cashback_percent,active&service_id=eq.$cleanId"
+            val req = Request.Builder()
+                .url(url)
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", bearer)
+                .get()
+                .build()
+            httpClient.newCall(req).execute().use { res ->
+                if (res.isSuccessful) {
+                    val body = res.body?.string().orEmpty()
+                    val arr = JSONArray(body)
+                    val items = mutableListOf<GsubzPlanItem>()
+                    for (i in 0 until arr.length()) {
+                        val row = arr.optJSONObject(i) ?: continue
+                        if (row.has("active") && !row.isNull("active") && !row.optBoolean("active", true)) continue
+                        val planCode = row.optString("plan", "").trim()
+                        if (planCode.isBlank()) continue
+                        val priceVal = row.optDouble("price", Double.NaN)
+                        val priceStr = if (!priceVal.isNaN() && priceVal > 0.0) {
+                            if (priceVal % 1.0 == 0.0) priceVal.toLong().toString() else priceVal.toString()
+                        } else {
+                            row.optString("price", "").trim()
+                        }
+                        if (priceStr.isNotBlank()) {
+                            items.add(
+                                GsubzPlanItem(
+                                    displayName = planCode,
+                                    value = planCode,
+                                    price = priceStr
+                                )
+                            )
+                        }
+                    }
+                    if (items.isNotEmpty()) {
+                        _liveServicePlans.value = _liveServicePlans.value + (cleanId to items)
+                        return@withContext items
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error querying Supabase vtu_prices for $cleanId: ${e.message}")
+        }
+
+        // 2. Fallback to catalog plans configured for this Gsubz service ID
+        val catalogItems = com.example.data.model.VtuCatalog.dataPlans
+            .filter { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
+            .map { plan ->
+                val priceStr = if (plan.price % 1.0 == 0.0) plan.price.toLong().toString() else plan.price.toString()
+                GsubzPlanItem(
+                    displayName = "${plan.dataAmount} - ${plan.validity}",
+                    value = plan.planCode,
+                    price = priceStr
+                )
+            }
+            .ifEmpty {
+                com.example.data.model.VtuCatalog.cableProviders
+                    .firstOrNull { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
+                    ?.bouquets
+                    ?.map { b ->
+                        val priceStr = if (b.price % 1.0 == 0.0) b.price.toLong().toString() else b.price.toString()
+                        GsubzPlanItem(
+                            displayName = b.name,
+                            value = b.planCode,
+                            price = priceStr
+                        )
+                    }
+                    .orEmpty()
+            }
+            .ifEmpty {
+                com.example.data.model.VtuCatalog.educationExams
+                    .filter { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
+                    .map { exam ->
+                        val priceStr = if (exam.price % 1.0 == 0.0) exam.price.toLong().toString() else exam.price.toString()
+                        GsubzPlanItem(
+                            displayName = exam.name,
+                            value = exam.planCode,
+                            price = priceStr
+                        )
+                    }
+            }
+
+        if (catalogItems.isNotEmpty()) {
+            _liveServicePlans.value = _liveServicePlans.value + (cleanId to catalogItems)
+            return@withContext catalogItems
+        }
+
+        return@withContext _liveServicePlans.value[cleanId].orEmpty()
+    }
+
+    /**
+     * Parses Gsubz plans response JSON, supporting both `"plans"` (used by Data & Education services)
+     * and `"list"` (used by Cable TV services like DStv, GOtv, StarTimes), as well as both
+     * `"displayName"` and `"display_name"`.
+     */
+    fun parseGsubzPlansJson(rawJson: String): List<GsubzPlanItem> {
+        if (rawJson.isBlank()) return emptyList()
+        val list = mutableListOf<GsubzPlanItem>()
+        try {
+            val root = JSONObject(rawJson)
+            val plansArr = root.optJSONArray("plans")
+                ?: root.optJSONArray("list")
+                ?: return emptyList()
+            for (i in 0 until plansArr.length()) {
+                val item = plansArr.optJSONObject(i) ?: continue
+                val displayName = item.optString("displayName", "")
+                    .ifBlank { item.optString("display_name", "") }
+                    .trim()
+                val value = item.optString("value", "").trim()
+                val price = item.optString("price", "").trim()
+                val apiPrice = item.optString("api_price", "").trim()
+                if (value.isNotBlank()) {
+                    list.add(
+                        GsubzPlanItem(
+                            displayName = displayName.ifBlank { value },
+                            value = value,
+                            price = price,
+                            apiPrice = apiPrice
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse Gsubz plans JSON: ${e.message}")
+        }
+        return list
+    }
+
+    /**
+     * Reads cashback_percent and service_id for each network strictly from the Supabase vtu_prices table
      * (rows where plan = '').
      */
     suspend fun fetchAirtimePricesFromVtuPrices(
@@ -270,18 +460,45 @@ object GsubzVtuService {
     }
 
     /**
+     * Infers the `service` category ("airtime", "data", "cable", "electricity") from serviceID and plan
+     * when not explicitly provided.
+     */
+    fun inferEdgeServiceCategory(serviceID: String, plan: String = ""): String {
+        val lower = serviceID.trim().lowercase()
+        return when {
+            lower.contains("electric") -> "electricity"
+            lower in setOf("waec", "neco", "nabteb", "jamb") -> "education"
+            lower in setOf("dstv", "gotv", "startimes", "showmax") -> "cable"
+            lower.contains("_sme") || lower.contains("_cg") || lower.contains("_data") || lower.contains("_gifting") -> "data"
+            plan.isNotBlank() -> "data"
+            else -> "airtime"
+        }
+    }
+
+    /**
      * Builds the JSON request body for Gsubz-VTU-Services:
      * - "amount" is ALWAYS a JSON NUMBER equal to the value chosen (e.g. 100), never discounted and never a string.
-     * - "serviceID" is the exact service_id from vtu_prices.
+     * - "service_type" and "service" are the edge function service type ("airtime", "data", "cable", "electricity", "education").
+     * - "serviceID" and "service_id" are the exact service_id from vtu_prices / catalog.
+     * - "network" is the target network/provider identifier.
+     * - "user_id" and "email" are the required identity fields for the updated Gsubz-VTU-Services function.
      * - "phone" is the recipient phone number.
-     * - "plan" is empty ("") for airtime.
+     * - "plan" is empty ("") for airtime, and "plan", "plan_id", and "variation_code" are populated for plan-based services.
      */
     fun buildRequestJson(
         serviceID: String,
         amount: Double,
         phone: String,
         plan: String = "",
-        customerID: String = ""
+        customerID: String = "",
+        service: String = "",
+        network: String = "",
+        userId: String? = null,
+        userEmail: String? = null,
+        narration: String? = null,
+        meterNumber: String = "",
+        smartcardNumber: String = "",
+        userToken: String? = null
     ): String {
         val cleanPhone = phone.trim()
         val amountNumberPrimitive: JsonPrimitive = if (amount % 1.0 == 0.0) {
@@ -290,17 +507,66 @@ object GsubzVtuService {
             JsonPrimitive(amount)
         }
 
+        val resolvedService = service.trim().lowercase().ifBlank {
+            inferEdgeServiceCategory(serviceID, plan)
+        }
+        val resolvedNetwork = network.trim().lowercase().ifBlank {
+            serviceID.trim().lowercase()
+        }
+
+        val sessionUser = try {
+            SupabaseProvider.client?.auth?.currentUserOrNull()
+        } catch (_: Throwable) {
+            null
+        }
+        val resolvedUserId = userId?.trim()?.takeIf { it.isNotBlank() }
+            ?: sessionUser?.id?.takeIf { it.isNotBlank() }
+            ?: com.example.util.JwtUtils.getUserIdFromJwt(userToken)
+            ?: "00000000-0000-0000-0000-000000000000"
+        val resolvedEmail = userEmail?.trim()?.takeIf { it.isNotBlank() }
+            ?: sessionUser?.email?.takeIf { it.isNotBlank() }
+            ?: com.example.util.JwtUtils.getEmailFromJwt(userToken)
+            ?: "user@danielvtu.app"
+
+        val resolvedServiceId = serviceID.trim().lowercase().ifBlank { resolvedNetwork }
+        val effectivePlan = if (resolvedService == "electricity" && plan.isBlank()) "prepaid" else plan
+
         return buildJsonObject {
+            put("user_id", JsonPrimitive(resolvedUserId))
+            put("email", JsonPrimitive(resolvedEmail))
+            put("service_type", JsonPrimitive(resolvedService))
+            put("service", JsonPrimitive(resolvedService))
+            put("service_id", JsonPrimitive(resolvedServiceId))
+            put("network", JsonPrimitive(resolvedNetwork))
             put("serviceID", JsonPrimitive(serviceID))
             put("amount", amountNumberPrimitive)
             put("phone", JsonPrimitive(cleanPhone))
-            if (plan.isNotBlank()) {
-                put("plan", JsonPrimitive(plan))
-                if (customerID.isNotBlank()) {
-                    put("customerID", JsonPrimitive(customerID))
-                }
+            if (!narration.isNullOrBlank()) {
+                put("narration", JsonPrimitive(narration.trim()))
+            }
+            if (effectivePlan.isNotBlank()) {
+                put("plan", JsonPrimitive(effectivePlan))
+                put("plan_id", JsonPrimitive(effectivePlan))
+                put("variation_code", JsonPrimitive(effectivePlan))
             } else {
                 put("plan", JsonPrimitive(""))
+            }
+            if (resolvedService == "electricity") {
+                put("meter_type", JsonPrimitive(effectivePlan.ifBlank { "prepaid" }))
+            }
+            val effectiveCustomer = customerID.trim().ifBlank {
+                meterNumber.trim().ifBlank { smartcardNumber.trim() }
+            }
+            if (effectiveCustomer.isNotBlank()) {
+                put("customer_id", JsonPrimitive(effectiveCustomer))
+                put("customerID", JsonPrimitive(effectiveCustomer))
+            }
+            if (meterNumber.isNotBlank()) {
+                put("meter_number", JsonPrimitive(meterNumber.trim()))
+            }
+            if (smartcardNumber.isNotBlank()) {
+                put("iuc", JsonPrimitive(smartcardNumber.trim()))
+                put("smartcard_number", JsonPrimitive(smartcardNumber.trim()))
             }
         }.toString()
     }
@@ -315,6 +581,11 @@ object GsubzVtuService {
         amount: Double,
         phone: String,
         customerID: String = "",
+        service: String = "",
+        network: String = "",
+        meterNumber: String = "",
+        smartcardNumber: String = "",
+        narration: String? = null,
         userId: String? = null,
         userEmail: String? = null,
         userToken: String? = null,
@@ -328,7 +599,15 @@ object GsubzVtuService {
             amount = amount,
             phone = cleanPhone,
             plan = plan,
-            customerID = customerID
+            customerID = customerID,
+            service = service,
+            network = network,
+            userId = userId,
+            userEmail = userEmail,
+            narration = narration,
+            meterNumber = meterNumber,
+            smartcardNumber = smartcardNumber,
+            userToken = activeToken
         )
         lastOutgoingRequestBodyString = requestJsonString
 
@@ -365,6 +644,22 @@ object GsubzVtuService {
         return obj.optString(key, "").trim().toDoubleOrNull()
     }
 
+    private fun formatGsubzDescription(rawDescription: String, apiResponse: String = ""): String {
+        val cleanDesc = rawDescription.trim()
+        val cleanApi = apiResponse.trim()
+        return when {
+            cleanDesc.equals("INSUFFICIENT_BALANCE", ignoreCase = true) -> "Insufficient wallet balance"
+            cleanDesc.equals("INVALID_PLAN", ignoreCase = true) -> {
+                if (cleanApi.isNotBlank()) cleanApi else "This service or plan is not available"
+            }
+            cleanDesc.equals("SERVICE_CANNOT_BE_FOUND", ignoreCase = true) -> "This service or plan is not available"
+            cleanDesc.equals("AMOUNT_BELOW_MIN", ignoreCase = true) -> "Entered amount is below the minimum allowed for this service"
+            cleanDesc.isNotBlank() -> cleanDesc
+            cleanApi.isNotBlank() -> cleanApi
+            else -> ""
+        }
+    }
+
     fun parseAndFinalizeGsubzResponse(
         rawBody: String,
         httpStatusCode: Int,
@@ -372,10 +667,17 @@ object GsubzVtuService {
     ): GsubzOrderResult {
         try {
             val json = JSONObject(rawBody)
-            val dataObj = json.optJSONObject("data") ?: json
-            val contentObj = dataObj.optJSONObject("content") ?: json.optJSONObject("content")
+            val gsubzDataObj = json.optJSONObject("gsubz_data")
+            val dataObj = gsubzDataObj ?: json.optJSONObject("data") ?: json
+            val contentObj = gsubzDataObj?.optJSONObject("content")
+                ?: dataObj.optJSONObject("content")
+                ?: json.optJSONObject("content")
+
+            val requestId = contentObj?.optString("requestID")?.takeIf { it.isNotBlank() && it != "null" }
+                ?: dataObj.optString("requestID").takeIf { it.isNotBlank() && it != "null" }
 
             val rawTxId = contentObj?.optString("transactionID")?.takeIf { it.isNotBlank() && it != "null" }
+                ?: requestId
                 ?: dataObj.optString("transactionID").takeIf { it.isNotBlank() && it != "null" }
                 ?: json.optString("transactionID").takeIf { it.isNotBlank() && it != "null" }
                 ?: dataObj.optString("reference").takeIf { it.isNotBlank() && it != "null" }
@@ -383,14 +685,26 @@ object GsubzVtuService {
                 ?: "VTU-${System.currentTimeMillis()}"
             val txId = rawTxId.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
 
+            val serviceName = contentObj?.optString("serviceName")?.takeIf { it.isNotBlank() && it != "null" }
+            val rawImage = contentObj?.optString("image")?.takeIf { it.isNotBlank() && it != "null" }
+            val serviceImageUrl = when {
+                rawImage == null -> null
+                rawImage.startsWith("//") -> "https:$rawImage"
+                else -> rawImage
+            }
+            val narration = json.optString("narration", "").takeIf { it.isNotBlank() && it != "null" }
+            val apiResponse = gsubzDataObj?.optString("api_response", "")?.takeIf { it.isNotBlank() && it != "null" }
+
             // Requirement 5: Show the "error" text from the response,
             // e.g. "Insufficient wallet balance" or "This service or plan is not available".
             val explicitError = json.optString("error", "").takeIf { it.isNotBlank() && it != "null" }
                 ?: dataObj.optString("error", "").takeIf { it.isNotBlank() && it != "null" }
 
             val statusStr = dataObj.optString("status", json.optString("status", "")).trim()
-            val contentStatus = contentObj?.optString("status", "") ?: ""
-            val codeVal = dataObj.optInt("code", json.optInt("code", httpStatusCode))
+            val contentStatus = contentObj?.optString("status", "")?.trim() ?: ""
+            val codeVal = dataObj.optString("code", "").trim().toIntOrNull()
+                ?: contentObj?.optString("code", "")?.trim()?.toIntOrNull()
+                ?: dataObj.optInt("code", json.optInt("code", httpStatusCode))
 
             val isPending = (httpStatusCode == 202) ||
                 json.optBoolean("pending", false) ||
@@ -418,12 +732,21 @@ object GsubzVtuService {
                 ?: optDoubleOrNull(contentObj, "amountPaid")
                 ?: optDoubleOrNull(dataObj, "amountPaid")
 
+            val serverNewBalance = optDoubleOrNull(json, "new_balance")
+                ?: optDoubleOrNull(json, "wallet_balance")
+                ?: optDoubleOrNull(dataObj, "new_balance")
+                ?: optDoubleOrNull(dataObj, "wallet_balance")
+
             val tokenVal = contentObj?.optString("token")?.takeIf { it.isNotBlank() && it != "null" }
                 ?: contentObj?.optString("pin")?.takeIf { it.isNotBlank() && it != "null" }
+                ?: contentObj?.optString("purchased_code")?.takeIf { it.isNotBlank() && it != "null" }
+                ?: contentObj?.optString("mainToken")?.takeIf { it.isNotBlank() && it != "null" }
                 ?: dataObj.optString("token").takeIf { it.isNotBlank() && it != "null" }
                 ?: dataObj.optString("pin").takeIf { it.isNotBlank() && it != "null" }
+                ?: dataObj.optString("purchased_code").takeIf { it.isNotBlank() && it != "null" }
                 ?: json.optString("token").takeIf { it.isNotBlank() && it != "null" }
                 ?: json.optString("pin").takeIf { it.isNotBlank() && it != "null" }
+                ?: json.optString("purchased_code").takeIf { it.isNotBlank() && it != "null" }
 
             if (isPending && explicitError == null) {
                 val effectivePaid = serverCharged ?: requestedAmount
@@ -437,7 +760,13 @@ object GsubzVtuService {
                     airtimeValue = serverAirtimeValue ?: requestedAmount,
                     cashback = serverCashback ?: 0.0,
                     charged = serverCharged ?: effectivePaid,
+                    newBalance = serverNewBalance,
                     tokenOrPin = tokenVal,
+                    serviceName = serviceName,
+                    serviceImageUrl = serviceImageUrl,
+                    narration = narration,
+                    apiResponse = apiResponse,
+                    requestId = requestId,
                     isLiveEdge = true
                 )
             }
@@ -453,12 +782,28 @@ object GsubzVtuService {
                     airtimeValue = serverAirtimeValue,
                     cashback = serverCashback,
                     charged = serverCharged,
+                    newBalance = serverNewBalance,
+                    serviceName = serviceName,
+                    serviceImageUrl = serviceImageUrl,
+                    narration = narration,
+                    apiResponse = apiResponse,
+                    requestId = requestId,
                     isLiveEdge = true
                 )
             }
 
-            val isSuccess = (httpStatusCode in 200..299) && (
-                json.optBoolean("success", false) ||
+            val hasExplicitSuccessFlag = json.has("success") && !json.isNull("success")
+            val explicitSuccessFlag = if (hasExplicitSuccessFlag) json.optBoolean("success", false) else null
+
+            val isExplicitlyFailed = (explicitSuccessFlag == false) ||
+                statusStr.contains("FAIL", ignoreCase = true) ||
+                statusStr.contains("ERROR", ignoreCase = true) ||
+                contentStatus.contains("FAIL", ignoreCase = true) ||
+                contentStatus.contains("ERROR", ignoreCase = true) ||
+                codeVal >= 400
+
+            val isSuccess = (httpStatusCode in 200..299) && !isExplicitlyFailed && (
+                explicitSuccessFlag == true ||
                     dataObj.optBoolean("success", false) ||
                     statusStr.equals("TRANSACTION_SUCCESSFUL", ignoreCase = true) ||
                     statusStr.equals("SUCCESSFUL", ignoreCase = true) ||
@@ -471,16 +816,19 @@ object GsubzVtuService {
                     (codeVal in 200..299 && !statusStr.contains("FAIL", ignoreCase = true) && !statusStr.contains("ERROR", ignoreCase = true))
                 )
 
-            val description = dataObj.optString(
+            val rawDescription = dataObj.optString(
                 "description",
-                json.optString(
-                    "description",
-                    dataObj.optString("message", json.optString("message", ""))
-                )
+                contentObj?.optString("description", "")?.takeIf { it.isNotBlank() }
+                    ?: json.optString(
+                        "description",
+                        dataObj.optString("message", json.optString("message", ""))
+                    )
             ).trim()
 
+            val formattedDescription = formatGsubzDescription(rawDescription, apiResponse.orEmpty())
+
             if (!isSuccess) {
-                val errorMsg = description.ifBlank { "Transaction failed" }
+                val errorMsg = formattedDescription.ifBlank { "Transaction failed" }
                 return GsubzOrderResult(
                     isSuccess = false,
                     isPending = false,
@@ -491,12 +839,18 @@ object GsubzVtuService {
                     airtimeValue = serverAirtimeValue,
                     cashback = serverCashback,
                     charged = serverCharged,
+                    newBalance = serverNewBalance,
+                    serviceName = serviceName,
+                    serviceImageUrl = serviceImageUrl,
+                    narration = narration,
+                    apiResponse = apiResponse,
+                    requestId = requestId,
                     isLiveEdge = true
                 )
             }
 
             val effectivePaid = serverCharged ?: requestedAmount
-            val cleanMessage = description
+            val cleanMessage = formattedDescription
                 .replace(Regex("via\\s+Gsubz-VTU-Services", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("\\(?Gsubz\\s*Live\\)?", RegexOption.IGNORE_CASE), "")
                 .trim()
@@ -512,7 +866,13 @@ object GsubzVtuService {
                 airtimeValue = serverAirtimeValue ?: requestedAmount,
                 cashback = serverCashback ?: 0.0,
                 charged = serverCharged ?: effectivePaid,
+                newBalance = serverNewBalance,
                 tokenOrPin = tokenVal,
+                serviceName = serviceName,
+                serviceImageUrl = serviceImageUrl,
+                narration = narration,
+                apiResponse = apiResponse,
+                requestId = requestId,
                 isLiveEdge = true
             )
         } catch (e: Exception) {

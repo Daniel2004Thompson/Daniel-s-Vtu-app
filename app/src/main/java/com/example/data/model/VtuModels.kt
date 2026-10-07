@@ -124,7 +124,14 @@ data class DataPlan(
     val dataAmount: String,
     val validity: String,
     val price: Double,
-    val originalPrice: Double? = null
+    val originalPrice: Double? = null,
+    val planCode: String = id,
+    val gsubzServiceId: String = when (network) {
+        NetworkProvider.MTN -> if (category == DataCategory.SME) "mtn_sme" else "mtn_gifting"
+        NetworkProvider.AIRTEL -> if (category == DataCategory.SME) "airtel_sme" else "airtel_gifting"
+        NetworkProvider.GLO -> if (category == DataCategory.SME) "glo_sme" else "glo_data"
+        NetworkProvider.NINEMOBILE -> "etisalat_data"
+    }
 )
 
 enum class ServiceType(val title: String, val iconName: String) {
@@ -143,7 +150,8 @@ data class ElectricityProvider(
     val stateCoverage: String,
     @DrawableRes val logoRes: Int,
     val brandColor: Color = Color(0xFFF59E0B),
-    val minAmount: Double = 1000.0
+    val minAmount: Double = 1000.0,
+    val gsubzServiceId: String = "$id-electric"
 )
 
 data class CableProvider(
@@ -152,14 +160,16 @@ data class CableProvider(
     @DrawableRes val logoRes: Int,
     val brandColor: Color = Color(0xFFE11D48),
     val tagline: String = "",
-    val bouquets: List<CableBouquet>
+    val bouquets: List<CableBouquet>,
+    val gsubzServiceId: String = id
 )
 
 data class CableBouquet(
     val id: String,
     val name: String,
     val price: Double,
-    val channelsCount: Int
+    val channelsCount: Int,
+    val planCode: String = id
 )
 
 data class EducationExam(
@@ -169,7 +179,9 @@ data class EducationExam(
     val description: String,
     val price: Double,
     @DrawableRes val logoRes: Int,
-    val brandColor: Color = Color(0xFF7C3AED)
+    val brandColor: Color = Color(0xFF7C3AED),
+    val gsubzServiceId: String = shortName.lowercase(),
+    val planCode: String = shortName.uppercase()
 )
 
 data class InAppNotification(
@@ -186,4 +198,3 @@ data class AirtimeNetworkPricing(
     val serviceId: String,
     val cashbackPercent: Double
 )
-

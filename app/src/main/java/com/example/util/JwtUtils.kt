@@ -78,4 +78,29 @@ object JwtUtils {
             null
         }
     }
+
+    /**
+     * Extracts the authenticated user's email claim from a Supabase JWT if present.
+     */
+    fun getEmailFromJwt(jwt: String?): String? {
+        if (jwt.isNullOrBlank()) return null
+        val cleanJwt = jwt.removePrefix("Bearer ").removePrefix("bearer ").trim()
+        val parts = cleanJwt.split(".")
+        if (parts.size < 2) return null
+        return try {
+            val payloadBytes = Base64.decode(
+                parts[1],
+                Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+            )
+            val json = JSONObject(String(payloadBytes, Charsets.UTF_8))
+            val directEmail = json.optString("email", "").trim()
+            if (directEmail.isNotBlank() && directEmail.contains("@")) {
+                return directEmail
+            }
+            val metaEmail = json.optJSONObject("user_metadata")?.optString("email", "")?.trim().orEmpty()
+            metaEmail.takeIf { it.isNotBlank() && it.contains("@") }
+        } catch (_: Exception) {
+            null
+        }
+    }
 }

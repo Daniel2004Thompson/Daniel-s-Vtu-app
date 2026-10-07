@@ -51,11 +51,14 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.example.data.remote.GsubzVtuService
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -433,10 +436,12 @@ fun ElectricityTabContent(
                     title = "${selectedDisco.shortName} Electricity (${if (isPrepaid) "Prepaid" else "Postpaid"})",
                     serviceType = "ELECTRICITY",
                     provider = selectedDisco.name,
-                    recipient = meterNumber,
+                    recipient = meterNumber.trim(),
                     amount = parsedAmount,
                     customerName = verifiedCustomerName ?: "",
-                    meterNumber = meterNumber,
+                    planId = if (isPrepaid) "prepaid" else "postpaid",
+                    meterNumber = meterNumber.trim(),
+                    serviceId = selectedDisco.gsubzServiceId,
                     details = if (isPrepaid) "Prepaid Meter Token Generator" else "Postpaid Bill Payment"
                 )
                 onRequestPayment(pending)
@@ -482,10 +487,25 @@ fun CableTvTabContent(
     onRequestPayment: (PendingTransaction) -> Unit
 ) {
     var selectedProvider by remember { mutableStateOf(VtuCatalog.cableProviders.first()) }
-    var selectedBouquet by remember { mutableStateOf(selectedProvider.bouquets.first()) }
+    val livePlansByService by GsubzVtuService.liveServicePlans.collectAsState()
+    val effectiveBouquets = remember(selectedProvider, livePlansByService) {
+        val liveList = livePlansByService[selectedProvider.gsubzServiceId.lowercase()].orEmpty()
+        selectedProvider.bouquets.map { b ->
+            val liveMatch = liveList.firstOrNull { it.value.equals(b.planCode, ignoreCase = true) }
+            val livePrice = liveMatch?.price?.toDoubleOrNull()
+            if (livePrice != null && livePrice > 0.0) b.copy(price = livePrice) else b
+        }
+    }
+    var selectedBouquet by remember(selectedProvider.id, effectiveBouquets) {
+        mutableStateOf(effectiveBouquets.first())
+    }
     var smartcardNumber by remember { mutableStateOf("") }
     var verifiedCustomer by remember { mutableStateOf<String?>(null) }
     var bouquetDropdownExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(selectedProvider.gsubzServiceId) {
+        GsubzVtuService.fetchLivePlansForService(selectedProvider.gsubzServiceId)
+    }
 
     Column(
         modifier = Modifier
@@ -493,11 +513,11 @@ fun CableTvTabContent(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Provider Selection with Logos (DStv, GOtv, StarTimes)
+        // Provider Selection with Logos (DStv, GOtv, StarTimes, Showmax)
         Column {
             Text("Select Cable Provider", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 VtuCatalog.cableProviders.forEach { provider ->
                     val isSelected = selectedProvider.id == provider.id
                     Card(
@@ -522,19 +542,19 @@ fun CableTvTabContent(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 10.dp, horizontal = 8.dp),
+                                .padding(vertical = 8.dp, horizontal = 6.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .width(72.dp)
-                                    .height(56.dp)
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .fillMaxWidth()
+                                    .height(50.dp)
+                                    .clip(RoundedCornerShape(10.dp))
                                     .background(Color.White)
                                     .border(
                                         width = 1.dp,
                                         color = provider.brandColor.copy(alpha = 0.3f),
-                                        shape = RoundedCornerShape(12.dp)
+                                        shape = RoundedCornerShape(10.dp)
                                     )
                                     .padding(2.dp),
                                 contentAlignment = Alignment.Center
@@ -545,7 +565,7 @@ fun CableTvTabContent(
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .clip(RoundedCornerShape(9.dp))
+                                        .clip(RoundedCornerShape(8.dp))
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -553,16 +573,17 @@ fun CableTvTabContent(
                                 Text(
                                     text = provider.name,
                                     fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
                                     color = if (isSelected) provider.brandColor else MaterialTheme.colorScheme.onSurface
                                 )
                                 if (isSelected) {
-                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
                                     Icon(
                                         imageVector = Icons.Default.CheckCircle,
                                         contentDescription = "Selected",
                                         tint = provider.brandColor,
-                                        modifier = Modifier.size(14.dp)
+                                        modifier = Modifier.size(12.dp)
                                     )
                                 }
                             }
@@ -660,7 +681,7 @@ fun CableTvTabContent(
                     expanded = bouquetDropdownExpanded,
                     onDismissRequest = { bouquetDropdownExpanded = false }
                 ) {
-                    selectedProvider.bouquets.forEach { bouquet ->
+                    effectiveBouquets.forEach { bouquet ->
                         DropdownMenuItem(
                             text = {
                                 Row(
@@ -704,7 +725,7 @@ fun CableTvTabContent(
             }
 
             // Bouquet Price Cards with Provider Logo
-            selectedProvider.bouquets.forEach { bouquet ->
+            effectiveBouquets.forEach { bouquet ->
                 val isBouquetSelected = selectedBouquet.id == bouquet.id
                 Card(
                     modifier = Modifier
@@ -794,11 +815,12 @@ fun CableTvTabContent(
                     title = "${selectedProvider.name} ${selectedBouquet.name}",
                     serviceType = "CABLE_TV",
                     provider = selectedProvider.name,
-                    recipient = smartcardNumber,
+                    recipient = smartcardNumber.trim(),
                     amount = selectedBouquet.price,
                     customerName = verifiedCustomer ?: "",
-                    planId = selectedBouquet.id,
-                    smartcardNumber = smartcardNumber,
+                    planId = selectedBouquet.planCode.ifBlank { selectedBouquet.id },
+                    smartcardNumber = smartcardNumber.trim(),
+                    serviceId = selectedProvider.gsubzServiceId,
                     details = "${selectedBouquet.name} (1 Month)"
                 )
                 onRequestPayment(pending)
@@ -842,9 +864,31 @@ fun CableTvTabContent(
 fun EducationTabContent(
     onRequestPayment: (PendingTransaction) -> Unit
 ) {
-    var selectedExam by remember { mutableStateOf(VtuCatalog.educationExams.first()) }
+    val livePlansByService by GsubzVtuService.liveServicePlans.collectAsState()
+    val effectiveExams = remember(livePlansByService) {
+        VtuCatalog.educationExams.map { exam ->
+            val liveList = livePlansByService[exam.gsubzServiceId.lowercase()].orEmpty()
+            val liveMatch = liveList.firstOrNull { it.value.equals(exam.planCode, ignoreCase = true) }
+                ?: liveList.firstOrNull()
+            val livePrice = liveMatch?.price?.toDoubleOrNull()
+            if (livePrice != null && livePrice > 0.0) {
+                exam.copy(
+                    price = livePrice,
+                    planCode = liveMatch.value.ifBlank { exam.planCode }
+                )
+            } else {
+                exam
+            }
+        }
+    }
+    var selectedExamId by remember { mutableStateOf(VtuCatalog.educationExams.first().id) }
+    val selectedExam = effectiveExams.firstOrNull { it.id == selectedExamId } ?: effectiveExams.first()
     var candidatePhone by remember { mutableStateOf("") }
     var candidateName by remember { mutableStateOf("") }
+
+    LaunchedEffect(selectedExam.gsubzServiceId) {
+        GsubzVtuService.fetchLivePlansForService(selectedExam.gsubzServiceId)
+    }
 
     Column(
         modifier = Modifier
@@ -863,7 +907,7 @@ fun EducationTabContent(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            VtuCatalog.educationExams.forEach { exam ->
+            effectiveExams.forEach { exam ->
                 val isSelected = selectedExam.id == exam.id
                 Card(
                     modifier = Modifier
@@ -874,7 +918,7 @@ fun EducationTabContent(
                             color = if (isSelected) exam.brandColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                             shape = RoundedCornerShape(14.dp)
                         )
-                        .clickable { selectedExam = exam }
+                        .clickable { selectedExamId = exam.id }
                         .testTag("exam_chip_${exam.shortName.lowercase()}"),
                     colors = CardDefaults.cardColors(
                         containerColor = if (isSelected) exam.brandColor.copy(alpha = 0.12f)
@@ -915,7 +959,7 @@ fun EducationTabContent(
         }
 
         // Exam Institute Price Token Cards with Corresponding Logos
-        VtuCatalog.educationExams.forEach { exam ->
+        effectiveExams.forEach { exam ->
             val isSelected = selectedExam.id == exam.id
             Card(
                 modifier = Modifier
@@ -926,7 +970,7 @@ fun EducationTabContent(
                         color = if (isSelected) exam.brandColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                         shape = RoundedCornerShape(16.dp)
                     )
-                    .clickable { selectedExam = exam }
+                    .clickable { selectedExamId = exam.id }
                     .testTag("exam_card_${exam.id}"),
                 colors = CardDefaults.cardColors(
                     containerColor = if (isSelected) exam.brandColor.copy(alpha = 0.09f)
@@ -1051,9 +1095,11 @@ fun EducationTabContent(
                     title = selectedExam.name,
                     serviceType = "EDUCATION",
                     provider = selectedExam.shortName,
-                    recipient = candidatePhone,
+                    recipient = candidatePhone.trim(),
                     amount = selectedExam.price,
                     customerName = candidateName,
+                    planId = selectedExam.planCode.ifBlank { selectedExam.gsubzServiceId },
+                    serviceId = selectedExam.gsubzServiceId,
                     details = "e-PIN & Serial for ${selectedExam.name}"
                 )
                 onRequestPayment(pending)

@@ -1028,12 +1028,22 @@ class VtuRepository(
         planId: String? = null,
         meterNumber: String? = null,
         smartcardNumber: String? = null,
-        serviceIdOverride: String? = null
+        serviceIdOverride: String? = null,
+        narration: String? = null
     ): GsubzOrderResult {
         val current = _currentUser.value
         val validToken = resolveValidAccessToken()
+        val resolvedUserId = current?.id?.takeIf { it.isNotBlank() }
+            ?: prefs.getString(KEY_USER_ID, null)?.takeIf { it.isNotBlank() }
+            ?: com.example.util.JwtUtils.getUserIdFromJwt(validToken)
+        val resolvedEmail = current?.email?.takeIf { it.isNotBlank() }
+            ?: prefs.getString(KEY_USER_EMAIL, null)?.takeIf { it.isNotBlank() }
+            ?: com.example.util.JwtUtils.getEmailFromJwt(validToken)
+        val resolvedNarration = narration?.takeIf { it.isNotBlank() }
+            ?: current?.fullName?.takeIf { it.isNotBlank() }
+
         return try {
-            gsubzClient.executeVtuOrder(
+            val result = gsubzClient.executeVtuOrder(
                 serviceType = serviceType,
                 provider = provider,
                 recipient = recipient,
@@ -1042,10 +1052,15 @@ class VtuRepository(
                 meterNumber = meterNumber,
                 smartcardNumber = smartcardNumber,
                 serviceIdOverride = serviceIdOverride,
+                narration = resolvedNarration,
                 userToken = validToken,
-                userId = current?.id,
-                userEmail = current?.email
+                userId = resolvedUserId,
+                userEmail = resolvedEmail
             )
+            if (result.newBalance != null && result.newBalance >= 0.0) {
+                setWalletBalance(result.newBalance)
+            }
+            result
         } finally {
             // Requirement 4: Never subtract the balance locally.
             // After every purchase (success, pending or failed), re-fetch wallet_balance from the server
@@ -1053,6 +1068,9 @@ class VtuRepository(
             syncRemoteProfileBalance()
         }
     }
+
+    suspend fun fetchLiveServicePlans(serviceId: String) =
+        com.example.data.remote.GsubzVtuService.fetchLivePlansForService(serviceId)
 
     // --- FLUTTERWAVE PAYMENT EDGE SERVICE INTEGRATION ---
     suspend fun initializeFlutterwaveFunding(
@@ -1143,11 +1161,18 @@ class VtuRepository(
 
     suspend fun logout(): Boolean {
         val token = _accessToken.value
-        val remoteSuccess = authClient.logout(token)
+        clearSession()
+        val remoteSuccess = try {
+            authClient.logout(token)
+        } catch (_: Throwable) {
+            false
+        }
         try {
             authRepo.signOut()
         } catch (_: Throwable) {}
-        clearSession()
+        if (_isLoggedIn.value) {
+            clearSession()
+        }
         return remoteSuccess
     }
 
@@ -1802,6 +1827,7 @@ class VtuRepository(
      * Also checks public.virtual_accounts and public.wallet_balances for user_id = userId and persists to the user's dedicated Room database.
      */
     suspend fun syncRemoteProfileBalance() {
+        if (!_isLoggedIn.value) return
         val user = _currentUser.value
         val supabase = SupabaseInstance.client
         val authUser = try { supabase?.auth?.currentUserOrNull() } catch (_: Throwable) { null }

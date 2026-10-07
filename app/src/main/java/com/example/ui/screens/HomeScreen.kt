@@ -866,12 +866,12 @@ fun HomeScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(38.dp)
+                            .size(34.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF00B875)),
                         contentAlignment = Alignment.Center
@@ -880,24 +880,65 @@ fun HomeScreen(
                             imageVector = Icons.Default.Bolt,
                             contentDescription = "Dynamic Virtual Account",
                             tint = Color.White,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        var dynTextScale by remember(dynNumber, hasDynamicAcc) { mutableStateOf(1f) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
                             Text(
-                                text = if (hasDynamicAcc) "Dynamic Acct: $dynNumber" else "Create Dynamic Account",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurface,
+                                text = androidx.compose.ui.text.buildAnnotatedString {
+                                    if (hasDynamicAcc) {
+                                        pushStyle(
+                                            androidx.compose.ui.text.SpanStyle(
+                                                fontSize = (11.5f * dynTextScale).sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        )
+                                        append("Dynamic Acct: ")
+                                        pop()
+                                        pushStyle(
+                                            androidx.compose.ui.text.SpanStyle(
+                                                fontSize = (13.5f * dynTextScale).sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        )
+                                        append(dynNumber)
+                                        pop()
+                                    } else {
+                                        pushStyle(
+                                            androidx.compose.ui.text.SpanStyle(
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        )
+                                        append("Create Dynamic Account")
+                                        pop()
+                                    }
+                                },
                                 maxLines = 1,
                                 softWrap = false,
-                                modifier = Modifier.weight(1f, fill = false)
+                                onTextLayout = { layoutResult ->
+                                    if (layoutResult.didOverflowWidth && dynTextScale > 0.72f) {
+                                        dynTextScale *= 0.9f
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .testTag("home_dynamic_account_number_text")
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
                             Surface(
                                 color = Color(0xFF00B875),
-                                shape = RoundedCornerShape(4.dp)
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.testTag("home_dynamic_account_status_badge")
                             ) {
                                 Text(
                                     text = if (hasDynamicAcc) "ACTIVE" else "INSTANT",
@@ -906,21 +947,23 @@ fun HomeScreen(
                                     color = Color.White,
                                     maxLines = 1,
                                     softWrap = false,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
                         }
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = if (hasDynamicAcc) "$dynBank • Direct Bank transfer • Live Auto sync" else "Instant virtual bank account • Direct Bank transfer • Auto sync",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Spacer(modifier = Modifier.width(6.dp))
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                         contentDescription = "Go to Dynamic Account",
                         tint = Color(0xFF00B875),
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }

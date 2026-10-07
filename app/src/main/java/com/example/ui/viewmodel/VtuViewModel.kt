@@ -1362,6 +1362,10 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
             val serverCashback = gsubzResult.cashback ?: if (isAirtime) 0.0 else pending.discount
             val serverCharged = gsubzResult.charged ?: gsubzResult.amountPaid
 
+            if (gsubzResult.newBalance != null && gsubzResult.newBalance >= 0.0) {
+                repository.setWalletBalance(gsubzResult.newBalance)
+            }
+
             val tokenOrDetails = when {
                 isAirtime -> {
                     val baseStatusText = if (gsubzResult.isPending) {
@@ -1371,13 +1375,22 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     "$baseStatusText [SERVER_RECEIPT:airtime=$serverAirtimeValue,cashback=$serverCashback,charged=$serverCharged]"
                 }
-                pending.serviceType == "ELECTRICITY" -> (gsubzResult.tokenOrPin ?: "Token: ${generateMeterToken()}")
-                    .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
-                    .trim()
+                pending.serviceType == "ELECTRICITY" -> {
+                    val rawToken = (gsubzResult.tokenOrPin ?: "Token: ${generateMeterToken()}")
+                        .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
+                        .trim()
+                    if (rawToken.startsWith("Token", ignoreCase = true)) rawToken else "Token: $rawToken"
+                }
                 pending.serviceType == "EDUCATION" -> (gsubzResult.tokenOrPin ?: generateExamPin())
                     .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
                     .trim()
-                pending.serviceType == "CABLE_TV" -> "Bouquet Activated • IUC: ${pending.recipient} • Successful"
+                pending.serviceType == "CABLE_TV" -> {
+                    val cleanDetails = pending.details
+                        ?.replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                    if (cleanDetails != null) "$cleanDetails • Successful" else "Bouquet Activated • IUC: ${pending.recipient} • Successful"
+                }
                 pending.serviceType == "DATA" -> {
                     val cleanPlan = pending.details
                         ?.replace(Regex("\\(\\s*Gsubz\\s*Live\\s*\\)|Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
@@ -1396,7 +1409,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 provider = pending.provider,
                 recipient = pending.recipient,
                 amount = if (isAirtime) serverAirtimeValue else pending.amount,
-                discountOrCashback = if (isAirtime) serverCashback else pending.discount,
+                discountOrCashback = serverCashback,
                 status = txStatus,
                 timestamp = System.currentTimeMillis(),
                 tokenOrDetails = tokenOrDetails,

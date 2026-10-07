@@ -290,8 +290,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
         val cur = navController.currentDestination?.route
         if (isLoggedIn) {
             if (cur == NavigationRoutes.LOGIN ||
-                cur == NavigationRoutes.SIGN_UP ||
-                cur == NavigationRoutes.LOGOUT
+                cur == NavigationRoutes.SIGN_UP
             ) {
                 navigateToHomeSafe()
             }
