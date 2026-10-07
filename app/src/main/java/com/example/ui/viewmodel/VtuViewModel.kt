@@ -1257,6 +1257,17 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
         _pendingTransactionForAuth.value = pending
     }
 
+    fun authorizePendingWithBiometric(onComplete: () -> Unit = {}) {
+        val pending = _pendingTransactionForAuth.value ?: return
+        _pendingTransactionForAuth.value = null
+        _pinDialogError.value = null
+        if (pending.serviceType.equals("WITHDRAWAL", ignoreCase = true)) {
+            executeWithdrawalInternal(pending, onComplete)
+        } else {
+            executeTransactionInternal(pending, onComplete)
+        }
+    }
+
     /**
      * Verifies the 4-digit PIN via Supabase RPC verify_transaction_pin before every purchase
      * (airtime, data, cable TV, electricity, exam pins) and every withdrawal.

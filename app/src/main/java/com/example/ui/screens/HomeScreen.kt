@@ -504,25 +504,27 @@ fun HomeScreen(
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
-                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = "Available Balance",
                                         style = MaterialTheme.typography.bodyMedium.copy(
                                             fontWeight = FontWeight.Medium,
-                                            fontSize = 14.sp
+                                            fontSize = 13.sp
                                         ),
-                                        color = Color(0xFFD5E6E1)
+                                        color = Color(0xFFD5E6E1),
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
-                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Spacer(modifier = Modifier.width(2.dp))
                                     IconButton(
                                         onClick = { isBalanceVisible = !isBalanceVisible },
-                                        modifier = Modifier.size(26.dp)
+                                        modifier = Modifier.size(24.dp)
                                     ) {
                                         Icon(
                                             imageVector = if (isBalanceVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                             contentDescription = "Toggle Balance",
                                             tint = Color.White.copy(alpha = 0.85f),
-                                            modifier = Modifier.size(18.dp)
+                                            modifier = Modifier.size(17.dp)
                                         )
                                     }
                                     IconButton(
@@ -541,7 +543,7 @@ fun HomeScreen(
                                             }
                                         },
                                         modifier = Modifier
-                                            .size(26.dp)
+                                            .size(24.dp)
                                             .testTag("balance_card_reload_button")
                                     ) {
                                         Icon(
@@ -549,13 +551,20 @@ fun HomeScreen(
                                             contentDescription = "Realtime Balance Reload",
                                             tint = if (isRealtimeReloading) VtuGreenSecondary else Color.White.copy(alpha = 0.85f),
                                             modifier = Modifier
-                                                .size(17.dp)
+                                                .size(16.dp)
                                                 .rotate(reloadRotation)
                                         )
                                     }
                                 }
 
                                 // Bonus Pill
+                                val bonusText = if (cashbackBalance <= 0.0) {
+                                    "Bonus:0.0"
+                                } else if (cashbackBalance % 1.0 == 0.0) {
+                                    "Bonus:%.1f".format(cashbackBalance)
+                                } else {
+                                    "Bonus:%,.2f".format(cashbackBalance)
+                                }
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(50))
@@ -565,14 +574,15 @@ fun HomeScreen(
                                             color = Color(0xFF8C6D2D).copy(alpha = 0.7f),
                                             shape = RoundedCornerShape(50)
                                         )
-                                        .padding(horizontal = 12.dp, vertical = 5.dp)
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
                                 ) {
                                     Text(
-                                        text = "Bonus: ₦%,.2f".format(cashbackBalance),
+                                        text = bonusText,
                                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
                                         color = Color(0xFFF6B93B),
                                         fontWeight = FontWeight.Bold,
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             }

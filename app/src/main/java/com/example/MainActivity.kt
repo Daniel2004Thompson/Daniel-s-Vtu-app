@@ -754,6 +754,10 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
             onSubmitPin = { pin ->
                 viewModel.verifyPinAndExecutePending(pin)
             },
+            onBiometricSuccess = {
+                viewModel.authorizePendingWithBiometric()
+            },
+            startWithFingerprint = true,
             onDismiss = {
                 viewModel.dismissAuthDialog()
             }
