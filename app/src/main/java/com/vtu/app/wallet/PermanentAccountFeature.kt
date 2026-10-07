@@ -151,66 +151,80 @@ class PermanentAccountViewModel : ViewModel() {
                 .build()
 
             try {
-                val req = Request.Builder()
-                    .url("$baseUrl/rest/v1/users?select=*&id=eq.$cleanUid&limit=1")
-                    .addHeader("apikey", anonKey)
-                    .addHeader("Authorization", bearer)
-                    .get()
-                    .build()
+                val userSelectCandidates = listOf(
+                    com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_FULL.joinToString(","),
+                    com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_STANDARD.joinToString(","),
+                    "id,permanent_account_number,permanent_account_bank"
+                )
+                var body = ""
+                for (cols in userSelectCandidates) {
+                    val req = Request.Builder()
+                        .url("$baseUrl/rest/v1/users?select=$cols&id=eq.$cleanUid&limit=1")
+                        .addHeader("apikey", anonKey)
+                        .addHeader("Authorization", bearer)
+                        .get()
+                        .build()
+                    val ok = okClient.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            body = res.body?.string().orEmpty()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    if (ok) break
+                }
                 var foundInUsers = false
-                okClient.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) {
-                        val body = res.body?.string().orEmpty()
-                        val arr = JSONArray(body)
-                        if (arr.length() > 0) {
-                            val obj = arr.getJSONObject(0)
-                            val ninHash = obj.optCleanString("nin_hash")
-                            _ninVerified.value = !ninHash.isNullOrBlank()
+                if (body.isNotBlank()) {
+                    val arr = JSONArray(body)
+                    if (arr.length() > 0) {
+                        val obj = arr.getJSONObject(0)
+                        val ninHash = obj.optCleanString("nin_hash")
+                        _ninVerified.value = !ninHash.isNullOrBlank()
 
-                            val num = (obj.optCleanString("permanent_account_number")
-                                ?: obj.optCleanString("virtual_account_number"))?.cleanAccountNumber()
-                            if (num != null && !explicitlyResetInSession) {
-                                foundInUsers = true
-                                val bank = obj.optCleanString("bank_name")
-                                    ?: obj.optCleanString("permanent_account_bank")
-                                    ?: obj.optCleanString("virtual_bank_name")
-                                    ?: obj.optCleanString("virtual_bank")
-                                val rawName = obj.optCleanString("account_name")
-                                    ?: obj.optCleanString("permanent_account_name")
-                                    ?: obj.optCleanString("virtual_account_name")
-                                val rawFullName = obj.optCleanString("full_name") ?: obj.optCleanString("name")
-                                val rowEmail = obj.optCleanString("email") ?: email
-                                val name = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                                    rawAccountName = rawName,
-                                    fullName = rawFullName,
-                                    email = rowEmail
-                                )
+                        val num = (obj.optCleanString("permanent_account_number")
+                            ?: obj.optCleanString("virtual_account_number"))?.cleanAccountNumber()
+                        if (num != null && !explicitlyResetInSession) {
+                            foundInUsers = true
+                            val bank = obj.optCleanString("bank_name")
+                                ?: obj.optCleanString("permanent_account_bank")
+                                ?: obj.optCleanString("virtual_bank_name")
+                                ?: obj.optCleanString("virtual_bank")
+                            val rawName = obj.optCleanString("account_name")
+                                ?: obj.optCleanString("permanent_account_name")
+                                ?: obj.optCleanString("virtual_account_name")
+                            val rawFullName = obj.optCleanString("full_name") ?: obj.optCleanString("name")
+                            val rowEmail = obj.optCleanString("email") ?: email
+                            val name = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                                rawAccountName = rawName,
+                                fullName = rawFullName,
+                                email = rowEmail
+                            )
 
-                                _accountDetails.value = PermanentAccountResponse(
-                                    account_number = num,
-                                    bank_name = bank,
-                                    account_name = name
+                            _accountDetails.value = PermanentAccountResponse(
+                                account_number = num,
+                                bank_name = bank,
+                                account_name = name
+                            )
+                            if (name.isNotBlank() && rawName != name) {
+                                persistToSupabase(
+                                    userId = cleanUid,
+                                    email = rowEmail.orEmpty(),
+                                    accNumber = num,
+                                    bank = bank.orEmpty(),
+                                    accName = name,
+                                    nin = ""
                                 )
-                                if (name.isNotBlank() && rawName != name) {
-                                    persistToSupabase(
-                                        userId = cleanUid,
-                                        email = rowEmail.orEmpty(),
-                                        accNumber = num,
-                                        bank = bank.orEmpty(),
-                                        accName = name,
-                                        nin = ""
-                                    )
-                                }
-                                withContext(Dispatchers.Main) {
-                                    onAccountRestored?.invoke(num, bank.orEmpty())
-                                }
+                            }
+                            withContext(Dispatchers.Main) {
+                                onAccountRestored?.invoke(num, bank.orEmpty())
                             }
                         }
                     }
                 }
                 if (!foundInUsers && !explicitlyResetInSession) {
                     val vaReq = Request.Builder()
-                        .url("$baseUrl/rest/v1/virtual_accounts?select=*&user_id=eq.$cleanUid&limit=1")
+                        .url("$baseUrl/rest/v1/virtual_accounts?select=user_id,email,account_number,bank_name,account_name&user_id=eq.$cleanUid&limit=1")
                         .addHeader("apikey", anonKey)
                         .addHeader("Authorization", bearer)
                         .get()
@@ -413,20 +427,37 @@ class PermanentAccountViewModel : ViewModel() {
                             detailMessage.isNotBlank() && errorTitle.isNotBlank() -> "$errorTitle: $detailMessage"
                             detailMessage.isNotBlank() -> detailMessage
                             errorTitle.isNotBlank() -> errorTitle
-                            else -> "Failed to create permanent account (HTTP $statusCode)."
+                            else -> "Network connection bad. Please check your internet connection and try again."
                         }
 
-                        // Provide clear and actionable KYC / NIN messaging
+                        val lowerErr = rawCombinedError.lowercase()
+                        // Provide clear and actionable KYC / NIN messaging without exposing backend details
                         val userFriendlyError = when {
                             rawCombinedError.contains("Invalid nin", ignoreCase = true) ||
                             rawCombinedError.contains("Invalid identity", ignoreCase = true) ->
-                                "Identity Verification Failed: The 11-digit NIN could not be verified by NIMC. If you generated new Flutterwave API keys, ensure your Flutterwave merchant compliance is Approved and secret keys are set in Supabase."
+                                "Identity Verification Failed: The 11-digit NIN could not be verified by NIMC. Please double-check your 11-digit NIN and try again."
                             rawCombinedError.contains("nin is required", ignoreCase = true) ||
                             rawCombinedError.contains("identity is required", ignoreCase = true) ->
-                                "A valid 11-digit NIN is required to create a permanent account on Flutterwave."
+                                "A valid 11-digit NIN is required to create a permanent account."
                             rawCombinedError.contains("KYC", ignoreCase = true) || rawCombinedError.contains("verification", ignoreCase = true) ->
-                                "KYC Action Required: Flutterwave merchant account compliance must be Approved under Dashboard > Settings > Compliance before live virtual accounts can be verified."
-                            else -> rawCombinedError
+                                "KYC Verification Required: Please verify your 11-digit NIN to activate your dedicated virtual account."
+                            statusCode >= 500 ||
+                            statusCode == 401 ||
+                            statusCode == 403 ||
+                            statusCode == 404 ||
+                            lowerErr.contains("supabase") ||
+                            lowerErr.contains("gsubz") ||
+                            lowerErr.contains("edge") ||
+                            lowerErr.contains("function") ||
+                            lowerErr.contains("credential") ||
+                            lowerErr.contains("configured") ||
+                            lowerErr.contains("network") ||
+                            lowerErr.contains("timeout") ||
+                            lowerErr.contains("connect") ||
+                            lowerErr.contains("http ") ->
+                                "Network connection bad. Please check your internet connection and try again."
+                            else -> rawCombinedError.replace(Regex("Supabase|Gsubz|Edge\\s*Function", RegexOption.IGNORE_CASE), "").trim()
+                                .ifBlank { "Network connection bad. Please check your internet connection and try again." }
                         }
 
                         _accountDetails.value = PermanentAccountResponse(error = userFriendlyError)
@@ -434,7 +465,7 @@ class PermanentAccountViewModel : ViewModel() {
                 } catch (e: Exception) {
                     Log.e("PermanentAccount", "Error calling Create-Permanent-Account", e)
                     _accountDetails.value = PermanentAccountResponse(
-                        error = "Connection error: ${e.localizedMessage ?: e.javaClass.simpleName}. Please check your connection."
+                        error = "Network connection bad. Please check your internet connection and try again."
                     )
                 } finally {
                     _isLoading.value = false
@@ -770,8 +801,8 @@ fun PermanentAccountSection(
                         if (showKycHelp) {
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = "1. Merchant Dashboard: Go to Settings > Compliance and confirm your business/identity compliance is Approved.\n" +
-                                       "2. Edge Function Config: Ensure your backend Edge Function is deployed and active in Supabase.\n" +
+                                text = "1. Valid 11-Digit NIN: Ensure your 11-digit National Identification Number matches your registered name.\n" +
+                                       "2. Network Connection: Ensure you have a stable internet connection.\n" +
                                        "3. Reset & Re-link: Tap below to unlink this account and generate a new one with your verified NIN.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface,

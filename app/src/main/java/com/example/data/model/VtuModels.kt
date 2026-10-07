@@ -9,13 +9,12 @@ import com.example.ui.theme.NetworkGlo
 import com.example.ui.theme.NetworkMtn
 
 enum class NetworkProvider(
-    val id: String,          // Gsubz airtime serviceID — exact case matters
+    val id: String,          // Default fallback airtime serviceID; live service_id is read from vtu_prices
     val displayName: String,
     @DrawableRes val logoRes: Int,
     val brandColor: Color,
     val textColor: Color,
-    val prefixes: List<String>,
-    val airtimeDiscountPct: Double = 2.0 // 2% discount on airtime
+    val prefixes: List<String>
 ) {
     MTN(
         id = "mtn",
@@ -26,8 +25,7 @@ enum class NetworkProvider(
         prefixes = listOf(
             "0703", "0704", "0706", "0803", "0806", "0810", "0813",
             "0814", "0816", "0903", "0906", "0913", "0916"
-        ),
-        airtimeDiscountPct = 2.5
+        )
     ),
     AIRTEL(
         id = "airtel",
@@ -38,8 +36,7 @@ enum class NetworkProvider(
         prefixes = listOf(
             "0701", "0708", "0802", "0808", "0812", "0901",
             "0902", "0904", "0907", "0911", "0912"
-        ),
-        airtimeDiscountPct = 2.0
+        )
     ),
     GLO(
         id = "glo",
@@ -49,8 +46,7 @@ enum class NetworkProvider(
         textColor = Color.White,
         prefixes = listOf(
             "0705", "0805", "0807", "0811", "0815", "0905", "0915"
-        ),
-        airtimeDiscountPct = 3.0
+        )
     ),
     NINEMOBILE(
         id = "etisalat",
@@ -60,8 +56,7 @@ enum class NetworkProvider(
         textColor = Color.White,
         prefixes = listOf(
             "0809", "0817", "0818", "0908", "0909"
-        ),
-        airtimeDiscountPct = 3.0
+        )
     );
 
     companion object {
@@ -185,3 +180,10 @@ data class InAppNotification(
     val isRead: Boolean = false,
     val transactionRef: String? = null
 )
+
+data class AirtimeNetworkPricing(
+    val network: NetworkProvider,
+    val serviceId: String,
+    val cashbackPercent: Double
+)
+

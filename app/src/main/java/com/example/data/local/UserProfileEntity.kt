@@ -27,7 +27,6 @@ data class UserProfileEntity(
     val dynamicBankName: String? = null,
     val dynamicAccountName: String? = null,
     val dynamicAccountAmount: Double? = null,
-    val securityPin: String = "1234",
     val biometricEnabled: Boolean = true,
     val appLockEnabled: Boolean = false,
     val notificationsEnabled: Boolean = true,
@@ -55,7 +54,6 @@ data class UserProfileEntity(
             user: SupabaseUser,
             walletBalance: Double = 0.0,
             cashbackBalance: Double = 0.0,
-            securityPin: String = "1234",
             biometricEnabled: Boolean = true,
             appLockEnabled: Boolean = false,
             notificationsEnabled: Boolean = true
@@ -76,7 +74,6 @@ data class UserProfileEntity(
             dynamicBankName = user.dynamicBankName,
             dynamicAccountName = user.dynamicAccountName,
             dynamicAccountAmount = user.dynamicAccountAmount,
-            securityPin = securityPin,
             biometricEnabled = biometricEnabled,
             appLockEnabled = appLockEnabled,
             notificationsEnabled = notificationsEnabled,

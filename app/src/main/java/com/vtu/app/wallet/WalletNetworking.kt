@@ -409,22 +409,40 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
 
                             val errDetail = errorObj?.optString("message")?.takeIf { it.isNotBlank() }
                                 ?: message.takeIf { it.isNotBlank() }
-                                ?: (if (status == "failed") "Dynamic account generation failed" else null)
 
                             if (!errDetail.isNullOrBlank()) {
-                                lastErrorMsg = errDetail
+                                val lower = errDetail.lowercase()
+                                lastErrorMsg = if (
+                                    statusCode >= 500 ||
+                                    statusCode == 401 ||
+                                    statusCode == 403 ||
+                                    statusCode == 404 ||
+                                    lower.contains("supabase") ||
+                                    lower.contains("gsubz") ||
+                                    lower.contains("edge") ||
+                                    lower.contains("function") ||
+                                    lower.contains("credential") ||
+                                    lower.contains("configured") ||
+                                    lower.contains("network") ||
+                                    lower.contains("timeout") ||
+                                    lower.contains("connect")
+                                ) {
+                                    "Network connection bad. Please check your internet connection and try again."
+                                } else {
+                                    errDetail.replace(Regex("Supabase|Gsubz|Edge\\s*Function", RegexOption.IGNORE_CASE), "").trim()
+                                }
                             }
                         }
                     } catch (e: Exception) {
-                        lastErrorMsg = e.localizedMessage
+                        lastErrorMsg = "Network connection bad. Please check your internet connection and try again."
                     }
                 }
 
                 val failMsg = lastErrorMsg
-                    ?: (if (lastStatusCode != null) "Dynamic account service returned code $lastStatusCode" else "Failed to connect to dynamic account service")
+                    ?: "Network connection bad. Please check your internet connection and try again."
                 Result.failure(Exception(failMsg))
             } catch (e: Exception) {
-                Result.failure(e)
+                Result.failure(Exception("Network connection bad. Please check your internet connection and try again."))
             }
         }
     }

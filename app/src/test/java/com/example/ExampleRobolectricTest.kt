@@ -119,7 +119,7 @@ class ExampleRobolectricTest {
           onToggleBiometric = {},
           onToggleAppLock = {},
           onToggleNotifications = {},
-          onUpdatePin = {},
+          onNavigateToChangePin = {},
           onNavigateToChangeEmail = {},
           onNavigateToResetPassword = {},
           onNavigateToLogout = {},
@@ -363,4 +363,175 @@ class ExampleRobolectricTest {
     val activity = controller.get()
     activity.validateRequestPermissionsRequestCode(65537)
   }
+
+  @Test
+  fun `test verification code network and timeout errors report bad network instead of expired code`() {
+    val authRepo = com.example.auth.AuthRepository()
+
+    // Ktor timeout messages include the word "expired" ("Request timeout has expired", "Connect timeout has expired")
+    val ktorTimeoutErr = RuntimeException("Http request to https://yjymxdzdhvbdjramlipg.supabase.co/auth/v1/verify failed with message: Request timeout has expired [url=https://yjymxdzdhvbdjramlipg.supabase.co/auth/v1/verify, request_timeout=unknown ms]")
+    val connectTimeoutErr = RuntimeException("Connect timeout has expired [url=https://yjymxdzdhvbdjramlipg.supabase.co/auth/v1/verify]")
+    val unknownHostErr = java.net.UnknownHostException("yjymxdzdhvbdjramlipg.supabase.co")
+    val socketTimeoutErr = java.net.SocketTimeoutException("timeout expired")
+
+    for (err in listOf(ktorTimeoutErr, connectTimeoutErr, unknownHostErr, socketTimeoutErr)) {
+      assertTrue(authRepo.isNetworkError(err))
+      val msg = authRepo.parseUserFriendlyError(err)
+      assertTrue("Expected network message but got: $msg", msg.contains("Network connection", ignoreCase = true))
+    }
+
+    // Genuine server-side OTP expiration still reports code expired
+    val genuineExpiredErr = RuntimeException("Token has expired or is invalid (otp_expired)")
+    val expiredMsg = authRepo.parseUserFriendlyError(genuineExpiredErr)
+    assertTrue(expiredMsg.contains("expired", ignoreCase = true))
+  }
+
+  @Test
+  fun `test transaction pin models mask pin in toString and safe users columns exclude pin columns`() {
+    val setReq = com.example.data.remote.SetTransactionPinRequest("9876")
+    assertEquals(false, setReq.toString().contains("9876"))
+
+    val verifyReq = com.example.data.remote.VerifyTransactionPinRequest("9876")
+    assertEquals(false, verifyReq.toString().contains("9876"))
+
+    val changeReq = com.example.data.remote.ChangeTransactionPinRequest("9876", "5432")
+    assertEquals(false, changeReq.toString().contains("9876"))
+    assertEquals(false, changeReq.toString().contains("5432"))
+
+    val safeCols = com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_FULL
+    assertEquals(false, safeCols.contains("transaction_pin_hash"))
+    assertEquals(false, safeCols.contains("pin_failed_attempts"))
+    assertEquals(false, safeCols.contains("pin_locked_until"))
+  }
+
+  @Test
+  fun `test legacy local pin data is purged on cleanup`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs = context.getSharedPreferences("test_pin_cleanup_prefs", Context.MODE_PRIVATE)
+    prefs.edit()
+      .putString("key_security_pin", "9999")
+      .putString("key_security_pin_usr_1", "8888")
+      .putString("key_auth_user_email", "keep@example.com")
+      .commit()
+
+    com.example.util.SecurityVault.purgeLegacyLocalPinData(context, prefs)
+    assertEquals(null, prefs.getString("key_security_pin", null))
+    assertEquals(null, prefs.getString("key_security_pin_usr_1", null))
+    assertEquals("keep@example.com", prefs.getString("key_auth_user_email", null))
+  }
+
+  @Test
+  fun `test create pin and change pin screens and transaction pin dialog`() {
+    var createdPin: String? = null
+    composeTestRule.setContent {
+      DanielVtuTheme {
+        com.example.ui.screens.CreatePinScreen(
+          isLoading = false,
+          onCreatePin = { pin, _ -> createdPin = pin }
+        )
+      }
+    }
+    composeTestRule.onNodeWithTag("create_pin_screen").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("create_pin_input").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("create_pin_input_box_0").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("create_pin_input_box_3").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("create_pin_confirm_input").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("secure_numeric_keypad").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("pin_keypad_done").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("pin_key_0").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("pin_key_DEL").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("create_pin_submit_button").assertIsDisplayed()
+    assertEquals(null, createdPin)
+  }
+
+  @Test
+  fun `test buy airtime request json number vtu_prices cashback receipt pending and errors`() {
+    // 1. Verify vtu_prices parsing (only rows where plan = '')
+    val sampleVtuPricesJson = """
+      [
+        {"service_id":"mtn","plan":"","cashback_percent":2.5,"active":true},
+        {"service_id":"airtel","plan":"","cashback_percent":2,"active":true},
+        {"service_id":"glo","plan":"","cashback_percent":3,"active":true},
+        {"service_id":"9mobile","plan":"","cashback_percent":3,"active":true},
+        {"service_id":"mtn_sme","plan":"166","cashback_percent":5,"active":true}
+      ]
+    """.trimIndent()
+    val parsedPrices = com.example.data.remote.GsubzVtuService.parseAirtimePricesJson(sampleVtuPricesJson)
+    assertEquals(4, parsedPrices.size)
+    assertEquals("mtn", parsedPrices[com.example.data.model.NetworkProvider.MTN]?.serviceId)
+    assertEquals(2.5, parsedPrices[com.example.data.model.NetworkProvider.MTN]?.cashbackPercent ?: 0.0, 0.001)
+    assertEquals("airtel", parsedPrices[com.example.data.model.NetworkProvider.AIRTEL]?.serviceId)
+    assertEquals(2.0, parsedPrices[com.example.data.model.NetworkProvider.AIRTEL]?.cashbackPercent ?: 0.0, 0.001)
+    assertEquals("glo", parsedPrices[com.example.data.model.NetworkProvider.GLO]?.serviceId)
+    assertEquals(3.0, parsedPrices[com.example.data.model.NetworkProvider.GLO]?.cashbackPercent ?: 0.0, 0.001)
+    assertEquals("9mobile", parsedPrices[com.example.data.model.NetworkProvider.NINEMOBILE]?.serviceId)
+    assertEquals(3.0, parsedPrices[com.example.data.model.NetworkProvider.NINEMOBILE]?.cashbackPercent ?: 0.0, 0.001)
+
+    // 2. Verify request payload sends amount as JSON NUMBER (not string, not discounted)
+    val reqJson = com.example.data.remote.GsubzVtuService.buildRequestJson(
+      serviceID = parsedPrices[com.example.data.model.NetworkProvider.NINEMOBILE]!!.serviceId,
+      amount = 100.0,
+      phone = "09095551234",
+      plan = ""
+    )
+    assertTrue("Expected numeric amount 100 in $reqJson", reqJson.contains("\"amount\":100"))
+    assertEquals(false, reqJson.contains("\"amount\":\"100"))
+    assertTrue(reqJson.contains("\"serviceID\":\"9mobile\""))
+    assertTrue(reqJson.contains("\"phone\":\"09095551234\""))
+
+    // 3. Verify server response parsing for success, pending (HTTP 202), and error
+    val mtnPendingResp = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
+      rawBody = """{"pending":true,"airtimeValue":100,"cashback":2.5,"charged":97.5,"transactionID":"TX-MTN-1"}""",
+      httpStatusCode = 202,
+      requestedAmount = 100.0
+    )
+    assertEquals(true, mtnPendingResp.isPending)
+    assertEquals(100.0, mtnPendingResp.airtimeValue ?: 0.0, 0.001)
+    assertEquals(2.5, mtnPendingResp.cashback ?: 0.0, 0.001)
+    assertEquals(97.5, mtnPendingResp.charged ?: 0.0, 0.001)
+    assertEquals("Purchase is being confirmed", mtnPendingResp.message)
+
+    val errResp1 = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
+      rawBody = """{"error":"Insufficient wallet balance"}""",
+      httpStatusCode = 400,
+      requestedAmount = 100.0
+    )
+    assertEquals(false, errResp1.isSuccess)
+    assertEquals("Insufficient wallet balance", errResp1.message)
+
+    val errResp2 = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
+      rawBody = """{"error":"This service or plan is not available"}""",
+      httpStatusCode = 404,
+      requestedAmount = 100.0
+    )
+    assertEquals(false, errResp2.isSuccess)
+    assertEquals("This service or plan is not available", errResp2.message)
+
+    // 4. Verify Receipt Dialog shows "Purchase is being confirmed" and the three server lines on HTTP 202 pending
+    val pendingTxEntity = com.example.data.local.TransactionEntity(
+      userId = "usr_1",
+      reference = "VTU-MTN-1",
+      serviceType = "AIRTIME",
+      provider = "MTN",
+      recipient = "08035551234",
+      amount = 100.0,
+      discountOrCashback = 2.5,
+      status = "PENDING",
+      tokenOrDetails = "Purchase is being confirmed [SERVER_RECEIPT:airtime=100.0,cashback=2.5,charged=97.5]"
+    )
+    composeTestRule.setContent {
+      DanielVtuTheme {
+        com.example.ui.components.TransactionReceiptDialog(
+          transaction = pendingTxEntity,
+          onDismiss = {}
+        )
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithText("Purchase is being confirmed").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Airtime: ₦100").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Cashback: ₦2.5").assertIsDisplayed()
+    composeTestRule.onNodeWithText("You paid: ₦97.5").assertIsDisplayed()
+  }
 }
+

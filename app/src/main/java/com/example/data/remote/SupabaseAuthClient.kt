@@ -37,23 +37,7 @@ class SupabaseAuthClient(
     suspend fun signUp(email: String, password: String, fullName: String, phone: String? = null): AuthResult =
         withContext(Dispatchers.IO) {
             if (!isLiveConfigured) {
-                // Return demo simulated user when credentials are not yet configured
-                val demoUser = SupabaseUser(
-                    id = UUID.randomUUID().toString().take(12),
-                    email = email.trim(),
-                    fullName = fullName.trim(),
-                    phone = phone?.trim()
-                )
-                val demoSession = SupabaseSession(
-                    accessToken = "demo_token_" + UUID.randomUUID().toString(),
-                    refreshToken = "demo_refresh_" + UUID.randomUUID().toString(),
-                    user = demoUser
-                )
-                return@withContext AuthResult.Success(
-                    user = demoUser,
-                    session = demoSession,
-                    message = "Account registered successfully (Demo Mode)"
-                )
+                return@withContext AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
 
             try {
@@ -126,14 +110,14 @@ class SupabaseAuthClient(
                 }
             } catch (e: Exception) {
                 Log.e("SupabaseAuth", "SignUp network error", e)
-                AuthResult.Error(e.localizedMessage ?: "Network connection error. Check your internet.")
+                AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
         }
 
     suspend fun login(email: String, password: String): AuthResult =
         withContext(Dispatchers.IO) {
             if (!isLiveConfigured) {
-                return@withContext AuthResult.Error("Supabase is not configured.")
+                return@withContext AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
 
             try {
@@ -186,7 +170,7 @@ class SupabaseAuthClient(
                 }
             } catch (e: Exception) {
                 Log.e("SupabaseAuth", "Login network error", e)
-                AuthResult.Error(e.localizedMessage ?: "Network connection error. Check your internet.")
+                AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
         }
 
@@ -196,14 +180,7 @@ class SupabaseAuthClient(
                 return@withContext AuthResult.Error("Please enter a valid email address.")
             }
             if (!isLiveConfigured) {
-                return@withContext AuthResult.Success(
-                    user = SupabaseUser(
-                        id = "usr_demo",
-                        email = email.trim(),
-                        fullName = email.substringBefore("@")
-                    ),
-                    message = "Password reset email sent to ${email.trim()} (Demo Mode)"
-                )
+                return@withContext AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
 
             try {
@@ -230,12 +207,12 @@ class SupabaseAuthClient(
                         message = "Password reset instructions have been sent to $email."
                     )
                 } else {
-                    val errMsg = parseError(responseBody, "Failed to send reset email (${response.code})")
+                    val errMsg = parseError(responseBody, "Network connection bad. Please check your internet connection and try again.")
                     AuthResult.Error(errMsg)
                 }
             } catch (e: Exception) {
                 Log.e("SupabaseAuth", "sendPasswordResetEmail error", e)
-                AuthResult.Error(e.localizedMessage ?: "Network connection error. Check your internet.")
+                AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
         }
 
@@ -245,16 +222,7 @@ class SupabaseAuthClient(
                 return@withContext AuthResult.Error("Password must be at least 6 characters.")
             }
             if (!isLiveConfigured) {
-                val demoUser = SupabaseUser(
-                    id = "usr_demo",
-                    email = email.trim(),
-                    fullName = email.substringBefore("@")
-                )
-                return@withContext AuthResult.Success(
-                    user = demoUser,
-                    session = SupabaseSession("demo_token_reset", null, demoUser),
-                    message = "Password reset successfully! You can now log in."
-                )
+                return@withContext AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
 
             try {
@@ -325,7 +293,7 @@ class SupabaseAuthClient(
                 }
             } catch (e: Exception) {
                 Log.e("SupabaseAuth", "resetPasswordWithOtp error", e)
-                AuthResult.Error(e.localizedMessage ?: "Network error during password reset.")
+                AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
         }
 
@@ -335,7 +303,7 @@ class SupabaseAuthClient(
                 return@withContext AuthResult.Error("Please enter a valid new email address.")
             }
             if (!isLiveConfigured || accessToken.isNullOrBlank()) {
-                return@withContext AuthResult.Error("Not authenticated.")
+                return@withContext AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
 
             try {
@@ -380,7 +348,7 @@ class SupabaseAuthClient(
                 }
             } catch (e: Exception) {
                 Log.e("SupabaseAuth", "updateEmail error", e)
-                AuthResult.Error(e.localizedMessage ?: "Network error while updating email.")
+                AuthResult.Error("Network connection bad. Please check your internet connection and try again.")
             }
         }
 
@@ -603,8 +571,11 @@ class SupabaseAuthClient(
             val lower = raw.lowercase()
             if (lower.contains("already registered") || lower.contains("already exists") || lower.contains("user_already_exists")) {
                 "This email address has already been registered."
+            } else if (lower.contains("supabase") || lower.contains("gsubz") || lower.contains("edge") || lower.contains("bad gateway") || lower.contains("timeout")) {
+                "Network connection bad. Please check your internet connection and try again."
             } else {
-                raw
+                raw.replace(Regex("Supabase|Gsubz|Edge\\s*Function", RegexOption.IGNORE_CASE), "").trim()
+                    .ifBlank { fallback }
             }
         } catch (_: Exception) {
             fallback

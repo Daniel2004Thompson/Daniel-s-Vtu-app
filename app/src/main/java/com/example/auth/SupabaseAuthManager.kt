@@ -127,14 +127,18 @@ object SupabaseProvider {
         val accessToken = resolveSessionAccessToken(accessTokenOverride)
         val bearer = if (accessToken.startsWith("Bearer ", ignoreCase = true)) accessToken else "Bearer $accessToken"
 
-        val response = ktorClient.post(url) {
-            header(HttpHeaders.Authorization, bearer)
-            header("apikey", rawKey)
-            header("x-client-info", "vtu-android-client/1.0")
-            contentType(ContentType.Application.Json)
-            setBody(bodyJson)
+        return try {
+            val response = ktorClient.post(url) {
+                header(HttpHeaders.Authorization, bearer)
+                header("apikey", rawKey)
+                header("x-client-info", "vtu-android-client/1.0")
+                contentType(ContentType.Application.Json)
+                setBody(bodyJson)
+            }
+            Pair(response.status.value, response.bodyAsText())
+        } catch (e: io.ktor.client.plugins.ResponseException) {
+            Pair(e.response.status.value, e.response.bodyAsText())
         }
-        return Pair(response.status.value, response.bodyAsText())
     }
 }
 
@@ -206,65 +210,64 @@ class AuthRepository(
         fullName: String = "",
         phone: String? = null
     ): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            val cleanName = fullName.trim()
-            val cleanPhone = phone?.trim()
-            val userInfo = client.auth.signUpWith(Email) {
-                this.email = email.trim()
-                this.password = password
-                data = kotlinx.serialization.json.buildJsonObject {
-                    if (cleanName.isNotBlank()) {
-                        put("full_name", kotlinx.serialization.json.JsonPrimitive(cleanName))
-                        put("name", kotlinx.serialization.json.JsonPrimitive(cleanName))
-                    }
-                    if (!cleanPhone.isNullOrBlank()) {
-                        put("phone", kotlinx.serialization.json.JsonPrimitive(cleanPhone))
-                        put("phone_number", kotlinx.serialization.json.JsonPrimitive(cleanPhone))
-                    }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        val cleanName = fullName.trim()
+        val cleanPhone = phone?.trim()
+        val userInfo = client.auth.signUpWith(Email) {
+            this.email = email.trim()
+            this.password = password
+            data = kotlinx.serialization.json.buildJsonObject {
+                if (cleanName.isNotBlank()) {
+                    put("full_name", kotlinx.serialization.json.JsonPrimitive(cleanName))
+                    put("name", kotlinx.serialization.json.JsonPrimitive(cleanName))
+                }
+                if (!cleanPhone.isNullOrBlank()) {
+                    put("phone", kotlinx.serialization.json.JsonPrimitive(cleanPhone))
+                    put("phone_number", kotlinx.serialization.json.JsonPrimitive(cleanPhone))
                 }
             }
-            if (userInfo?.identities != null && userInfo.identities?.isEmpty() == true) {
-                throw IllegalStateException("This email address has already been registered.")
-            }
+        }
+        if (userInfo?.identities != null && userInfo.identities?.isEmpty() == true) {
+            throw IllegalStateException("This email address has already been registered.")
         }
     }
 
     /** Step 2: verify the code the user typed in. */
     suspend fun verifySignUpCode(email: String, code: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            val cleanEmail = email.trim()
-            val cleanCode = code.trim()
-            val candidateTypes = listOf(
-                OtpType.Email.SIGNUP,
-                OtpType.Email.EMAIL,
-                OtpType.Email.RECOVERY,
-                OtpType.Email.MAGIC_LINK
-            )
-            var lastError: Throwable? = null
-            var verified = false
-            for (otpType in candidateTypes) {
-                try {
-                    client.auth.verifyEmailOtp(
-                        type = otpType,
-                        email = cleanEmail,
-                        token = cleanCode
-                    )
-                    verified = true
-                    break
-                } catch (err: Throwable) {
-                    if (lastError == null) lastError = err
-                }
-            }
-            if (!verified && lastError != null) {
-                throw lastError
-            }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        val cleanEmail = email.trim()
+        val cleanCode = code.trim()
+        val candidateTypes = listOf(
+            OtpType.Email.SIGNUP,
+            OtpType.Email.EMAIL,
+            OtpType.Email.RECOVERY,
+            OtpType.Email.MAGIC_LINK
+        )
+        var lastError: Throwable? = null
+        var verified = false
+        for (otpType in candidateTypes) {
             try {
-                lastPasswordVerifiedUser = client.auth.retrieveUserForCurrentSession(updateSession = true)
-            } catch (_: Throwable) {
-                lastPasswordVerifiedUser = try { client.auth.currentUserOrNull() } catch (_: Throwable) { null }
+                client.auth.verifyEmailOtp(
+                    type = otpType,
+                    email = cleanEmail,
+                    token = cleanCode
+                )
+                verified = true
+                break
+            } catch (err: Throwable) {
+                if (isNetworkError(err)) {
+                    throw err
+                }
+                if (lastError == null) lastError = err
             }
+        }
+        if (!verified && lastError != null) {
+            throw lastError
+        }
+        try {
+            lastPasswordVerifiedUser = client.auth.retrieveUserForCurrentSession(updateSession = true)
+        } catch (_: Throwable) {
+            lastPasswordVerifiedUser = try { client.auth.currentUserOrNull() } catch (_: Throwable) { null }
         }
     }
 
@@ -274,11 +277,9 @@ class AuthRepository(
      * If success -> signs out and returns AuthResult.Success
      */
     suspend fun deleteCurrentUserAccount(): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            client.postgrest.rpc("delete_user")
-            client.auth.signOut()
-        }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        client.postgrest.rpc("delete_user")
+        client.auth.signOut()
     }
 
     // ---------------------------------------------------------------
@@ -293,109 +294,102 @@ class AuthRepository(
      * AuthResult.Error and no code is sent.
      */
     suspend fun signIn(email: String, password: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            val cleanEmail = email.trim()
-            // Clear any stale session state before password verification
-            try {
-                client.auth.clearSession()
-            } catch (_: Throwable) {}
-            // Validates the password against Supabase. Throws if it's wrong.
-            client.auth.signInWith(Email) {
-                this.email = cleanEmail
-                this.password = password
-            }
-            lastPasswordVerifiedUser = try {
-                client.auth.retrieveUserForCurrentSession(updateSession = true)
-            } catch (_: Throwable) {
-                try { client.auth.currentUserOrNull() } catch (_: Throwable) { null }
-            }
-            lastVerifiedEmail = cleanEmail
-            lastVerifiedPassword = password
-            otpSendWasRateLimited = false
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        val cleanEmail = email.trim()
+        // Clear any stale session state before password verification
+        try {
+            client.auth.clearSession()
+        } catch (_: Throwable) {}
+        // Validates the password against Supabase. Throws if it's wrong.
+        client.auth.signInWith(Email) {
+            this.email = cleanEmail
+            this.password = password
+        }
+        lastPasswordVerifiedUser = try {
+            client.auth.retrieveUserForCurrentSession(updateSession = true)
+        } catch (_: Throwable) {
+            try { client.auth.currentUserOrNull() } catch (_: Throwable) { null }
+        }
+        lastVerifiedEmail = cleanEmail
+        lastVerifiedPassword = password
+        otpSendWasRateLimited = false
 
-            // Don't let the password alone start a logged-in session —
-            // drop it locally and require the code below to actually finish signing in.
-            try {
-                client.auth.clearSession()
-            } catch (_: Throwable) {
-                try { client.auth.signOut() } catch (_: Throwable) {}
+        // Don't let the password alone start a logged-in session —
+        // drop it locally and require the code below to actually finish signing in.
+        try {
+            client.auth.clearSession()
+        } catch (_: Throwable) {
+            try { client.auth.signOut() } catch (_: Throwable) {}
+        }
+        // Email the verification code for step 2. createUser = false is a
+        // safety net — signInWith(Email) above already proved this account
+        // exists, so this call should never be allowed to create a new one.
+        try {
+            client.auth.signInWith(OTP) {
+                this.email = cleanEmail
+                this.createUser = false
             }
-            // Email the verification code for step 2. createUser = false is a
-            // safety net — signInWith(Email) above already proved this account
-            // exists, so this call should never be allowed to create a new one.
-            try {
-                client.auth.signInWith(OTP) {
-                    this.email = cleanEmail
-                    this.createUser = false
-                }
-            } catch (otpErr: Throwable) {
-                val msg = otpErr.message?.lowercase().orEmpty()
-                if (msg.contains("rate limit") || msg.contains("after") || msg.contains("too many") || msg.contains("429") || msg.contains("security purposes")) {
-                    Log.w("AuthRepository", "OTP email rate-limited after valid password login; allowing verification step: ${otpErr.message}")
-                    otpSendWasRateLimited = true
-                } else {
-                    throw otpErr
-                }
+        } catch (otpErr: Throwable) {
+            if (isNetworkError(otpErr)) {
+                throw otpErr
             }
-        } else {
-            // Demo mode fallback validation
-            if (email.isBlank() || !email.contains("@") || password.length < 6) {
-                throw IllegalArgumentException("Invalid email or password (min 6 chars)")
+            val msg = otpErr.message?.lowercase().orEmpty()
+            if (msg.contains("rate limit") || msg.contains("after") || msg.contains("too many") || msg.contains("429") || msg.contains("security purposes")) {
+                Log.w("AuthRepository", "OTP email rate-limited after valid password login; allowing verification step: ${otpErr.message}")
+                otpSendWasRateLimited = true
+            } else {
+                throw otpErr
             }
         }
     }
 
     /** Step 2: verify the code. This is what actually starts the session. */
     suspend fun verifySignInCode(email: String, code: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            val cleanEmail = email.trim()
-            val cleanCode = code.trim()
-            val candidateTypes = listOf(
-                OtpType.Email.EMAIL,
-                OtpType.Email.MAGIC_LINK,
-                OtpType.Email.SIGNUP,
-                OtpType.Email.RECOVERY
-            )
-            var lastError: Throwable? = null
-            var verified = false
-            for (otpType in candidateTypes) {
-                try {
-                    client.auth.verifyEmailOtp(
-                        type = otpType,
-                        email = cleanEmail,
-                        token = cleanCode
-                    )
-                    verified = true
-                    break
-                } catch (err: Throwable) {
-                    if (lastError == null) lastError = err
-                }
-            }
-            if (!verified) {
-                // If OTP email was rate-limited on rapid re-login after logout and password was already verified
-                val savedPass = lastVerifiedPassword
-                if (otpSendWasRateLimited && !savedPass.isNullOrBlank() && lastVerifiedEmail.equals(cleanEmail, ignoreCase = true) && cleanCode.length >= 4) {
-                    client.auth.signInWith(Email) {
-                        this.email = cleanEmail
-                        this.password = savedPass
-                    }
-                    verified = true
-                }
-            }
-            if (!verified && lastError != null) {
-                throw lastError
-            }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        val cleanEmail = email.trim()
+        val cleanCode = code.trim()
+        val candidateTypes = listOf(
+            OtpType.Email.EMAIL,
+            OtpType.Email.MAGIC_LINK,
+            OtpType.Email.SIGNUP,
+            OtpType.Email.RECOVERY
+        )
+        var lastError: Throwable? = null
+        var verified = false
+        for (otpType in candidateTypes) {
             try {
-                lastPasswordVerifiedUser = client.auth.retrieveUserForCurrentSession(updateSession = true)
-            } catch (_: Throwable) {
-                lastPasswordVerifiedUser = try { client.auth.currentUserOrNull() } catch (_: Throwable) { lastPasswordVerifiedUser }
+                client.auth.verifyEmailOtp(
+                    type = otpType,
+                    email = cleanEmail,
+                    token = cleanCode
+                )
+                verified = true
+                break
+            } catch (err: Throwable) {
+                if (isNetworkError(err)) {
+                    throw err
+                }
+                if (lastError == null) lastError = err
             }
-        } else {
-            if (code.isBlank() || code.length < 4) {
-                throw IllegalArgumentException("Please enter a valid 6-digit code")
+        }
+        if (!verified) {
+            // If OTP email was rate-limited on rapid re-login after logout and password was already verified
+            val savedPass = lastVerifiedPassword
+            if (otpSendWasRateLimited && !savedPass.isNullOrBlank() && lastVerifiedEmail.equals(cleanEmail, ignoreCase = true) && cleanCode.length >= 4) {
+                client.auth.signInWith(Email) {
+                    this.email = cleanEmail
+                    this.password = savedPass
+                }
+                verified = true
             }
+        }
+        if (!verified && lastError != null) {
+            throw lastError
+        }
+        try {
+            lastPasswordVerifiedUser = client.auth.retrieveUserForCurrentSession(updateSession = true)
+        } catch (_: Throwable) {
+            lastPasswordVerifiedUser = try { client.auth.currentUserOrNull() } catch (_: Throwable) { lastPasswordVerifiedUser }
         }
     }
 
@@ -418,14 +412,8 @@ class AuthRepository(
 
     /** Step 1: request a reset code be sent to the user's email. */
     suspend fun requestPasswordReset(email: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            client.auth.resetPasswordForEmail(email = email)
-        } else {
-            if (email.isBlank() || !email.contains("@")) {
-                throw IllegalArgumentException("Please enter a valid email address")
-            }
-        }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        client.auth.resetPasswordForEmail(email = email)
     }
 
     suspend fun resetPassword(email: String): AuthResult = requestPasswordReset(email)
@@ -436,31 +424,19 @@ class AuthRepository(
      * enough to set a new password.
      */
     suspend fun verifyPasswordResetCode(email: String, code: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            client.auth.verifyEmailOtp(
-                type = OtpType.Email.RECOVERY,
-                email = email,
-                token = code
-            )
-        } else {
-            if (code.isBlank() || code.length < 4) {
-                throw IllegalArgumentException("Invalid recovery code")
-            }
-        }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        client.auth.verifyEmailOtp(
+            type = OtpType.Email.RECOVERY,
+            email = email,
+            token = code
+        )
     }
 
     /** Step 3: set the new password (must be called right after step 2). */
     suspend fun setNewPassword(newPassword: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            client.auth.updateUser {
-                password = newPassword
-            }
-        } else {
-            if (newPassword.length < 6) {
-                throw IllegalArgumentException("Password must be at least 6 characters")
-            }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        client.auth.updateUser {
+            password = newPassword
         }
     }
 
@@ -474,32 +450,20 @@ class AuthRepository(
      * sends a code to the new address only, or to both old and new.
      */
     suspend fun requestEmailChange(newEmail: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            client.auth.updateUser {
-                email = newEmail
-            }
-        } else {
-            if (newEmail.isBlank() || !newEmail.contains("@")) {
-                throw IllegalArgumentException("Please enter a valid email address")
-            }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        client.auth.updateUser {
+            email = newEmail
         }
     }
 
     /** Step 2: verify the code sent for the email change. */
     suspend fun verifyEmailChangeCode(newEmail: String, code: String): AuthResult = safeCall {
-        if (isLiveConfigured) {
-            val client = supabase ?: throw IllegalStateException("Supabase client is not available")
-            client.auth.verifyEmailOtp(
-                type = OtpType.Email.EMAIL_CHANGE,
-                email = newEmail,
-                token = code
-            )
-        } else {
-            if (code.isBlank() || code.length < 4) {
-                throw IllegalArgumentException("Invalid email verification code")
-            }
-        }
+        val client = supabase ?: throw java.io.IOException("Network connection bad. Please check your internet connection and try again.")
+        client.auth.verifyEmailOtp(
+            type = OtpType.Email.EMAIL_CHANGE,
+            email = newEmail,
+            token = code
+        )
     }
 
     // ---------------------------------------------------------------
@@ -517,8 +481,76 @@ class AuthRepository(
         }
     }
 
-    private fun parseUserFriendlyError(e: Throwable): String {
-        val raw = e.message ?: return "An unexpected error occurred. Please try again."
+    fun isNetworkError(e: Throwable): Boolean {
+        var current: Throwable? = e
+        var depth = 0
+        while (current != null && depth < 10) {
+            val className = current::class.java.name.lowercase()
+            val simpleName = current::class.java.simpleName.lowercase()
+            val msg = current.message?.lowercase().orEmpty()
+
+            if (current is java.io.IOException ||
+                current is java.nio.channels.UnresolvedAddressException ||
+                simpleName.contains("httprequestexception") ||
+                simpleName.contains("httprequesttimeout") ||
+                simpleName.contains("connecttimeout") ||
+                simpleName.contains("sockettimeout") ||
+                simpleName.contains("unknownhost") ||
+                simpleName.contains("connectexception") ||
+                simpleName.contains("unresolvedaddress") ||
+                className.contains("java.net.") ||
+                className.contains("javax.net.")
+            ) {
+                return true
+            }
+
+            if (msg.contains("unable to resolve host") ||
+                msg.contains("no address associated with hostname") ||
+                msg.contains("unknownhost") ||
+                msg.contains("connectexception") ||
+                msg.contains("failed to connect") ||
+                msg.contains("connection refused") ||
+                msg.contains("connection reset") ||
+                msg.contains("connection abort") ||
+                msg.contains("software caused connection abort") ||
+                msg.contains("network is unreachable") ||
+                msg.contains("no route to host") ||
+                msg.contains("enetunreach") ||
+                msg.contains("ehostunreach") ||
+                msg.contains("econnrefused") ||
+                msg.contains("econnreset") ||
+                msg.contains("etimedout") ||
+                msg.contains("timeout") ||
+                msg.contains("timed out") ||
+                msg.contains("unresolvedaddress") ||
+                msg.contains("unexpected end of stream") ||
+                msg.contains("connection closed") ||
+                msg.contains("sslhandshake") ||
+                msg.contains("http request to") ||
+                msg.contains("no internet") ||
+                msg.contains("offline") ||
+                msg.contains("network connection") ||
+                msg.contains("client is not available") ||
+                msg.contains("not configured") ||
+                msg.contains("bad gateway") ||
+                msg.contains("service unavailable") ||
+                msg.contains("gateway timeout")
+            ) {
+                return true
+            }
+
+            current = current.cause
+            depth++
+        }
+        return false
+    }
+
+    internal fun parseUserFriendlyError(e: Throwable): String {
+        if (isNetworkError(e)) {
+            return "Network connection bad. Please check your internet connection and try again."
+        }
+
+        val raw = e.message ?: return "Network connection bad. Please check your internet connection and try again."
         val lower = raw.lowercase()
 
         return when {
@@ -534,7 +566,7 @@ class AuthRepository(
             lower.contains("user already registered") || lower.contains("user_already_exists") || lower.contains("already exists") || lower.contains("already registered") ->
                 "This email address has already been registered."
 
-            lower.contains("token has expired") || lower.contains("otp_expired") || lower.contains("expired") ->
+            lower.contains("token has expired") || lower.contains("otp_expired") || lower.contains("code has expired") ->
                 "The confirmation code has expired. Please request a new code."
 
             lower.contains("invalid token") || lower.contains("otp_invalid") || lower.contains("token is invalid") || lower.contains("invalid code") ->
@@ -546,23 +578,34 @@ class AuthRepository(
             lower.contains("password should be at least") || lower.contains("weak_password") ->
                 "Password must be at least 6 characters."
 
-            lower.contains("unable to resolve host") || lower.contains("connectexception") || lower.contains("no route to host") || lower.contains("timeout") ->
-                "Network connection issue. Please check your internet connection."
+            lower.contains("supabase") ||
+                lower.contains("gsubz") ||
+                lower.contains("edge function") ||
+                lower.contains("functions/v1") ||
+                lower.contains("not configured") ||
+                lower.contains("client is not available") ||
+                lower.contains("bad gateway") ||
+                lower.contains("502") ||
+                lower.contains("503") ||
+                lower.contains("504") ->
+                "Network connection bad. Please check your internet connection and try again."
 
             else -> {
-                // Strip technical debug URL / Headers / Bearer tokens from raw Ktor/Supabase exception
-                val firstLine = raw.lines().firstOrNull { it.isNotBlank() } ?: "Authentication request failed."
+                // Strip technical debug URL / Headers / Bearer tokens from raw exception
+                val firstLine = raw.lines().firstOrNull { it.isNotBlank() }
+                    ?: return "Network connection bad. Please check your internet connection and try again."
                 val cleaned = firstLine
                     .substringBefore("URL:")
                     .substringBefore("Headers:")
                     .substringBefore("Http Method:")
+                    .replace(Regex("Supabase|Gsubz|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
                     .trim()
                     .removeSuffix(":")
 
                 if (cleaned.isNotBlank() && cleaned.length < 120 && !cleaned.contains("Bearer", ignoreCase = true) && !cleaned.contains("apikey", ignoreCase = true)) {
                     cleaned
                 } else {
-                    "Authentication failed. Please verify your details and try again."
+                    "Network connection bad. Please check your internet connection and try again."
                 }
             }
         }

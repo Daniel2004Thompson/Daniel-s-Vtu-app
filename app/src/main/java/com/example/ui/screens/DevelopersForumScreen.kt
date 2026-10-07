@@ -279,7 +279,11 @@ fun DevelopersForumScreen(
                                         showApiKeyRevealed = true
                                         Toast.makeText(context, "API Key generated!", Toast.LENGTH_SHORT).show()
                                     } else {
-                                        Toast.makeText(context, "Supabase: $msg", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(
+                                            context,
+                                            msg.ifBlank { "Network connection bad. Please check your internet connection and try again." },
+                                            Toast.LENGTH_LONG
+                                        ).show()
                                     }
                                 }
                             }
@@ -390,9 +394,13 @@ fun DevelopersForumScreen(
                         viewModel.regenerateApiKey(userId, userEmail, userName) { success, msg ->
                             if (success) {
                                 showApiKeyRevealed = true
-                                Toast.makeText(context, "New API Key regenerated via Supabase Edge Function!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "New API Key regenerated successfully!", Toast.LENGTH_SHORT).show()
                             } else {
-                                Toast.makeText(context, "Supabase: $msg", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    context,
+                                    msg.ifBlank { "Network connection bad. Please check your internet connection and try again." },
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         }
                     },
@@ -947,7 +955,7 @@ fun ApiKeyCredentialsPage(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "Pulling from Supabase...",
+                    text = "Generating Key...",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -974,13 +982,13 @@ fun ApiKeyCredentialsPage(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Powered by Supabase Edge Function",
+                text = "Secured Live API Gateway",
                 style = MaterialTheme.typography.labelSmall,
                 color = VtuCyan,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = "Generate-api-key",
+                text = "AES-256 Encrypted",
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

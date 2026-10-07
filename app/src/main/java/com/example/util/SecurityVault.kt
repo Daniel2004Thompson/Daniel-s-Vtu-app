@@ -121,7 +121,7 @@ object SecurityVault {
 
     /**
      * Returns an Android Keystore AES-256-GCM EncryptedSharedPreferences instance and automatically
-     * migrates and wipes any sensitive tokens/PINs from legacy unencrypted SharedPreferences.
+     * migrates and wipes any sensitive session tokens from legacy unencrypted SharedPreferences.
      */
     fun getEncryptedPreferences(context: Context, baseName: String): SharedPreferences {
         val encryptedFileName = "${baseName}_encrypted_v1"
@@ -147,6 +147,10 @@ object SecurityVault {
             if (legacyAll.isNotEmpty()) {
                 val encEditor = encryptedPrefs.edit()
                 for ((key, value) in legacyAll) {
+                    // Never migrate any locally stored PIN keys
+                    if (key.contains("pin", ignoreCase = true)) {
+                        continue
+                    }
                     if (!encryptedPrefs.contains(key)) {
                         when (value) {
                             is String -> encEditor.putString(key, value)
@@ -167,5 +171,35 @@ object SecurityVault {
         } catch (_: Throwable) {}
 
         return encryptedPrefs
+    }
+
+    /**
+     * One-time cleanup that deletes any old locally stored PIN data left over on existing installs
+     * across both EncryptedSharedPreferences and unencrypted SharedPreferences.
+     */
+    fun purgeLegacyLocalPinData(context: Context, activePrefs: SharedPreferences) {
+        try {
+            val legacyUnencrypted = context.getSharedPreferences("daniel_vtu_prefs", Context.MODE_PRIVATE)
+            val legacyKeys = legacyUnencrypted.all.keys.filter { it.contains("pin", ignoreCase = true) }
+            if (legacyKeys.isNotEmpty()) {
+                val ed = legacyUnencrypted.edit()
+                legacyKeys.forEach { ed.remove(it) }
+                ed.apply()
+            }
+        } catch (_: Throwable) {}
+
+        try {
+            val encKeys = activePrefs.all.keys.filter {
+                it.contains("security_pin", ignoreCase = true) ||
+                    it.equals("pin", ignoreCase = true) ||
+                    it.contains("transaction_pin", ignoreCase = true)
+            }
+            if (encKeys.isNotEmpty() || !activePrefs.getBoolean("key_legacy_pin_cleanup_done_v1", false)) {
+                val ed = activePrefs.edit()
+                encKeys.forEach { ed.remove(it) }
+                ed.putBoolean("key_legacy_pin_cleanup_done_v1", true)
+                ed.apply()
+            }
+        } catch (_: Throwable) {}
     }
 }

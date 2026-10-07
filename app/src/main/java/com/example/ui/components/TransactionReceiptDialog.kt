@@ -27,7 +27,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -37,7 +40,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,17 +65,52 @@ import com.example.data.local.TransactionEntity
 import com.example.data.model.VtuCatalog
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.VtuGreenPrimary
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.unit.sp
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+data class AirtimeReceiptBreakdown(
+    val airtimeValue: Double,
+    val cashback: Double,
+    val charged: Double
+)
+
+fun formatReceiptNaira(amount: Double): String {
+    val bd = BigDecimal.valueOf(amount)
+        .setScale(2, RoundingMode.HALF_UP)
+        .stripTrailingZeros()
+    return "₦${bd.toPlainString()}"
+}
+
+fun parseAirtimeReceiptBreakdown(transaction: TransactionEntity): AirtimeReceiptBreakdown {
+    val rawDetails = transaction.tokenOrDetails.orEmpty()
+    val match = Regex("\\[SERVER_RECEIPT:airtime=([^,\\]]+),cashback=([^,\\]]+),charged=([^\\]]+)\\]")
+        .find(rawDetails)
+    if (match != null) {
+        val airtime = match.groupValues[1].toDoubleOrNull() ?: transaction.amount
+        val cashback = match.groupValues[2].toDoubleOrNull() ?: transaction.discountOrCashback
+        val charged = match.groupValues[3].toDoubleOrNull()
+            ?: BigDecimal.valueOf(airtime).subtract(BigDecimal.valueOf(cashback)).setScale(2, RoundingMode.HALF_UP).toDouble()
+        return AirtimeReceiptBreakdown(
+            airtimeValue = airtime,
+            cashback = cashback,
+            charged = charged
+        )
+    }
+    val airtime = transaction.amount
+    val cashback = transaction.discountOrCashback
+    val charged = BigDecimal.valueOf(airtime)
+        .subtract(BigDecimal.valueOf(cashback))
+        .setScale(2, RoundingMode.HALF_UP)
+        .toDouble()
+    return AirtimeReceiptBreakdown(
+        airtimeValue = airtime,
+        cashback = cashback,
+        charged = charged
+    )
+}
 
 @Composable
 fun TransactionReceiptDialog(
@@ -80,6 +123,55 @@ fun TransactionReceiptDialog(
     val formattedDate = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
         .format(Date(transaction.timestamp))
 
+    val isTxSuccessful = transaction.status.equals("SUCCESSFUL", ignoreCase = true)
+    val isTxPending = transaction.status.equals("PENDING", ignoreCase = true)
+    val isAirtime = transaction.serviceType.equals("AIRTIME", ignoreCase = true)
+    val airtimeBreakdown = remember(transaction) {
+        if (isAirtime) parseAirtimeReceiptBreakdown(transaction) else null
+    }
+
+    val cleanReference = remember(transaction.reference) {
+        transaction.reference.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
+    }
+    val cleanDetails = remember(transaction.tokenOrDetails, isTxSuccessful, isTxPending, transaction.serviceType, transaction.recipient) {
+        val raw = transaction.tokenOrDetails
+            ?.replace(Regex("\\s*\\[SERVER_RECEIPT:[^\\]]*\\]"), "")
+            ?.trim()
+            .orEmpty()
+        if (raw.isBlank()) {
+            when {
+                isTxPending -> "Purchase is being confirmed"
+                isTxSuccessful -> when (transaction.serviceType) {
+                    "DATA" -> "Data Bundle Activated • Successful"
+                    "CABLE_TV" -> "Bouquet Activated • IUC: ${transaction.recipient} • Successful"
+                    "AIRTIME" -> "Instant Top-up Successful"
+                    "WALLET_FUNDING" -> "Wallet Funded Successfully"
+                    else -> null
+                }
+                else -> null
+            }
+        } else if (isTxPending) {
+            "Purchase is being confirmed"
+        } else if (isTxSuccessful) {
+            val stripped = raw
+                .replace(Regex("\\(\\s*Gsubz\\s*Live\\s*\\)", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("via\\s+Gsubz-VTU-Services", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+•\\s*$"), "")
+                .trim()
+            stripped.ifBlank {
+                when (transaction.serviceType) {
+                    "DATA" -> "Data Bundle Activated • Successful"
+                    "CABLE_TV" -> "Bouquet Activated • IUC: ${transaction.recipient} • Successful"
+                    "AIRTIME" -> "Instant Top-up Successful"
+                    else -> "Transaction Successful"
+                }
+            }
+        } else {
+            raw
+        }
+    }
+
     fun copyToClipboard(text: String, label: String) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = ClipData.newPlainText(label, text)
@@ -90,21 +182,30 @@ fun TransactionReceiptDialog(
     fun shareReceipt() {
         val text = buildString {
             append("=== DANIEL VTU RECEIPT ===\n")
+            if (isTxPending) {
+                append("Purchase is being confirmed\n")
+            }
             append("Service: ${transaction.serviceType}\n")
             append("Provider: ${transaction.provider}\n")
             append("Recipient: ${transaction.recipient}\n")
             if (transaction.customerName != null) {
                 append("Customer: ${transaction.customerName}\n")
             }
-            append("Amount: ₦%,.2f\n".format(transaction.amount))
-            if (transaction.discountOrCashback > 0) {
-                append("Discount/Cashback: ₦%,.2f\n".format(transaction.discountOrCashback))
+            if (isAirtime && airtimeBreakdown != null) {
+                append("Airtime: ${formatReceiptNaira(airtimeBreakdown.airtimeValue)}\n")
+                append("Cashback: ${formatReceiptNaira(airtimeBreakdown.cashback)}\n")
+                append("You paid: ${formatReceiptNaira(airtimeBreakdown.charged)}\n")
+            } else {
+                append("Amount: ₦%,.2f\n".format(transaction.amount))
+                if (transaction.discountOrCashback > 0) {
+                    append("Discount/Cashback: ₦%,.2f\n".format(transaction.discountOrCashback))
+                }
             }
-            if (!transaction.tokenOrDetails.isNullOrBlank()) {
-                append("Token/PIN: ${transaction.tokenOrDetails}\n")
+            if (!cleanDetails.isNullOrBlank()) {
+                append("Details: $cleanDetails\n")
             }
             append("Status: ${transaction.status}\n")
-            append("Ref: ${transaction.reference}\n")
+            append("Ref: $cleanReference\n")
             append("Date: $formattedDate\n")
             append("==========================\n")
             append("Thank you for choosing Daniel VTU!")
@@ -191,12 +292,23 @@ fun TransactionReceiptDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                val isTxSuccessful = transaction.status.equals("SUCCESSFUL", ignoreCase = true)
-                val statusHeaderColor = if (isTxSuccessful) StatusSuccess else Color(0xFFE53935)
-                val statusHeaderIcon = if (isTxSuccessful) Icons.Default.CheckCircle else Icons.Default.Close
-                val statusHeaderText = if (isTxSuccessful) "Payment Successful" else "Payment Failed"
+                val statusHeaderColor = when {
+                    isTxSuccessful -> StatusSuccess
+                    isTxPending -> Color(0xFFF59E0B)
+                    else -> Color(0xFFE53935)
+                }
+                val statusHeaderIcon = when {
+                    isTxSuccessful -> Icons.Default.CheckCircle
+                    isTxPending -> Icons.Default.Schedule
+                    else -> Icons.Default.Close
+                }
+                val statusHeaderText = when {
+                    isTxPending -> "Purchase is being confirmed"
+                    isTxSuccessful -> "Payment Successful"
+                    else -> "Payment Failed"
+                }
 
-                // Status check/cross badge
+                // Status badge
                 Box(
                     modifier = Modifier
                         .size(64.dp)
@@ -218,67 +330,111 @@ fun TransactionReceiptDialog(
                     text = statusHeaderText,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = statusHeaderColor
+                    color = statusHeaderColor,
+                    modifier = Modifier.testTag("receipt_status_header")
                 )
 
-                Text(
-                    text = "₦%,.2f".format(transaction.amount),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                if (transaction.discountOrCashback > 0) {
-                    Text(
-                        text = "Cashback/Discount: ₦%,.2f".format(transaction.discountOrCashback),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = VtuGreenPrimary,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Token or PIN card if available (Electricity / Exam / Delivery details)
-                if (!transaction.tokenOrDetails.isNullOrBlank()) {
+                if (isAirtime && airtimeBreakdown != null && (isTxSuccessful || isTxPending)) {
+                    Spacer(modifier = Modifier.height(10.dp))
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
-                            .background(if (isTxSuccessful) VtuGreenPrimary.copy(alpha = 0.08f) else Color(0xFFE53935).copy(alpha = 0.08f))
-                            .border(1.dp, if (isTxSuccessful) VtuGreenPrimary.copy(alpha = 0.3f) else Color(0xFFE53935).copy(alpha = 0.3f), RoundedCornerShape(14.dp))
+                            .background(VtuGreenPrimary.copy(alpha = 0.08f))
+                            .border(1.dp, VtuGreenPrimary.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
+                            .padding(14.dp)
+                            .testTag("airtime_receipt_summary_box")
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Airtime: ${formatReceiptNaira(airtimeBreakdown.airtimeValue)}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.testTag("receipt_line_airtime")
+                            )
+                            Text(
+                                text = "Cashback: ${formatReceiptNaira(airtimeBreakdown.cashback)}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = VtuGreenPrimary,
+                                modifier = Modifier.testTag("receipt_line_cashback")
+                            )
+                            Text(
+                                text = "You paid: ${formatReceiptNaira(airtimeBreakdown.charged)}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.testTag("receipt_line_charged")
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                } else {
+                    Text(
+                        text = "₦%,.2f".format(transaction.amount),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    if (transaction.discountOrCashback > 0) {
+                        Text(
+                            text = "Cashback/Discount: ₦%,.2f".format(transaction.discountOrCashback),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = VtuGreenPrimary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // Token or PIN card if available (Electricity / Exam / Delivery details)
+                if (!cleanDetails.isNullOrBlank() && !isAirtime) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (isTxSuccessful || isTxPending) VtuGreenPrimary.copy(alpha = 0.08f) else Color(0xFFE53935).copy(alpha = 0.08f))
+                            .border(1.dp, if (isTxSuccessful || isTxPending) VtuGreenPrimary.copy(alpha = 0.3f) else Color(0xFFE53935).copy(alpha = 0.3f), RoundedCornerShape(14.dp))
                             .padding(14.dp)
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
                                 text = when {
-                                    transaction.serviceType == "ELECTRICITY" -> "PREPAID METER TOKEN"
-                                    !isTxSuccessful -> "STATUS / DETAILS"
-                                    transaction.serviceType == "EDUCATION" -> "EXAMINATION PIN"
+                                    transaction.serviceType == "ELECTRICITY" && isTxSuccessful -> "PREPAID METER TOKEN"
+                                    !isTxSuccessful && !isTxPending -> "STATUS / DETAILS"
+                                    transaction.serviceType == "EDUCATION" && isTxSuccessful -> "EXAMINATION PIN"
                                     else -> "TRANSACTION DETAILS"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isTxSuccessful) VtuGreenPrimary else Color(0xFFE53935)
+                                color = if (isTxSuccessful || isTxPending) VtuGreenPrimary else Color(0xFFE53935)
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = transaction.tokenOrDetails ?: "",
+                                text = cleanDetails,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontFamily = FontFamily.Monospace,
                                 textAlign = TextAlign.Center
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Button(
-                                onClick = { copyToClipboard(transaction.tokenOrDetails ?: "", "Token") },
-                                colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.height(34.dp)
-                            ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Copy Token", fontSize = 12.sp)
+                            if (isTxSuccessful && (transaction.serviceType == "ELECTRICITY" || transaction.serviceType == "EDUCATION")) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Button(
+                                    onClick = { copyToClipboard(cleanDetails, "Token") },
+                                    colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.height(34.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Copy Token", fontSize = 12.sp)
+                                }
                             }
                         }
                     }
@@ -417,6 +573,11 @@ fun TransactionReceiptDialog(
                     if (transaction.customerName != null) {
                         ReceiptRow(label = "Customer", value = transaction.customerName)
                     }
+                    if (isAirtime && airtimeBreakdown != null) {
+                        ReceiptRow(label = "Airtime", value = formatReceiptNaira(airtimeBreakdown.airtimeValue))
+                        ReceiptRow(label = "Cashback", value = formatReceiptNaira(airtimeBreakdown.cashback))
+                        ReceiptRow(label = "You paid", value = formatReceiptNaira(airtimeBreakdown.charged), isHighlighted = true)
+                    }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -430,14 +591,14 @@ fun TransactionReceiptDialog(
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = transaction.reference,
+                                text = cleanReference,
                                 style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             IconButton(
-                                onClick = { copyToClipboard(transaction.reference, "Reference") },
+                                onClick = { copyToClipboard(cleanReference, "Reference") },
                                 modifier = Modifier.size(24.dp)
                             ) {
                                 Icon(Icons.Default.ContentCopy, contentDescription = "Copy Reference", modifier = Modifier.size(14.dp))
@@ -446,7 +607,7 @@ fun TransactionReceiptDialog(
                     }
                     ReceiptRow(label = "Date & Time", value = formattedDate)
                     ReceiptRow(label = "Payment Method", value = "Daniel VTU Wallet")
-                    ReceiptRow(label = "Status", value = transaction.status, isHighlighted = true)
+                    ReceiptRow(label = "Status", value = transaction.status, isHighlighted = isTxSuccessful)
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))

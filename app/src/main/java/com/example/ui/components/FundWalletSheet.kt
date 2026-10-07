@@ -418,7 +418,7 @@ fun FundWalletSheet(
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "3. Our Supabase Edge webhook listener detects Flutterwave settlement and credits your wallet automatically in real-time.",
+                                    text = "3. Our automated settlement listener detects your bank transfer and credits your wallet automatically in real-time.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

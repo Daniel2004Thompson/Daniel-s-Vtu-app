@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.auth.AuthResult as JanAuthResult
 import com.example.data.local.BeneficiaryEntity
 import com.example.data.local.TransactionEntity
+import com.example.data.model.AirtimeNetworkPricing
 import com.example.data.model.AuthResult
 import com.example.data.model.InAppNotification
 import com.example.data.model.NetworkProvider
@@ -16,6 +17,8 @@ import com.example.data.model.SupabaseUser
 import com.example.data.model.UserApiKey
 import com.example.data.model.ForumTopic
 import com.example.data.model.ForumReply
+import com.example.data.remote.PinChangeOutcome
+import com.example.data.remote.PinVerifyOutcome
 import com.example.data.remote.SupabaseRealtimeClient
 import com.example.data.repository.VtuRepository
 import com.example.util.NotificationHelper
@@ -50,8 +53,17 @@ data class PendingTransaction(
     val customerName: String? = null,
     val planId: String? = null,
     val meterNumber: String? = null,
-    val smartcardNumber: String? = null
+    val smartcardNumber: String? = null,
+    val serviceId: String? = null
 )
+
+sealed class PinSetupCheckState {
+    data object Idle : PinSetupCheckState()
+    data object Checking : PinSetupCheckState()
+    data object NeedsPinCreation : PinSetupCheckState()
+    data object HasPin : PinSetupCheckState()
+    data class Error(val message: String) : PinSetupCheckState()
+}
 
 class VtuViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = VtuRepository(application)
@@ -117,6 +129,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
 
     val walletBalance: StateFlow<Double> = repository.walletBalance
     val cashbackBalance: StateFlow<Double> = repository.cashbackBalance
+    val airtimePrices: StateFlow<Map<NetworkProvider, AirtimeNetworkPricing>> = repository.airtimePrices
     val biometricEnabled: StateFlow<Boolean> = repository.biometricEnabled
     val appLockEnabled: StateFlow<Boolean> = repository.appLockEnabled
     val notificationsEnabled: StateFlow<Boolean> = repository.notificationsEnabled
@@ -138,6 +151,16 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
     // Active auth dialog
     private val _pendingTransactionForAuth = MutableStateFlow<PendingTransaction?>(null)
     val pendingTransactionForAuth = _pendingTransactionForAuth.asStateFlow()
+
+    // Transaction PIN remote states (Supabase RPCs are the single source of truth)
+    private val _pinSetupState = MutableStateFlow<PinSetupCheckState>(PinSetupCheckState.Idle)
+    val pinSetupState = _pinSetupState.asStateFlow()
+
+    private val _isPinActionLoading = MutableStateFlow(false)
+    val isPinActionLoading = _isPinActionLoading.asStateFlow()
+
+    private val _pinDialogError = MutableStateFlow<String?>(null)
+    val pinDialogError = _pinDialogError.asStateFlow()
 
     // Transaction receipt sheet
     private val _activeReceipt = MutableStateFlow<TransactionEntity?>(null)
@@ -187,6 +210,12 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshRemoteBalance() {
         viewModelScope.launch {
             repository.syncRemoteProfileBalance()
+        }
+    }
+
+    fun refreshAirtimePrices() {
+        viewModelScope.launch {
+            repository.refreshAirtimePrices()
         }
     }
 
@@ -354,6 +383,11 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissAuthDialog() {
         _pendingTransactionForAuth.value = null
+        _pinDialogError.value = null
+    }
+
+    fun clearPinDialogError() {
+        _pinDialogError.value = null
     }
 
     fun unlockApp() {
@@ -381,13 +415,105 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
         repository.setNotificationsEnabled(enabled)
     }
 
-    fun verifyPin(pin: String): Boolean {
-        return repository.verifyPin(pin)
+    /**
+     * Calls Supabase RPC has_transaction_pin ({}) after login or on app start.
+     * - false -> NeedsPinCreation (navigate to Create PIN screen)
+     * - true  -> HasPin (go straight to dashboard; never ask a user with a PIN to create one again)
+     */
+    fun checkHasTransactionPin(onResult: ((Boolean) -> Unit)? = null) {
+        if (!isLoggedIn.value) return
+        viewModelScope.launch {
+            _pinSetupState.value = PinSetupCheckState.Checking
+            val res = repository.hasTransactionPin()
+            res.onSuccess { hasPin ->
+                _pinSetupState.value = if (hasPin) {
+                    PinSetupCheckState.HasPin
+                } else {
+                    PinSetupCheckState.NeedsPinCreation
+                }
+                onResult?.invoke(hasPin)
+            }.onFailure { err ->
+                _pinSetupState.value = PinSetupCheckState.Error(
+                    err.localizedMessage ?: "Unable to verify PIN status. Please check your connection."
+                )
+            }
+        }
     }
 
-    fun updatePin(newPin: String) {
-        repository.updatePin(newPin)
-        _uiMessage.value = "Security PIN updated successfully"
+    /**
+     * Calls Supabase RPC set_transaction_pin with {"p_pin": "<4-digit-pin>"}.
+     */
+    fun createTransactionPin(
+        pin: String,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _isPinActionLoading.value = true
+            val res = repository.setTransactionPin(pin)
+            _isPinActionLoading.value = false
+            res.onSuccess {
+                _pinSetupState.value = PinSetupCheckState.HasPin
+                _uiMessage.value = "Transaction PIN created"
+                onSuccess()
+            }.onFailure { err ->
+                val msg = err.localizedMessage ?: "Failed to create PIN"
+                onError(msg)
+            }
+        }
+    }
+
+    /**
+     * Calls Supabase RPC change_transaction_pin with {"p_old": "<old>", "p_new": "<new>"}.
+     * - false: "Old PIN is wrong"
+     * - true: "PIN changed"
+     * - locked: "Too many wrong attempts. Try again in 15 minutes."
+     */
+    fun changeTransactionPin(
+        oldPin: String,
+        newPin: String,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            _isPinActionLoading.value = true
+            val outcome = repository.changeTransactionPin(oldPin = oldPin, newPin = newPin)
+            _isPinActionLoading.value = false
+            when (outcome) {
+                is PinChangeOutcome.Changed -> {
+                    _uiMessage.value = "PIN changed"
+                    onResult(true, "PIN changed")
+                }
+                is PinChangeOutcome.WrongOldPin -> {
+                    onResult(false, "Old PIN is wrong")
+                }
+                is PinChangeOutcome.Locked -> {
+                    onResult(false, "Too many wrong attempts. Try again in 15 minutes.")
+                }
+                is PinChangeOutcome.Error -> {
+                    val msg = if (outcome.message.contains("locked", ignoreCase = true)) {
+                        "Too many wrong attempts. Try again in 15 minutes."
+                    } else {
+                        outcome.message
+                    }
+                    onResult(false, msg)
+                }
+            }
+        }
+    }
+
+    /**
+     * Verifies the 4-digit transaction PIN via Supabase RPC verify_transaction_pin.
+     */
+    fun verifyTransactionPinAsync(
+        pin: String,
+        onResult: (PinVerifyOutcome) -> Unit
+    ) {
+        viewModelScope.launch {
+            _isPinActionLoading.value = true
+            val outcome = repository.verifyTransactionPin(pin)
+            _isPinActionLoading.value = false
+            onResult(outcome)
+        }
     }
 
     fun clearAuthMessages() {
@@ -1005,10 +1131,11 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Withdraw/debit feature:
-     * Calls repository debitWallet (Supabase RPC debit_wallet) with an amount,
-     * shows an error toast if it fails (e.g. insufficient balance),
-     * and refreshes the displayed wallet_balance after it succeeds.
+     * Requires 4-digit transaction PIN verification via Supabase verify_transaction_pin
+     * before calling repository.withdrawFromWallet (Supabase RPC debit_wallet).
      */
+    private var pendingWithdrawalSuccessCallback: (() -> Unit)? = null
+
     fun withdrawWallet(amount: Double, context: Context, onSuccess: () -> Unit = {}) {
         if (amount <= 0.0) {
             Toast.makeText(context, "Please enter a valid withdrawal amount", Toast.LENGTH_SHORT).show()
@@ -1020,23 +1147,64 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        pendingWithdrawalSuccessCallback = onSuccess
+        _pinDialogError.value = null
+        val user = currentUser.value
+        val destination = user?.virtualAccountNumber
+            ?: user?.email
+            ?: "Linked Account"
+        _pendingTransactionForAuth.value = PendingTransaction(
+            title = "Wallet Withdrawal",
+            serviceType = "WITHDRAWAL",
+            provider = "Wallet Withdrawal",
+            recipient = destination,
+            amount = amount,
+            discount = 0.0,
+            details = "Withdraw ₦%,.2f from wallet".format(amount),
+            customerName = user?.fullName
+        )
+    }
+
+    private fun executeWithdrawalInternal(pending: PendingTransaction, onComplete: () -> Unit) {
+        val amount = pending.amount
+        val appContext = getApplication<Application>()
         viewModelScope.launch {
             _authLoading.value = true
             try {
                 val result = repository.withdrawFromWallet(amount)
                 if (result.isSuccess) {
                     val newBal = result.getOrNull() ?: walletBalance.value
-                    Toast.makeText(context, "₦%,.2f withdrawn successfully. New balance: ₦%,.2f".format(amount, newBal), Toast.LENGTH_LONG).show()
+                    val dateStr = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
+                    val reference = "WDR-$dateStr-${(100000..999999).random()}"
+                    val activeUid = currentUser.value?.id?.trim().orEmpty()
+                    val entity = TransactionEntity(
+                        userId = activeUid,
+                        reference = reference,
+                        serviceType = "WITHDRAWAL",
+                        provider = pending.provider,
+                        recipient = pending.recipient,
+                        amount = amount,
+                        discountOrCashback = 0.0,
+                        status = "SUCCESSFUL",
+                        timestamp = System.currentTimeMillis(),
+                        tokenOrDetails = "Wallet Withdrawal • New Balance: ₦%,.2f".format(newBal),
+                        customerName = pending.customerName
+                    )
+                    repository.recordTransaction(entity)
+                    Toast.makeText(appContext, "₦%,.2f withdrawn successfully. New balance: ₦%,.2f".format(amount, newBal), Toast.LENGTH_LONG).show()
                     _uiMessage.value = "₦%,.2f withdrawn successfully".format(amount)
-                    onSuccess()
+                    _activeReceipt.value = entity
+                    pendingWithdrawalSuccessCallback?.invoke()
+                    pendingWithdrawalSuccessCallback = null
+                    onComplete()
                 } else {
-                    val err = result.exceptionOrNull()?.message ?: "Failed to debit wallet. Insufficient balance."
-                    Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                    val err = sanitizeUserFacingError(result.exceptionOrNull()?.message)
+                    Toast.makeText(appContext, err, Toast.LENGTH_LONG).show()
                     _uiMessage.value = err
                 }
             } catch (e: Exception) {
-                val err = e.message ?: "Withdrawal failed"
-                Toast.makeText(context, err, Toast.LENGTH_LONG).show()
+                val err = sanitizeUserFacingError(e.message)
+                Toast.makeText(appContext, err, Toast.LENGTH_LONG).show()
                 _uiMessage.value = err
             } finally {
                 _authLoading.value = false
@@ -1070,12 +1238,12 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     _uiMessage.value = "₦%,.2f refunded. Remainder: ₦%,.2f".format(amount, remainder)
                     onSuccess(remainder)
                 } else {
-                    val err = result.exceptionOrNull()?.message ?: "Refund failed"
+                    val err = sanitizeUserFacingError(result.exceptionOrNull()?.message)
                     Toast.makeText(context, err, Toast.LENGTH_LONG).show()
                     _uiMessage.value = err
                 }
             } catch (e: Exception) {
-                val err = e.message ?: "Refund failed"
+                val err = sanitizeUserFacingError(e.message)
                 Toast.makeText(context, err, Toast.LENGTH_LONG).show()
                 _uiMessage.value = err
             } finally {
@@ -1085,18 +1253,51 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun prepareTransaction(pending: PendingTransaction) {
-        val totalCost = pending.amount - pending.discount
-        if (walletBalance.value < totalCost) {
-            _uiMessage.value = "Insufficient wallet balance. Please fund your wallet."
-            return
-        }
+        _pinDialogError.value = null
         _pendingTransactionForAuth.value = pending
     }
 
-    fun authorizeAndExecutePending(onComplete: () -> Unit = {}) {
+    /**
+     * Verifies the 4-digit PIN via Supabase RPC verify_transaction_pin before every purchase
+     * (airtime, data, cable TV, electricity, exam pins) and every withdrawal.
+     * - true: continue with the transaction.
+     * - false: show "Wrong PIN".
+     * - error message containing "locked": show "Too many wrong attempts. Try again in 15 minutes."
+     * Never skips this check and never accepts a default PIN.
+     */
+    fun verifyPinAndExecutePending(pin: String, onComplete: () -> Unit = {}) {
         val pending = _pendingTransactionForAuth.value ?: return
-        _pendingTransactionForAuth.value = null
-        executeTransactionInternal(pending, onComplete)
+        viewModelScope.launch {
+            _isPinActionLoading.value = true
+            _pinDialogError.value = null
+            val outcome = repository.verifyTransactionPin(pin)
+            _isPinActionLoading.value = false
+
+            when (outcome) {
+                is PinVerifyOutcome.Verified -> {
+                    _pendingTransactionForAuth.value = null
+                    _pinDialogError.value = null
+                    if (pending.serviceType.equals("WITHDRAWAL", ignoreCase = true)) {
+                        executeWithdrawalInternal(pending, onComplete)
+                    } else {
+                        executeTransactionInternal(pending, onComplete)
+                    }
+                }
+                is PinVerifyOutcome.WrongPin -> {
+                    _pinDialogError.value = "Wrong PIN"
+                }
+                is PinVerifyOutcome.Locked -> {
+                    _pinDialogError.value = "Too many wrong attempts. Try again in 15 minutes."
+                }
+                is PinVerifyOutcome.Error -> {
+                    _pinDialogError.value = if (outcome.message.contains("locked", ignoreCase = true)) {
+                        "Too many wrong attempts. Try again in 15 minutes."
+                    } else {
+                        outcome.message
+                    }
+                }
+            }
+        }
     }
 
     private fun executeTransactionInternal(pending: PendingTransaction, onComplete: () -> Unit) {
@@ -1110,18 +1311,23 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     amount = pending.amount,
                     planId = pending.planId,
                     meterNumber = pending.meterNumber,
-                    smartcardNumber = pending.smartcardNumber
+                    smartcardNumber = pending.smartcardNumber,
+                    serviceIdOverride = pending.serviceId
                 )
             } finally {
                 _authLoading.value = false
+                repository.syncRemoteProfileBalance()
             }
 
-            if (!gsubzResult.isSuccess) {
-                _uiMessage.value = gsubzResult.message
+            if (!gsubzResult.isSuccess && !gsubzResult.isPending) {
+                val errMsg = gsubzResult.message.trim().ifBlank { "Transaction failed" }
+                _uiMessage.value = errMsg
+                Toast.makeText(getApplication(), errMsg, Toast.LENGTH_LONG).show()
                 val activeUid = currentUser.value?.id?.trim().orEmpty()
+                val cleanRef = gsubzResult.transactionId.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
                 val failedEntity = TransactionEntity(
                     userId = activeUid,
-                    reference = gsubzResult.transactionId,
+                    reference = cleanRef,
                     serviceType = pending.serviceType,
                     provider = pending.provider,
                     recipient = pending.recipient,
@@ -1129,7 +1335,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     discountOrCashback = 0.0,
                     status = "FAILED",
                     timestamp = System.currentTimeMillis(),
-                    tokenOrDetails = gsubzResult.message,
+                    tokenOrDetails = errMsg,
                     customerName = pending.customerName
                 )
                 repository.recordTransaction(failedEntity)
@@ -1138,24 +1344,49 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val activeUid = currentUser.value?.id?.trim().orEmpty()
-            val reference = gsubzResult.transactionId
-            val tokenOrDetails = when (pending.serviceType) {
-                "ELECTRICITY" -> gsubzResult.tokenOrPin ?: "Token: ${generateMeterToken()}"
-                "EDUCATION" -> gsubzResult.tokenOrPin ?: generateExamPin()
-                "CABLE_TV" -> "Bouquet Activated • IUC: ${pending.recipient} (Gsubz Live)"
-                "DATA" -> pending.details ?: "Data Bundle Activated (Gsubz Live)"
-                else -> "Instant VTU Top-up Successful (Gsubz Live)"
+            val reference = gsubzResult.transactionId.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
+            val isAirtime = pending.serviceType.equals("AIRTIME", ignoreCase = true)
+
+            val serverAirtimeValue = gsubzResult.airtimeValue ?: pending.amount
+            val serverCashback = gsubzResult.cashback ?: if (isAirtime) 0.0 else pending.discount
+            val serverCharged = gsubzResult.charged ?: gsubzResult.amountPaid
+
+            val tokenOrDetails = when {
+                isAirtime -> {
+                    val baseStatusText = if (gsubzResult.isPending) {
+                        "Purchase is being confirmed"
+                    } else {
+                        "Instant Top-up Successful"
+                    }
+                    "$baseStatusText [SERVER_RECEIPT:airtime=$serverAirtimeValue,cashback=$serverCashback,charged=$serverCharged]"
+                }
+                pending.serviceType == "ELECTRICITY" -> (gsubzResult.tokenOrPin ?: "Token: ${generateMeterToken()}")
+                    .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
+                    .trim()
+                pending.serviceType == "EDUCATION" -> (gsubzResult.tokenOrPin ?: generateExamPin())
+                    .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
+                    .trim()
+                pending.serviceType == "CABLE_TV" -> "Bouquet Activated • IUC: ${pending.recipient} • Successful"
+                pending.serviceType == "DATA" -> {
+                    val cleanPlan = pending.details
+                        ?.replace(Regex("\\(\\s*Gsubz\\s*Live\\s*\\)|Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                    if (cleanPlan != null) "$cleanPlan • Successful" else "Data Bundle Activated • Successful"
+                }
+                else -> if (gsubzResult.isPending) "Purchase is being confirmed" else "Instant Top-up Successful"
             }
 
+            val txStatus = if (gsubzResult.isPending) "PENDING" else "SUCCESSFUL"
             val entity = TransactionEntity(
                 userId = activeUid,
                 reference = reference,
                 serviceType = pending.serviceType,
                 provider = pending.provider,
                 recipient = pending.recipient,
-                amount = pending.amount,
-                discountOrCashback = pending.discount,
-                status = "SUCCESSFUL",
+                amount = if (isAirtime) serverAirtimeValue else pending.amount,
+                discountOrCashback = if (isAirtime) serverCashback else pending.discount,
+                status = txStatus,
                 timestamp = System.currentTimeMillis(),
                 tokenOrDetails = tokenOrDetails,
                 customerName = pending.customerName
@@ -1173,24 +1404,29 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
 
-            if (notificationsEnabled.value) {
+            if (gsubzResult.isPending) {
+                _uiMessage.value = "Purchase is being confirmed"
+            } else if (notificationsEnabled.value) {
                 NotificationHelper.showTransactionNotification(
                     context = getApplication(),
                     title = "Transaction Successful!",
                     message = "${pending.title} to ${pending.recipient} completed.",
                     reference = reference,
-                    amount = pending.amount,
+                    amount = entity.amount,
                     token = if (pending.serviceType == "ELECTRICITY" || pending.serviceType == "EDUCATION") tokenOrDetails else null
                 )
             }
 
             val alert = InAppNotification(
                 id = reference,
-                title = "${pending.provider} ${pending.serviceType.replace('_', ' ')} Successful",
-                message = "₦%,.2f paid for %s. %s".format(
-                    pending.amount - pending.discount,
-                    pending.recipient,
-                    tokenOrDetails ?: ""
+                title = if (gsubzResult.isPending) {
+                    "Purchase is being confirmed"
+                } else {
+                    "${pending.provider} ${pending.serviceType.replace('_', ' ')} Successful"
+                },
+                message = "₦%,.2f paid for %s.".format(
+                    serverCharged,
+                    pending.recipient
                 ),
                 transactionRef = reference
             )
@@ -1226,11 +1462,12 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     _flutterwavePaymentUrl.value = result.paymentUrl
                     onReady(result.paymentUrl ?: "", result.txRef)
                 } else {
-                    _flutterwaveError.value = result.message
-                    onError(result.message)
+                    val err = sanitizeUserFacingError(result.message)
+                    _flutterwaveError.value = err
+                    onError(err)
                 }
             } catch (e: Exception) {
-                val err = e.localizedMessage ?: "Failed to initiate Flutterwave payment"
+                val err = sanitizeUserFacingError(e.localizedMessage)
                 _flutterwaveError.value = err
                 onError(err)
             } finally {
@@ -1279,11 +1516,12 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                         _inAppAlertBanner.value = null
                     }
                 } else {
-                    _flutterwaveError.value = result.message
-                    onError(result.message)
+                    val err = sanitizeUserFacingError(result.message)
+                    _flutterwaveError.value = err
+                    onError(err)
                 }
             } catch (e: Exception) {
-                val err = e.localizedMessage ?: "Failed to verify Flutterwave payment"
+                val err = sanitizeUserFacingError(e.localizedMessage)
                 _flutterwaveError.value = err
                 onError(err)
             } finally {
@@ -1491,7 +1729,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 _apiKeyStatusMessage.value = "API Key generated and saved securely."
                 onComplete?.invoke(true, key)
             } else {
-                val err = result.exceptionOrNull()?.message ?: "Failed to generate key from Supabase"
+                val err = sanitizeUserFacingError(result.exceptionOrNull()?.message)
                 _apiKeyStatusMessage.value = err
                 onComplete?.invoke(false, err)
             }
@@ -1514,11 +1752,45 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 _apiKeyStatusMessage.value = "New API Key generated and saved securely."
                 onComplete?.invoke(true, key)
             } else {
-                val err = result.exceptionOrNull()?.message ?: "Failed to regenerate key from Supabase"
+                val err = sanitizeUserFacingError(result.exceptionOrNull()?.message)
                 _apiKeyStatusMessage.value = err
                 onComplete?.invoke(false, err)
             }
         }
+    }
+
+    private fun sanitizeUserFacingError(raw: String?): String {
+        val text = raw?.trim().orEmpty()
+        if (text.isBlank()) {
+            return "Network connection bad. Please check your internet connection and try again."
+        }
+        val lower = text.lowercase()
+        if (lower.contains("insufficient")) {
+            return text.replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "").trim()
+        }
+        if (lower.contains("gsubz") ||
+            lower.contains("supabase") ||
+            lower.contains("edge") ||
+            lower.contains("function") ||
+            lower.contains("credential") ||
+            lower.contains("configured") ||
+            lower.contains("api key") ||
+            lower.contains("apikey") ||
+            lower.contains("network") ||
+            lower.contains("timeout") ||
+            lower.contains("timed out") ||
+            lower.contains("connect") ||
+            lower.contains("unreachable") ||
+            lower.contains("resolve host") ||
+            lower.contains("bad gateway") ||
+            lower.contains("http ") ||
+            lower.contains("code 5") ||
+            lower.contains("code 4")
+        ) {
+            return "Network connection bad. Please check your internet connection and try again."
+        }
+        return text.replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "").trim()
+            .ifBlank { "Network connection bad. Please check your internet connection and try again." }
     }
 
     fun saveCustomApiKey(userId: String, userEmail: String, customKey: String) {

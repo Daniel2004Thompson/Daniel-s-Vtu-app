@@ -1,15 +1,20 @@
 package com.example.data.remote
 
 import com.example.auth.SupabaseProvider
+import com.example.data.model.NetworkProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 data class GsubzOrderResult(
     val isSuccess: Boolean,
+    val isPending: Boolean = false,
     val status: String,
     val transactionId: String,
     val message: String,
     val amountPaid: Double,
+    val airtimeValue: Double? = null,
+    val cashback: Double? = null,
+    val charged: Double? = null,
     val tokenOrPin: String? = null,
     val isLiveEdge: Boolean = false
 )
@@ -52,12 +57,27 @@ class GsubzEdgeServiceClient(
         planId: String? = null,
         meterNumber: String? = null,
         smartcardNumber: String? = null,
+        serviceIdOverride: String? = null,
         userToken: String? = null,
         userId: String? = null,
         userEmail: String? = null,
         userApiKey: String? = null
     ): GsubzOrderResult = withContext(Dispatchers.IO) {
-        val mappedServiceId = mapToGsubzServiceId(serviceType, provider)
+        val effectiveToken = userToken ?: resolvedAuthToken
+        val mappedServiceId = if (serviceType.equals("AIRTIME", ignoreCase = true)) {
+            serviceIdOverride?.takeIf { it.isNotBlank() }
+                ?: GsubzVtuService.resolveAirtimeServiceId(provider, effectiveToken)
+        } else {
+            serviceIdOverride?.takeIf { it.isNotBlank() }
+                ?: mapToGsubzServiceId(serviceType, provider)
+        }
+
+        val effectivePlan = if (serviceType.equals("AIRTIME", ignoreCase = true)) {
+            ""
+        } else {
+            planId ?: ""
+        }
+
         val effectiveCustomerId = when (serviceType) {
             "ELECTRICITY" -> meterNumber ?: recipient
             "CABLE_TV" -> smartcardNumber ?: recipient
@@ -66,13 +86,13 @@ class GsubzEdgeServiceClient(
 
         return@withContext GsubzVtuService.purchaseVtuService(
             serviceID = mappedServiceId,
-            plan = planId ?: "",
+            plan = effectivePlan,
             amount = amount,
             phone = recipient,
             customerID = effectiveCustomerId,
             userId = userId,
             userEmail = userEmail,
-            userToken = userToken ?: resolvedAuthToken,
+            userToken = effectiveToken,
             supabaseAnonKey = supabaseAnonKey
         )
     }
@@ -85,6 +105,7 @@ class GsubzEdgeServiceClient(
         planId: String? = null,
         meterNumber: String? = null,
         smartcardNumber: String? = null,
+        serviceIdOverride: String? = null,
         userToken: String? = null,
         userId: String? = null,
         userEmail: String? = null,
@@ -97,21 +118,19 @@ class GsubzEdgeServiceClient(
         planId = planId,
         meterNumber = meterNumber,
         smartcardNumber = smartcardNumber,
+        serviceIdOverride = serviceIdOverride,
         userToken = userToken,
         userId = userId,
         userEmail = userEmail,
         userApiKey = userApiKey
     )
 
-    private fun mapToGsubzServiceId(serviceType: String, provider: String): String {
+    fun mapToGsubzServiceId(serviceType: String, provider: String): String {
         val p = provider.uppercase()
         return when (serviceType) {
-            "AIRTIME" -> when {
-                p.contains("MTN") -> "mtn"
-                p.contains("AIRTEL") -> "airtel"
-                p.contains("GLO") -> "glo"
-                p.contains("9MOBILE") || p.contains("ETISALAT") -> "etisalat"
-                else -> "mtn"
+            "AIRTIME" -> {
+                val net = NetworkProvider.detectFromTextOrPhone(provider) ?: NetworkProvider.MTN
+                GsubzVtuService.airtimePrices.value[net]?.serviceId ?: net.id
             }
             "DATA" -> when {
                 p.contains("MTN") -> "mtn_sme"

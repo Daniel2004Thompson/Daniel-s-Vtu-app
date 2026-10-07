@@ -243,7 +243,7 @@ fun DynamicAccountScreen(
                         Spacer(modifier = Modifier.height(6.dp))
 
                         Text(
-                            text = "Connected directly to your Supabase backend. When money is transferred from any Nigerian bank app, your dashboard balance updates instantly in real-time.",
+                            text = "Connected directly to our instant settlement network. When money is transferred from any Nigerian bank app, your dashboard balance updates instantly in real-time.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.White.copy(alpha = 0.85f),
                             lineHeight = 18.sp
@@ -725,7 +725,7 @@ fun DynamicAccountScreen(
                         FeaturePoint(
                             icon = Icons.Default.Bolt,
                             title = "Instant Generation",
-                            description = "One-tap creation directly through Supabase Edge Functions with Flutterwave."
+                            description = "One-tap creation for instant direct bank transfers."
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         FeaturePoint(
@@ -737,7 +737,7 @@ fun DynamicAccountScreen(
                         FeaturePoint(
                             icon = Icons.Default.Sensors,
                             title = "Realtime Balance Update",
-                            description = "Postgres changes listener updates your dashboard wallet balance automatically."
+                            description = "Real-time balance sync updates your dashboard wallet balance automatically."
                         )
                     }
                 }

@@ -98,7 +98,9 @@ fun ProfileSecurityScreen(
     onToggleBiometric: (Boolean) -> Unit,
     onToggleAppLock: (Boolean) -> Unit,
     onToggleNotifications: (Boolean) -> Unit,
-    onUpdatePin: (String) -> Unit,
+    onNavigateToCreatePin: () -> Unit = {},
+    onNavigateToChangePin: () -> Unit = {},
+    hasTransactionPin: Boolean = false,
     onNavigateToChangeEmail: () -> Unit = {},
     onNavigateToResetPassword: () -> Unit = {},
     onNavigateToLogout: () -> Unit = {},
@@ -113,11 +115,7 @@ fun ProfileSecurityScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    var showChangePinDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
-    var currentPinInput by remember { mutableStateOf("") }
-    var newPinInput by remember { mutableStateOf("") }
-    var pinError by remember { mutableStateOf<String?>(null) }
 
     var liveFetchedPhone by remember(currentUser?.id, currentUser?.phone) {
         mutableStateOf(com.example.data.repository.VtuRepository.sanitizeRealPhone(currentUser?.phone))
@@ -149,11 +147,22 @@ fun ProfileSecurityScreen(
                     } catch (_: Throwable) { null }
 
                     val data = try {
-                        supabase.postgrest.from("users").select {
+                        supabase.postgrest.from("users").select(
+                            io.github.jan.supabase.postgrest.query.Columns.list("id", "phone", "full_name")
+                        ) {
                             filter { eq("id", userId) }
                             limit(1)
                         }.decodeSingleOrNull<kotlinx.serialization.json.JsonObject>()
-                    } catch (_: Throwable) { null }
+                    } catch (_: Throwable) {
+                        try {
+                            supabase.postgrest.from("users").select(
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "phone")
+                            ) {
+                                filter { eq("id", userId) }
+                                limit(1)
+                            }.decodeSingleOrNull<kotlinx.serialization.json.JsonObject>()
+                        } catch (_: Throwable) { null }
+                    }
 
                     val dbPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(
                         data?.get("phone")?.let {
@@ -580,12 +589,71 @@ fun ProfileSecurityScreen(
                             color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
                         )
 
-                        // Change 4-digit PIN row
+                        // Create 4-digit Transaction PIN button under Security
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { showChangePinDialog = true }
-                                .padding(vertical = 4.dp),
+                                .clickable { onNavigateToCreatePin() }
+                                .padding(vertical = 4.dp)
+                                .testTag("create_pin_security_row"),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(VtuGreenPrimary.copy(alpha = 0.12f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Key,
+                                        contentDescription = null,
+                                        tint = VtuGreenPrimary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        text = "Create Transaction PIN",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (hasTransactionPin) "Transaction PIN is active" else "Set a new 4-digit transaction PIN",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = onNavigateToCreatePin,
+                                colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.testTag("create_pin_security_button")
+                            ) {
+                                Text(
+                                    text = "Create PIN",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 12.dp),
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
+                        )
+
+                        // Change 4-digit PIN screen navigation under Security
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onNavigateToChangePin() }
+                                .padding(vertical = 4.dp)
+                                .testTag("change_pin_security_row"),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -607,18 +675,18 @@ fun ProfileSecurityScreen(
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text(
-                                        text = "Change Security PIN",
+                                        text = "Change PIN",
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        text = "Fallback 4-digit authorization code",
+                                        text = "Update your 4-digit transaction PIN",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
-                            Icon(Icons.Default.Edit, contentDescription = "Edit PIN", modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Edit, contentDescription = "Change PIN", modifier = Modifier.size(20.dp))
                         }
                     }
                 }
@@ -899,68 +967,12 @@ fun ProfileSecurityScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "Secured with Android Biometrics & Room Persistence",
+                        text = "Secured with Supabase & Android Keystore",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
                 }
             }
         }
-    }
-
-    // Change PIN Dialog
-    if (showChangePinDialog) {
-        AlertDialog(
-            onDismissRequest = {
-                showChangePinDialog = false
-                currentPinInput = ""
-                newPinInput = ""
-                pinError = null
-            },
-            title = { Text("Update Security PIN", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        "Default PIN is 1234. Enter a new 4-digit PIN for your wallet transactions.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = newPinInput,
-                        onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) newPinInput = it },
-                        label = { Text("New 4-Digit PIN") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (pinError != null) {
-                        Text(pinError ?: "", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newPinInput.length == 4) {
-                            onUpdatePin(newPinInput)
-                            showChangePinDialog = false
-                            newPinInput = ""
-                            pinError = null
-                            Toast.makeText(context, "PIN updated successfully!", Toast.LENGTH_SHORT).show()
-                        } else {
-                            pinError = "PIN must be exactly 4 digits"
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary)
-                ) {
-                    Text("Save PIN")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showChangePinDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
     }
 }

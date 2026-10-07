@@ -77,6 +77,8 @@ import com.example.ui.screens.AirtimeScreen
 import com.example.ui.screens.AppLockScreen
 import com.example.ui.screens.BillsScreen
 import com.example.ui.screens.ChangeEmailScreen
+import com.example.ui.screens.ChangePinScreen
+import com.example.ui.screens.CreatePinScreen
 import com.example.ui.screens.DataScreen
 import com.example.ui.screens.DevelopersForumScreen
 import com.example.ui.screens.DynamicAccountScreen
@@ -91,6 +93,7 @@ import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.TransactionsScreen
 import com.example.ui.theme.DanielVtuTheme
 import com.example.ui.theme.VtuGreenPrimary
+import com.example.ui.viewmodel.PinSetupCheckState
 import com.example.ui.viewmodel.VtuViewModel
 import com.example.util.NotificationHelper
 import kotlinx.coroutines.launch
@@ -99,6 +102,8 @@ object NavigationRoutes {
     const val SPLASH = "splash"
     const val LOGIN = "login"
     const val SIGN_UP = "signup"
+    const val CREATE_PIN = "create_pin"
+    const val CHANGE_PIN = "change_pin"
     const val FORGOT_PASSWORD = "forgot_password?email={email}"
     const val FORGOT_PASSWORD_BASE = "forgot_password"
     const val CHANGE_EMAIL = "change_email"
@@ -144,6 +149,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
 
     val walletBalance by viewModel.walletBalance.collectAsState()
     val cashbackBalance by viewModel.cashbackBalance.collectAsState()
+    val airtimePrices by viewModel.airtimePrices.collectAsState()
     val biometricEnabled by viewModel.biometricEnabled.collectAsState()
     val appLockEnabled by viewModel.appLockEnabled.collectAsState()
     val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
@@ -157,12 +163,16 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
 
     val isAppUnlocked by viewModel.isAppUnlocked.collectAsState()
     val pendingAuthTx by viewModel.pendingTransactionForAuth.collectAsState()
+    val pinSetupState by viewModel.pinSetupState.collectAsState()
+    val isPinActionLoading by viewModel.isPinActionLoading.collectAsState()
+    val pinDialogError by viewModel.pinDialogError.collectAsState()
     val activeReceipt by viewModel.activeReceipt.collectAsState()
     val alertBanner by viewModel.inAppAlertBanner.collectAsState()
     val showFundSheet by viewModel.showFundWalletSheet.collectAsState()
     val uiMessage by viewModel.uiMessage.collectAsState()
 
     var showPinFallbackForAppLock by remember { mutableStateOf(false) }
+    var appLockPinError by remember { mutableStateOf<String?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -178,11 +188,14 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
 
     LaunchedEffect(currentUser?.id, isLoggedIn) {
         if (!isLoggedIn) return@LaunchedEffect
+        viewModel.checkHasTransactionPin()
         val supabase = SupabaseInstance.client ?: return@LaunchedEffect
         val authUser = try { supabase.auth.currentUserOrNull() } catch (_: Throwable) { null }
         val currentUserId = authUser?.id ?: currentUser?.id
         val isValidUuid = !currentUserId.isNullOrBlank() && currentUserId.length == 36 && currentUserId.count { it == '-' } == 4
         if (!isValidUuid || currentUserId.isNullOrBlank()) return@LaunchedEffect
+
+        viewModel.refreshAirtimePrices()
 
         scope.launch {
             try {
@@ -193,7 +206,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                 } catch (_: Throwable) { null }
 
                 val data = try {
-                    supabase.from("users").select {
+                    supabase.from("users").select(Columns.list("id", "wallet_balance", "phone")) {
                         filter { eq("id", currentUserId) }
                         limit(1)
                     }.decodeSingleOrNull<JsonObject>()
@@ -262,10 +275,24 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
         }
     }
 
-    LaunchedEffect(isLoggedIn) {
+    val navigateToCreatePinSafe: () -> Unit = {
+        try {
+            val cur = navController.currentDestination?.route
+            if (cur != NavigationRoutes.CREATE_PIN) {
+                navController.navigate(NavigationRoutes.CREATE_PIN) {
+                    launchSingleTop = true
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    LaunchedEffect(isLoggedIn, pinSetupState, currentRoute) {
         val cur = navController.currentDestination?.route
         if (isLoggedIn) {
-            if (cur == NavigationRoutes.LOGIN || cur == NavigationRoutes.SIGN_UP || cur == NavigationRoutes.LOGOUT) {
+            if (cur == NavigationRoutes.LOGIN ||
+                cur == NavigationRoutes.SIGN_UP ||
+                cur == NavigationRoutes.LOGOUT
+            ) {
                 navigateToHomeSafe()
             }
         } else {
@@ -286,6 +313,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                     showPinFallbackForAppLock = false
                 },
                 onRequestPinDialog = {
+                    appLockPinError = null
                     showPinFallbackForAppLock = true
                 }
             )
@@ -293,13 +321,35 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
             if (showPinFallbackForAppLock) {
                 BiometricPinDialog(
                     pendingTransaction = null,
-                    isBiometricEnabled = false,
-                    onPinVerify = { pin -> viewModel.verifyPin(pin) },
-                    onSuccess = {
-                        viewModel.unlockApp()
-                        showPinFallbackForAppLock = false
+                    isVerifying = isPinActionLoading,
+                    errorMessage = appLockPinError,
+                    onClearError = { appLockPinError = null },
+                    onSubmitPin = { pin ->
+                        viewModel.verifyTransactionPinAsync(pin) { outcome ->
+                            when (outcome) {
+                                is com.example.data.remote.PinVerifyOutcome.Verified -> {
+                                    appLockPinError = null
+                                    viewModel.unlockApp()
+                                    showPinFallbackForAppLock = false
+                                }
+                                is com.example.data.remote.PinVerifyOutcome.WrongPin -> {
+                                    appLockPinError = "Wrong PIN"
+                                }
+                                is com.example.data.remote.PinVerifyOutcome.Locked -> {
+                                    appLockPinError = "Too many wrong attempts. Try again in 15 minutes."
+                                }
+                                is com.example.data.remote.PinVerifyOutcome.Error -> {
+                                    appLockPinError = if (outcome.message.contains("locked", ignoreCase = true)) {
+                                        "Too many wrong attempts. Try again in 15 minutes."
+                                    } else {
+                                        outcome.message
+                                    }
+                                }
+                            }
+                        }
                     },
                     onDismiss = {
+                        appLockPinError = null
                         showPinFallbackForAppLock = false
                     }
                 )
@@ -414,8 +464,41 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                             }
                         },
                         onLoginSuccess = {
+                            viewModel.checkHasTransactionPin()
                             navigateToHomeSafe()
                         }
+                    )
+                }
+
+                composable(NavigationRoutes.CREATE_PIN) {
+                    CreatePinScreen(
+                        isLoading = isPinActionLoading,
+                        onCreatePin = { newPin, onError ->
+                            viewModel.createTransactionPin(
+                                pin = newPin,
+                                onSuccess = {
+                                    navigateBackSafe()
+                                },
+                                onError = { errMsg ->
+                                    onError(errMsg)
+                                }
+                            )
+                        },
+                        onBack = { navigateBackSafe() }
+                    )
+                }
+
+                composable(NavigationRoutes.CHANGE_PIN) {
+                    ChangePinScreen(
+                        isLoading = isPinActionLoading,
+                        onChangePin = { oldPin, newPin, onResult ->
+                            viewModel.changeTransactionPin(
+                                oldPin = oldPin,
+                                newPin = newPin,
+                                onResult = onResult
+                            )
+                        },
+                        onBack = { navigateBackSafe() }
                     )
                 }
 
@@ -458,6 +541,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                             navigateBackSafe()
                         },
                         onSignUpSuccess = {
+                            viewModel.checkHasTransactionPin()
                             navigateToHomeSafe()
                         }
                     )
@@ -514,7 +598,9 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                         onBack = { navigateBackSafe() },
                         onRequestPayment = { pending ->
                             viewModel.prepareTransaction(pending)
-                        }
+                        },
+                        airtimePrices = airtimePrices,
+                        onRefreshPrices = { viewModel.refreshAirtimePrices() }
                     )
                 }
 
@@ -576,7 +662,9 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                         onToggleBiometric = { viewModel.toggleBiometric(it) },
                         onToggleAppLock = { viewModel.toggleAppLock(it) },
                         onToggleNotifications = { viewModel.toggleNotifications(it) },
-                        onUpdatePin = { viewModel.updatePin(it) },
+                        onNavigateToCreatePin = { navController.navigate(NavigationRoutes.CREATE_PIN) },
+                        onNavigateToChangePin = { navController.navigate(NavigationRoutes.CHANGE_PIN) },
+                        hasTransactionPin = pinSetupState is PinSetupCheckState.HasPin,
                         onNavigateToChangeEmail = { navController.navigate(NavigationRoutes.CHANGE_EMAIL) },
                         onNavigateToResetPassword = { navController.navigate(NavigationRoutes.FORGOT_PASSWORD_BASE) },
                         onNavigateToLogout = { navController.navigate(NavigationRoutes.LOGOUT) },
@@ -656,14 +744,15 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
     }
 
     // Modal Overlays
-    // 1. Biometric / PIN authorization dialog
+    // 1. 4-Digit Transaction PIN authorization dialog (before every purchase and withdrawal)
     if (pendingAuthTx != null) {
         BiometricPinDialog(
             pendingTransaction = pendingAuthTx,
-            isBiometricEnabled = biometricEnabled,
-            onPinVerify = { pin -> viewModel.verifyPin(pin) },
-            onSuccess = {
-                viewModel.authorizeAndExecutePending()
+            isVerifying = isPinActionLoading,
+            errorMessage = pinDialogError,
+            onClearError = { viewModel.clearPinDialogError() },
+            onSubmitPin = { pin ->
+                viewModel.verifyPinAndExecutePending(pin)
             },
             onDismiss = {
                 viewModel.dismissAuthDialog()

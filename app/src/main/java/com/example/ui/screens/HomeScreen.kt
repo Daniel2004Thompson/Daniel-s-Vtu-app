@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,6 +36,11 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.rotate
@@ -197,11 +204,22 @@ fun HomeScreen(
                     } catch (_: Throwable) { null }
 
                     val data = try {
-                        supabase.postgrest.from("users").select {
+                        supabase.postgrest.from("users").select(
+                            io.github.jan.supabase.postgrest.query.Columns.list("id", "phone", "full_name")
+                        ) {
                             filter { eq("id", userId) }
                             limit(1)
                         }.decodeSingleOrNull<kotlinx.serialization.json.JsonObject>()
-                    } catch (_: Throwable) { null }
+                    } catch (_: Throwable) {
+                        try {
+                            supabase.postgrest.from("users").select(
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "phone")
+                            ) {
+                                filter { eq("id", userId) }
+                                limit(1)
+                            }.decodeSingleOrNull<kotlinx.serialization.json.JsonObject>()
+                        } catch (_: Throwable) { null }
+                    }
 
                     val dbPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(
                         data?.get("phone")?.let {
@@ -347,81 +365,33 @@ fun HomeScreen(
                     }
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Realtime Reload Circular Button
-                    IconButton(
-                        onClick = {
-                            if (!isRealtimeReloading) {
-                                isRealtimeReloading = true
-                                coroutineScope.launch {
-                                    onRefreshRemoteProfile?.invoke()
-                                    val uid = currentUser?.id ?: SupabaseInstance.client?.auth?.currentUserOrNull()?.id
-                                    walletViewModel.refreshWalletRealtime(uid) { newBal ->
-                                        Toast.makeText(context, "Wallet updated: ₦%,.2f".format(newBal), Toast.LENGTH_SHORT).show()
-                                    }
-                                    kotlinx.coroutines.delay(700)
-                                    isRealtimeReloading = false
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-                            .testTag("realtime_reload_circular_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Realtime Reload",
-                            tint = if (isRealtimeReloading) VtuGreenPrimary else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .size(20.dp)
-                                .rotate(reloadRotation)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    IconButton(
-                        onClick = { showSupportDialog = true },
-                        modifier = Modifier.testTag("support_icon_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.HeadsetMic,
-                            contentDescription = "Contact Support",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(4.dp))
-
-                    IconButton(
-                        onClick = onNavigateToNotifications,
-                        modifier = Modifier.testTag("notifications_icon_button")
-                    ) {
-                        BadgedBox(
-                            badge = {
-                                if (unreadCount > 0) {
+                if (unreadCount > 0) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = onNavigateToNotifications,
+                            modifier = Modifier.testTag("notifications_icon_button")
+                        ) {
+                            BadgedBox(
+                                badge = {
                                     Badge(containerColor = VtuGoldAccent) {
                                         Text(unreadCount.toString(), color = Color.Black, fontWeight = FontWeight.Bold)
                                     }
                                 }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Notifications,
+                                    contentDescription = "Notifications",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(26.dp)
+                                )
                             }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Notifications,
-                                contentDescription = "Notifications",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(26.dp)
-                            )
                         }
                     }
                 }
             }
         }
 
-        // Hero Wallet Balance Card
+        // Hero Wallet Balance Card (AFTER Design)
         item {
             Box(
                 modifier = Modifier
@@ -431,60 +401,128 @@ fun HomeScreen(
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(24.dp))
+                        .clip(RoundedCornerShape(26.dp))
                         .testTag("wallet_balance_card"),
-                    colors = CardDefaults.cardColors(containerColor = VtuNavyPrimary),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                    shape = RoundedCornerShape(26.dp),
+                    border = BorderStroke(
+                        width = 1.4.dp,
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF38D399).copy(alpha = 0.7f),
+                                Color(0xFF289672).copy(alpha = 0.5f),
+                                Color(0xFF38D399).copy(alpha = 0.65f)
+                            )
+                        )
+                    ),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0B2434)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
                 ) {
-                    Box {
-                        // Background subtle gradient artwork
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(190.dp)
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            VtuNavyPrimary,
-                                            VtuNavySurface,
-                                            VtuGreenDark.copy(alpha = 0.6f)
-                                        )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color(0xFF0B2235),
+                                        Color(0xFF0E3C39),
+                                        Color(0xFF14644A)
                                     )
                                 )
-                        )
+                            )
+                    ) {
+                        // Soft concentric signal rings + lightning bolt watermark on right side
+                        Canvas(
+                            modifier = Modifier.matchParentSize()
+                        ) {
+                            val center = Offset(x = size.width * 0.74f, y = size.height * 0.43f)
+                            val ringRadii = listOf(
+                                38.dp.toPx(),
+                                62.dp.toPx(),
+                                88.dp.toPx(),
+                                116.dp.toPx()
+                            )
+                            val ringAlphas = listOf(0.22f, 0.15f, 0.11f, 0.08f)
+
+                            // Inner dark circle backdrop
+                            drawCircle(
+                                color = Color(0xFF082A23).copy(alpha = 0.38f),
+                                radius = ringRadii[0],
+                                center = center
+                            )
+
+                            ringRadii.forEachIndexed { index, radius ->
+                                drawCircle(
+                                    color = Color(0xFF4ADE80).copy(alpha = ringAlphas[index]),
+                                    radius = radius,
+                                    center = center,
+                                    style = Stroke(width = 1.6.dp.toPx())
+                                )
+                            }
+
+                            // Lightning bolt inside innermost ring
+                            val boltW = 24.dp.toPx()
+                            val boltH = 44.dp.toPx()
+                            val boltPath = Path().apply {
+                                moveTo(center.x + boltW * 0.14f, center.y - boltH * 0.50f)
+                                lineTo(center.x - boltW * 0.45f, center.y + boltH * 0.04f)
+                                lineTo(center.x - boltW * 0.02f, center.y + boltH * 0.04f)
+                                lineTo(center.x - boltW * 0.18f, center.y + boltH * 0.50f)
+                                lineTo(center.x + boltW * 0.45f, center.y - boltH * 0.06f)
+                                lineTo(center.x + boltW * 0.04f, center.y - boltH * 0.06f)
+                                close()
+                            }
+                            drawPath(
+                                path = boltPath,
+                                color = Color(0xFF4ADE80).copy(alpha = 0.24f)
+                            )
+                        }
 
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(20.dp)
+                                .padding(horizontal = 20.dp, vertical = 18.dp)
                         ) {
+                            // Top Row: Wallet Badge + Available Balance + Eye + Refresh | Bonus Pill
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Wallet,
-                                        contentDescription = null,
-                                        tint = VtuGreenSecondary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    // Green rounded-square wallet icon badge
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF22C57B)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Wallet,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = "Available Balance",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = Color.White.copy(alpha = 0.8f)
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Medium,
+                                            fontSize = 14.sp
+                                        ),
+                                        color = Color(0xFFD5E6E1)
                                     )
+                                    Spacer(modifier = Modifier.width(4.dp))
                                     IconButton(
                                         onClick = { isBalanceVisible = !isBalanceVisible },
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(26.dp)
                                     ) {
                                         Icon(
                                             imageVector = if (isBalanceVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                                             contentDescription = "Toggle Balance",
-                                            tint = Color.White.copy(alpha = 0.7f),
-                                            modifier = Modifier.size(16.dp)
+                                            tint = Color.White.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
                                     IconButton(
@@ -502,103 +540,162 @@ fun HomeScreen(
                                                 }
                                             }
                                         },
-                                        modifier = Modifier.size(24.dp).testTag("balance_card_reload_button")
+                                        modifier = Modifier
+                                            .size(26.dp)
+                                            .testTag("balance_card_reload_button")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Refresh,
                                             contentDescription = "Realtime Balance Reload",
-                                            tint = if (isRealtimeReloading) VtuGreenSecondary else Color.White.copy(alpha = 0.75f),
+                                            tint = if (isRealtimeReloading) VtuGreenSecondary else Color.White.copy(alpha = 0.85f),
                                             modifier = Modifier
-                                                .size(16.dp)
+                                                .size(17.dp)
                                                 .rotate(reloadRotation)
                                         )
                                     }
                                 }
 
-                                // Cashback pill
+                                // Bonus Pill
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(20.dp))
-                                        .background(VtuGoldAccent.copy(alpha = 0.2f))
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(Color(0xFF2B3324).copy(alpha = 0.9f))
+                                        .border(
+                                            width = 1.dp,
+                                            color = Color(0xFF8C6D2D).copy(alpha = 0.7f),
+                                            shape = RoundedCornerShape(50)
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 5.dp)
                                 ) {
                                     Text(
                                         text = "Bonus: ₦%,.2f".format(cashbackBalance),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = VtuGoldAccent,
-                                        fontWeight = FontWeight.Bold
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
+                                        color = Color(0xFFF6B93B),
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
                                     )
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(16.dp))
 
+                            // Main Balance Text
                             Text(
                                 text = if (isBalanceVisible) "₦%,.2f".format(displayBalance) else "₦ • • • • • •",
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontWeight = FontWeight.ExtraBold,
+                                style = MaterialTheme.typography.headlineLarge.copy(
+                                    fontSize = 38.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = (-0.5).sp
+                                ),
                                 color = Color.White
                             )
 
-                            Spacer(modifier = Modifier.height(18.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
 
+                            // Horizontal "Protected" Badge directly below balance
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Color(0xFF104035).copy(alpha = 0.85f))
+                                    .border(
+                                        width = 1.dp,
+                                        color = Color(0xFF2E9E75).copy(alpha = 0.65f),
+                                        shape = RoundedCornerShape(50)
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 5.dp)
+                                    .testTag("protected_badge")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.VerifiedUser,
+                                    contentDescription = null,
+                                    tint = Color(0xFF34D889),
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Protected",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    ),
+                                    color = Color(0xFFD1FAE5),
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            // Subtle horizontal divider above action buttons
+                            HorizontalDivider(
+                                color = Color.White.copy(alpha = 0.10f),
+                                thickness = 1.dp
+                            )
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Side-by-side Fund Wallet + Support buttons inside the card
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                Button(
+                                    onClick = onOpenFundWallet,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF189E65),
+                                        contentColor = Color.White
+                                    ),
+                                    border = BorderStroke(1.dp, Color(0xFF38D399).copy(alpha = 0.55f)),
+                                    shape = RoundedCornerShape(14.dp),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(46.dp)
+                                        .testTag("fund_wallet_button")
                                 ) {
-                                    Button(
-                                        onClick = onOpenFundWallet,
-                                        colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary),
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.testTag("fund_wallet_button")
-                                    ) {
-                                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("+ Fund Wallet", fontWeight = FontWeight.Bold)
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = { showSupportDialog = true },
-                                        colors = ButtonDefaults.outlinedButtonColors(
-                                            contentColor = Color.White
-                                        ),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
-                                        shape = RoundedCornerShape(12.dp),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                                        modifier = Modifier.testTag("support_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.HeadsetMic,
-                                            contentDescription = "Support",
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = "Support",
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            softWrap = false
-                                        )
-                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Fund Wallet",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
                                 }
 
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedButton(
+                                    onClick = { showSupportDialog = true },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        containerColor = Color(0xFF134A3E).copy(alpha = 0.65f),
+                                        contentColor = Color.White
+                                    ),
+                                    border = BorderStroke(1.dp, Color(0xFF5EEAD4).copy(alpha = 0.45f)),
+                                    shape = RoundedCornerShape(14.dp),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(46.dp)
+                                        .testTag("support_button")
+                                ) {
                                     Icon(
-                                        imageVector = Icons.Default.Security,
-                                        contentDescription = null,
-                                        tint = VtuGreenSecondary,
-                                        modifier = Modifier.size(14.dp)
+                                        imageVector = Icons.Default.HeadsetMic,
+                                        contentDescription = "Support",
+                                        modifier = Modifier.size(17.dp)
                                     )
-                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "Protected",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.White.copy(alpha = 0.7f)
+                                        text = "Support",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             }
@@ -782,7 +879,10 @@ fun HomeScreen(
                             Text(
                                 text = if (hasDynamicAcc) "Dynamic Acct: $dynNumber" else "Create Dynamic Account",
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Surface(
@@ -794,12 +894,14 @@ fun HomeScreen(
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                                 )
                             }
                         }
                         Text(
-                            text = if (hasDynamicAcc) "$dynBank • Direct Bank transfer • Live Auto sync" else "Live Flutterwave edge account • Direct Bank transfer • Auto sync",
+                            text = if (hasDynamicAcc) "$dynBank • Direct Bank transfer • Live Auto sync" else "Instant virtual bank account • Direct Bank transfer • Auto sync",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

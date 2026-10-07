@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import java.util.concurrent.ConcurrentHashMap
 
 @Database(
@@ -12,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
         TransactionEntity::class,
         BeneficiaryEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -26,6 +28,57 @@ abstract class AppDatabase : RoomDatabase() {
 
         private val USER_DATABASES = ConcurrentHashMap<String, AppDatabase>()
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `user_profiles_new` (
+                        `userId` TEXT NOT NULL,
+                        `email` TEXT NOT NULL,
+                        `fullName` TEXT NOT NULL,
+                        `phone` TEXT,
+                        `nin` TEXT,
+                        `ninHash` TEXT,
+                        `ninVerified` INTEGER NOT NULL,
+                        `walletBalance` REAL NOT NULL,
+                        `cashbackBalance` REAL NOT NULL,
+                        `virtualAccountNumber` TEXT,
+                        `virtualBankName` TEXT,
+                        `virtualAccountName` TEXT,
+                        `dynamicAccountNumber` TEXT,
+                        `dynamicBankName` TEXT,
+                        `dynamicAccountName` TEXT,
+                        `dynamicAccountAmount` REAL,
+                        `biometricEnabled` INTEGER NOT NULL,
+                        `appLockEnabled` INTEGER NOT NULL,
+                        `notificationsEnabled` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`userId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR REPLACE INTO `user_profiles_new` (
+                        `userId`, `email`, `fullName`, `phone`, `nin`, `ninHash`, `ninVerified`,
+                        `walletBalance`, `cashbackBalance`, `virtualAccountNumber`, `virtualBankName`,
+                        `virtualAccountName`, `dynamicAccountNumber`, `dynamicBankName`, `dynamicAccountName`,
+                        `dynamicAccountAmount`, `biometricEnabled`, `appLockEnabled`, `notificationsEnabled`, `updatedAt`
+                    )
+                    SELECT
+                        `userId`, `email`, `fullName`, `phone`, `nin`, `ninHash`, `ninVerified`,
+                        `walletBalance`, `cashbackBalance`, `virtualAccountNumber`, `virtualBankName`,
+                        `virtualAccountName`, `dynamicAccountNumber`, `dynamicBankName`, `dynamicAccountName`,
+                        `dynamicAccountAmount`, `biometricEnabled`, `appLockEnabled`, `notificationsEnabled`, `updatedAt`
+                    FROM `user_profiles`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `user_profiles`")
+                db.execSQL("ALTER TABLE `user_profiles_new` RENAME TO `user_profiles`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_user_profiles_email` ON `user_profiles` (`email`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -33,6 +86,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "daniel_vtu_database"
                 )
+                .addMigrations(MIGRATION_2_3)
                 .fallbackToDestructiveMigration()
                 .build()
                 INSTANCE = instance
@@ -56,6 +110,7 @@ abstract class AppDatabase : RoomDatabase() {
                         AppDatabase::class.java,
                         "daniel_vtu_user_${cleanUid}.db"
                     )
+                    .addMigrations(MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { USER_DATABASES[cleanUid] = it }

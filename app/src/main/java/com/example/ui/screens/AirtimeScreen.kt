@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,21 +15,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Fingerprint
-import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +36,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,16 +47,43 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.BeneficiaryEntity
+import com.example.data.model.AirtimeNetworkPricing
 import com.example.data.model.NetworkProvider
-import com.example.ui.theme.VtuGoldAccent
+import com.example.data.remote.GsubzVtuService
 import com.example.ui.theme.VtuGreenPrimary
 import com.example.ui.viewmodel.PendingTransaction
+import java.math.BigDecimal
+import java.math.RoundingMode
+
+fun formatCashbackPercent(percent: Double): String {
+    return if (percent % 1.0 == 0.0) {
+        percent.toInt().toString()
+    } else {
+        BigDecimal.valueOf(percent).stripTrailingZeros().toPlainString()
+    }
+}
+
+fun calculateDisplayCashbackAndYouPay(
+    airtimeValue: Double,
+    cashbackPercent: Double
+): Pair<Double, Double> {
+    if (airtimeValue <= 0.0) return 0.0 to 0.0
+    val cashback = BigDecimal.valueOf(airtimeValue)
+        .multiply(BigDecimal.valueOf(cashbackPercent.coerceAtLeast(0.0)))
+        .divide(BigDecimal.valueOf(100.0), 2, RoundingMode.HALF_UP)
+        .toDouble()
+    val youPay = BigDecimal.valueOf(airtimeValue)
+        .subtract(BigDecimal.valueOf(cashback))
+        .setScale(2, RoundingMode.HALF_UP)
+        .toDouble()
+        .coerceAtLeast(0.0)
+    return cashback to youPay
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,18 +91,31 @@ fun AirtimeScreen(
     walletBalance: Double,
     beneficiaries: List<BeneficiaryEntity>,
     onBack: () -> Unit,
-    onRequestPayment: (PendingTransaction) -> Unit
+    onRequestPayment: (PendingTransaction) -> Unit,
+    airtimePrices: Map<NetworkProvider, AirtimeNetworkPricing> = emptyMap(),
+    onRefreshPrices: () -> Unit = {}
 ) {
     var selectedNetwork by remember { mutableStateOf(NetworkProvider.AIRTEL) }
     var phoneNumber by remember { mutableStateOf("") }
     var customAmount by remember { mutableStateOf("1000") }
     var showNetworkPicker by remember { mutableStateOf(false) }
 
+    val observedPrices by GsubzVtuService.airtimePrices.collectAsState()
+    val effectivePrices = if (airtimePrices.isNotEmpty()) airtimePrices else observedPrices
+
+    LaunchedEffect(Unit) {
+        onRefreshPrices()
+        if (effectivePrices.isEmpty()) {
+            GsubzVtuService.fetchAirtimePricesFromVtuPrices()
+        }
+    }
+
     val quickAmounts = listOf(100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0)
 
     val enteredAmount = customAmount.toDoubleOrNull() ?: 0.0
-    val discount = (enteredAmount * (selectedNetwork.airtimeDiscountPct / 100.0))
-    val amountToPay = (enteredAmount - discount).coerceAtLeast(0.0)
+    val selectedNetworkPricing = effectivePrices[selectedNetwork]
+    val selectedCashbackPct = selectedNetworkPricing?.cashbackPercent ?: 0.0
+    val (discount, amountToPay) = calculateDisplayCashbackAndYouPay(enteredAmount, selectedCashbackPct)
 
     val airtimeBeneficiaries = beneficiaries.filter { it.serviceType == "AIRTIME" }
 
@@ -127,6 +162,7 @@ fun AirtimeScreen(
                 ) {
                     NetworkProvider.entries.forEach { network ->
                         val isSelected = selectedNetwork == network
+                        val netCashbackPct = effectivePrices[network]?.cashbackPercent
                         Box(
                             modifier = Modifier
                                 .weight(1f)
@@ -157,13 +193,16 @@ fun AirtimeScreen(
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                                 )
-                                Text(
-                                    text = "${network.airtimeDiscountPct}% Off",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = VtuGreenPrimary,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                if (netCashbackPct != null) {
+                                    Text(
+                                        text = "${formatCashbackPercent(netCashbackPct)}% Off",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = VtuGreenPrimary,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.testTag("network_badge_${network.name}")
+                                    )
+                                }
                             }
                         }
                     }
@@ -302,7 +341,7 @@ fun AirtimeScreen(
                 )
             }
 
-            // Summary Card
+            // Summary Card (display only; server calculates the real charge)
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -322,11 +361,21 @@ fun AirtimeScreen(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            "${selectedNetwork.displayName} Cashback (${selectedNetwork.airtimeDiscountPct}%)",
+                            text = if (selectedNetworkPricing != null) {
+                                "${selectedNetwork.displayName} Cashback (${formatCashbackPercent(selectedCashbackPct)}%)"
+                            } else {
+                                "${selectedNetwork.displayName} Cashback"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = VtuGreenPrimary
+                            color = VtuGreenPrimary,
+                            modifier = Modifier.testTag("airtime_cashback_label")
                         )
-                        Text("-₦%,.2f".format(discount), fontWeight = FontWeight.Bold, color = VtuGreenPrimary)
+                        Text(
+                            text = "-₦%,.2f".format(discount),
+                            fontWeight = FontWeight.Bold,
+                            color = VtuGreenPrimary,
+                            modifier = Modifier.testTag("airtime_cashback_value")
+                        )
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Row(
@@ -336,10 +385,11 @@ fun AirtimeScreen(
                     ) {
                         Text("You Pay", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            "₦%,.2f".format(amountToPay),
+                            text = "₦%,.2f".format(amountToPay),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.ExtraBold,
-                            color = MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.testTag("airtime_you_pay_value")
                         )
                     }
                 }
@@ -351,13 +401,17 @@ fun AirtimeScreen(
             val isValid = phoneNumber.length >= 10 && enteredAmount >= 50.0
             Button(
                 onClick = {
+                    val resolvedServiceId = selectedNetworkPricing?.serviceId?.takeIf { it.isNotBlank() }
+                        ?: selectedNetwork.id
                     val pending = PendingTransaction(
                         title = "${selectedNetwork.displayName} Airtime",
                         serviceType = "AIRTIME",
                         provider = selectedNetwork.displayName,
-                        recipient = phoneNumber,
+                        recipient = phoneNumber.trim(),
                         amount = enteredAmount,
-                        discount = discount
+                        discount = discount,
+                        planId = "",
+                        serviceId = resolvedServiceId
                     )
                     onRequestPayment(pending)
                 },

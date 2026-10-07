@@ -8,8 +8,10 @@ import com.example.data.local.AppDatabase
 import com.example.data.local.BeneficiaryEntity
 import com.example.data.local.TransactionEntity
 import com.example.data.local.UserProfileEntity
+import com.example.data.model.AirtimeNetworkPricing
 import com.example.data.model.AuthResult
 import com.example.data.model.InAppNotification
+import com.example.data.model.NetworkProvider
 import com.example.data.model.SupabaseUser
 import com.example.data.remote.FlutterwaveEdgeServiceClient
 import com.example.data.remote.FlutterwaveInitResult
@@ -17,6 +19,7 @@ import com.example.data.remote.FlutterwaveVerifyResult
 import com.example.data.remote.FlutterwaveVirtualAccount
 import com.example.data.remote.GsubzEdgeServiceClient
 import com.example.data.remote.GsubzOrderResult
+import com.example.data.remote.GsubzVtuService
 import com.example.data.remote.SupabaseAuthClient
 import com.example.data.model.UserApiKey
 import com.example.data.model.ForumTopic
@@ -64,6 +67,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import android.util.Log
 import com.example.data.remote.ApiKeyRepository
+import com.example.data.remote.PinChangeOutcome
+import com.example.data.remote.PinVerifyOutcome
+import com.example.data.remote.TransactionPinClient
 import com.example.util.SecureApiKeyStorage
 import org.json.JSONArray
 import java.util.concurrent.TimeUnit
@@ -77,7 +83,8 @@ class VtuRepository(
     val flutterwaveClient: FlutterwaveEdgeServiceClient = FlutterwaveEdgeServiceClient(),
     val walletRepo: WalletRepository = WalletRepository(),
     val apiKeyRepo: ApiKeyRepository = ApiKeyRepository(),
-    val secureApiKeyStorage: SecureApiKeyStorage = SecureApiKeyStorage(context)
+    val secureApiKeyStorage: SecureApiKeyStorage = SecureApiKeyStorage(context),
+    val transactionPinClient: TransactionPinClient = TransactionPinClient()
 ) {
     private object SupabaseAuthManagerHolder {
         val repository = AuthRepository()
@@ -102,8 +109,33 @@ class VtuRepository(
         private const val KEY_BIOMETRIC_ENABLED = "key_biometric_enabled"
         private const val KEY_APP_LOCK_ENABLED = "key_app_lock_enabled"
         private const val KEY_NOTIFICATIONS_ENABLED = "key_notifications_enabled"
-        private const val KEY_SECURITY_PIN = "key_security_pin"
         private const val KEY_FIRST_RUN = "key_first_run_initialized"
+
+        val USERS_SAFE_COLUMNS_FULL = listOf(
+            "id",
+            "email",
+            "full_name",
+            "phone",
+            "wallet_balance",
+            "permanent_account_number",
+            "permanent_account_bank",
+            "permanent_account_name",
+            "nin_hash"
+        )
+        val USERS_SAFE_COLUMNS_STANDARD = listOf(
+            "id",
+            "email",
+            "phone",
+            "wallet_balance",
+            "permanent_account_number",
+            "permanent_account_bank",
+            "nin_hash"
+        )
+        val USERS_SAFE_COLUMNS_MINIMAL = listOf(
+            "id",
+            "phone",
+            "wallet_balance"
+        )
 
         // Supabase Auth keys
         private const val KEY_IS_LOGGED_IN = "key_auth_logged_in"
@@ -299,6 +331,15 @@ class VtuRepository(
         }
     )
     val cashbackBalance = _cashbackBalance.asStateFlow()
+    val airtimePrices = GsubzVtuService.airtimePrices
+
+    suspend fun refreshAirtimePrices(): Map<NetworkProvider, AirtimeNetworkPricing> {
+        val token = resolveValidAccessToken()
+        return GsubzVtuService.fetchAirtimePricesFromVtuPrices(
+            accessToken = token,
+            supabaseAnonKey = authClient.supabaseAnonKey
+        )
+    }
 
     private val _biometricEnabled = MutableStateFlow(
         run {
@@ -347,6 +388,7 @@ class VtuRepository(
     val inAppNotifications = _inAppNotifications.asStateFlow()
 
     init {
+        com.example.util.SecurityVault.purgeLegacyLocalPinData(context, prefs)
         checkAndSeedInitialData()
         restoreCurrentUserFromDedicatedDatabase()
     }
@@ -417,14 +459,10 @@ class VtuRepository(
         val uid = u.id.trim()
         if (uid.isBlank() || uid == "usr_default" || uid == "usr_guest") return
         try {
-            val pin = prefs.getString("key_security_pin_$uid", null)
-                ?: prefs.getString(KEY_SECURITY_PIN, "1234")
-                ?: "1234"
             val entity = UserProfileEntity.fromSupabaseUser(
                 user = u,
                 walletBalance = _walletBalance.value,
                 cashbackBalance = _cashbackBalance.value,
-                securityPin = pin,
                 biometricEnabled = _biometricEnabled.value,
                 appLockEnabled = _appLockEnabled.value,
                 notificationsEnabled = _notificationsEnabled.value
@@ -441,7 +479,6 @@ class VtuRepository(
                 .putBoolean(KEY_FIRST_RUN, true)
                 .putFloat(KEY_WALLET_BALANCE, 0.0f)
                 .putFloat(KEY_CASHBACK_BALANCE, 0.0f)
-                .putString(KEY_SECURITY_PIN, "1234")
                 .putBoolean(KEY_BIOMETRIC_ENABLED, true)
                 .putBoolean(KEY_NOTIFICATIONS_ENABLED, true)
                 .apply()
@@ -516,37 +553,24 @@ class VtuRepository(
             }
         }
 
-        val isSuccess = scopedTx.status == "SUCCESSFUL"
+        val isSuccess = scopedTx.status.equals("SUCCESSFUL", ignoreCase = true)
+        val isPending = scopedTx.status.equals("PENDING", ignoreCase = true)
 
-        // Do not calculate wallet balance client-side; rely on the public.users.wallet_balance Realtime subscription
-        if (scopedTx.serviceType == "WALLET_FUNDING") {
-            if (isSuccess) {
-                repoScope.launch {
-                    syncRemoteProfileBalance()
-                }
-            }
-        } else {
-            if (isSuccess) {
-                val netCost = (scopedTx.amount - scopedTx.discountOrCashback).coerceAtLeast(0.0)
-                if (scopedTx.discountOrCashback > 0) {
-                    addCashback(scopedTx.discountOrCashback)
-                }
-                // Trigger remote Supabase wallet debit; balance updates come from public.users.wallet_balance
-                repoScope.launch {
-                    try {
-                        withdrawFromWallet(netCost)
-                    } catch (e: Exception) {
-                        Log.d("VtuRepository", "Remote wallet sync note: ${e.message}")
-                    }
-                }
-            }
+        // Requirement 4: Never subtract the balance locally.
+        // After every purchase (success, pending or failed), re-fetch wallet_balance from the server.
+        if (isSuccess && scopedTx.serviceType != "WALLET_FUNDING" && scopedTx.discountOrCashback > 0) {
+            addCashback(scopedTx.discountOrCashback)
+        }
+        repoScope.launch {
+            syncRemoteProfileBalance()
         }
 
         // Add to In-App notifications
         val newNotification = InAppNotification(
             id = UUID.randomUUID().toString(),
-            title = if (isSuccess) {
-                when (scopedTx.serviceType) {
+            title = when {
+                isPending -> "Purchase is being confirmed"
+                isSuccess -> when (scopedTx.serviceType) {
                     "AIRTIME" -> "Airtime Top-up Successful"
                     "DATA" -> "Data Bundle Activated"
                     "ELECTRICITY" -> "Electricity Token Generated"
@@ -554,8 +578,7 @@ class VtuRepository(
                     "EDUCATION" -> "Education PIN Purchased"
                     else -> "Wallet Funded Successfully"
                 }
-            } else {
-                when (scopedTx.serviceType) {
+                else -> when (scopedTx.serviceType) {
                     "AIRTIME" -> "Airtime Top-up Failed"
                     "DATA" -> "Data Bundle Failed"
                     "ELECTRICITY" -> "Electricity Purchase Failed"
@@ -564,15 +587,20 @@ class VtuRepository(
                     else -> "Transaction Failed"
                 }
             },
-            message = if (isSuccess) {
-                "₦%,.2f to %s (%s). Ref: %s".format(
+            message = when {
+                isPending -> "Purchase is being confirmed: ₦%,.2f to %s (%s). Ref: %s".format(
                     scopedTx.amount,
                     scopedTx.recipient,
                     scopedTx.provider,
                     scopedTx.reference
                 )
-            } else {
-                "Failed: ₦%,.2f to %s (No funds deducted). %s".format(
+                isSuccess -> "₦%,.2f to %s (%s). Ref: %s".format(
+                    scopedTx.amount,
+                    scopedTx.recipient,
+                    scopedTx.provider,
+                    scopedTx.reference
+                )
+                else -> "Failed: ₦%,.2f to %s. %s".format(
                     scopedTx.amount,
                     scopedTx.recipient,
                     scopedTx.tokenOrDetails ?: "Declined"
@@ -904,24 +932,81 @@ class VtuRepository(
         repoScope.launch { persistCurrentUserToLocalDatabase() }
     }
 
-    fun verifyPin(pin: String): Boolean {
-        val uid = _currentUser.value?.id?.trim()
-        val savedPin = if (!uid.isNullOrBlank() && prefs.contains("key_security_pin_$uid")) {
-            prefs.getString("key_security_pin_$uid", "1234")
-        } else {
-            prefs.getString(KEY_SECURITY_PIN, "1234")
-        } ?: "1234"
-        return savedPin == pin
+    private suspend fun resolveValidAccessToken(): String {
+        val directToken = currentAccessToken?.trim().orEmpty()
+        if (directToken.isNotBlank() && !com.example.util.JwtUtils.isExpired(directToken)) {
+            return directToken
+        }
+        try {
+            SupabaseInstance.client?.auth?.refreshCurrentSession()
+            val refreshed = SupabaseInstance.client?.auth?.currentAccessTokenOrNull()?.trim().orEmpty()
+            if (refreshed.isNotBlank()) {
+                _accessToken.value = refreshed
+                prefs.edit().putString(KEY_ACCESS_TOKEN, refreshed).apply()
+                return refreshed
+            }
+        } catch (_: Throwable) {}
+
+        val savedRefreshToken = prefs.getString(KEY_REFRESH_TOKEN, null)?.trim().orEmpty()
+        if (savedRefreshToken.isNotBlank()) {
+            val baseUrl = authClient.supabaseUrl.trimEnd('/')
+            val anonKey = authClient.supabaseAnonKey
+            if (baseUrl.isNotBlank() && anonKey.isNotBlank()) {
+                try {
+                    val bodyJson = JSONObject().put("refresh_token", savedRefreshToken).toString()
+                    val req = Request.Builder()
+                        .url("$baseUrl/auth/v1/token?grant_type=refresh_token")
+                        .addHeader("apikey", anonKey)
+                        .addHeader("Content-Type", "application/json")
+                        .post(bodyJson.toRequestBody("application/json".toMediaType()))
+                        .build()
+                    OkHttpClient.Builder()
+                        .connectTimeout(10, TimeUnit.SECONDS)
+                        .readTimeout(10, TimeUnit.SECONDS)
+                        .build()
+                        .newCall(req)
+                        .execute()
+                        .use { res ->
+                            if (res.isSuccessful) {
+                                val raw = res.body?.string().orEmpty()
+                                val json = JSONObject(raw)
+                                val newAccess = json.optString("access_token").trim()
+                                val newRefresh = json.optString("refresh_token").trim()
+                                if (newAccess.isNotBlank()) {
+                                    _accessToken.value = newAccess
+                                    val ed = prefs.edit().putString(KEY_ACCESS_TOKEN, newAccess)
+                                    if (newRefresh.isNotBlank()) {
+                                        ed.putString(KEY_REFRESH_TOKEN, newRefresh)
+                                    }
+                                    ed.apply()
+                                    return newAccess
+                                }
+                            }
+                        }
+                } catch (_: Throwable) {}
+            }
+        }
+        return directToken
     }
 
-    fun updatePin(newPin: String) {
-        val editor = prefs.edit().putString(KEY_SECURITY_PIN, newPin)
-        val uid = _currentUser.value?.id?.trim()
-        if (!uid.isNullOrBlank()) {
-            editor.putString("key_security_pin_$uid", newPin)
-        }
-        editor.apply()
-        repoScope.launch { persistCurrentUserToLocalDatabase() }
+    suspend fun hasTransactionPin(): Result<Boolean> {
+        val token = resolveValidAccessToken()
+        return transactionPinClient.hasTransactionPin(token)
+    }
+
+    suspend fun setTransactionPin(pin: String): Result<Boolean> {
+        val token = resolveValidAccessToken()
+        return transactionPinClient.setTransactionPin(pin = pin, accessToken = token)
+    }
+
+    suspend fun verifyTransactionPin(pin: String): PinVerifyOutcome {
+        val token = resolveValidAccessToken()
+        return transactionPinClient.verifyTransactionPin(pin = pin, accessToken = token)
+    }
+
+    suspend fun changeTransactionPin(oldPin: String, newPin: String): PinChangeOutcome {
+        val token = resolveValidAccessToken()
+        return transactionPinClient.changeTransactionPin(oldPin = oldPin, newPin = newPin, accessToken = token)
     }
 
     fun markNotificationRead(id: String) {
@@ -942,26 +1027,31 @@ class VtuRepository(
         amount: Double,
         planId: String? = null,
         meterNumber: String? = null,
-        smartcardNumber: String? = null
+        smartcardNumber: String? = null,
+        serviceIdOverride: String? = null
     ): GsubzOrderResult {
         val current = _currentUser.value
-        val result = gsubzClient.executeVtuOrder(
-            serviceType = serviceType,
-            provider = provider,
-            recipient = recipient,
-            amount = amount,
-            planId = planId,
-            meterNumber = meterNumber,
-            smartcardNumber = smartcardNumber,
-            userToken = _accessToken.value,
-            userId = current?.id,
-            userEmail = current?.email
-        )
-        if (result.isSuccess) {
-            // Refresh wallet balance from Supabase public.users after Edge Function execution
+        val validToken = resolveValidAccessToken()
+        return try {
+            gsubzClient.executeVtuOrder(
+                serviceType = serviceType,
+                provider = provider,
+                recipient = recipient,
+                amount = amount,
+                planId = planId,
+                meterNumber = meterNumber,
+                smartcardNumber = smartcardNumber,
+                serviceIdOverride = serviceIdOverride,
+                userToken = validToken,
+                userId = current?.id,
+                userEmail = current?.email
+            )
+        } finally {
+            // Requirement 4: Never subtract the balance locally.
+            // After every purchase (success, pending or failed), re-fetch wallet_balance from the server
+            // so the dashboard always shows the real balance.
             syncRemoteProfileBalance()
         }
-        return result
     }
 
     // --- FLUTTERWAVE PAYMENT EDGE SERVICE INTEGRATION ---
@@ -1142,7 +1232,6 @@ class VtuRepository(
         val editor = prefs.edit()
             .remove(KEY_WALLET_BALANCE)
             .remove(KEY_CASHBACK_BALANCE)
-            .remove(KEY_SECURITY_PIN)
             .remove(KEY_BIOMETRIC_ENABLED)
             .remove(KEY_APP_LOCK_ENABLED)
             .remove(KEY_NOTIFICATIONS_ENABLED)
@@ -1166,7 +1255,6 @@ class VtuRepository(
                 .remove("key_dynamic_acc_amount_$currentUserId")
                 .remove("key_wallet_balance_$currentUserId")
                 .remove("key_cashback_balance_$currentUserId")
-                .remove("key_security_pin_$currentUserId")
                 .remove("key_biometric_enabled_$currentUserId")
                 .remove("key_app_lock_enabled_$currentUserId")
                 .remove("key_notifications_enabled_$currentUserId")
@@ -1183,8 +1271,26 @@ class VtuRepository(
         return JanAuthResult.Success
     }
 
+    private fun isDeviceOffline(): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                ?: return false
+            val network = cm.activeNetwork ?: return true
+            val caps = cm.getNetworkCapabilities(network) ?: return true
+            !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     suspend fun authKtSignIn(email: String, password: String): JanAuthResult {
+        if (isLiveConfigured && isDeviceOffline()) {
+            return JanAuthResult.Error("Network connection is bad. Please check your internet connection and try again.")
+        }
         val result = authRepo.signIn(email, password)
+        if (result is JanAuthResult.Error && isLiveConfigured && isDeviceOffline()) {
+            return JanAuthResult.Error("Network connection is bad. Please check your internet connection and try again.")
+        }
         if (result is JanAuthResult.Success) {
             markEmailAsRegistered(email)
         }
@@ -1192,7 +1298,13 @@ class VtuRepository(
     }
 
     suspend fun authKtVerifySignInCode(email: String, code: String): JanAuthResult {
+        if (isLiveConfigured && isDeviceOffline()) {
+            return JanAuthResult.Error("Network connection is bad. Please check your internet connection and try again.")
+        }
         val result = authRepo.verifySignInCode(email, code)
+        if (result is JanAuthResult.Error && isLiveConfigured && isDeviceOffline()) {
+            return JanAuthResult.Error("Network connection is bad. Please check your internet connection and try again.")
+        }
         if (result is JanAuthResult.Success) {
             markEmailAsRegistered(email)
             val realToken = authRepo.currentAccessToken() ?: ("session_" + UUID.randomUUID().toString())
@@ -1224,16 +1336,8 @@ class VtuRepository(
                     ?: userProfileDao.getUserProfile(realUserId)
             } catch (_: Throwable) { null }
 
-            // Query public.users strictly by id = current user id
-            val dbRow = try {
-                val sb = authRepo.supabase
-                if (sb != null && realUserId.isNotBlank()) {
-                    sb.from("users").select {
-                        filter { eq("id", realUserId) }
-                        limit(1)
-                    }.decodeSingleOrNull<JsonObject>()
-                } else null
-            } catch (_: Throwable) { null }
+            // Query public.users strictly by id = current user id selecting only needed columns
+            val dbRow = fetchSafeUsersRow(authRepo.supabase, realUserId)
 
             val dbFullName = dbRow?.get("full_name")?.toString()?.trim('"')?.takeIf {
                 !it.equals("null", ignoreCase = true) && it.isNotBlank()
@@ -1330,9 +1434,18 @@ class VtuRepository(
         phone: String?,
         newPassword: String? = null
     ): JanAuthResult {
+        if (isLiveConfigured && isDeviceOffline()) {
+            return JanAuthResult.Error("Network connection is bad. Please check your internet connection and try again.")
+        }
         var result = authRepo.verifySignUpCode(email, code)
-        if (result is JanAuthResult.Error) {
-            result = authRepo.verifyPasswordResetCode(email, code)
+        if (result is JanAuthResult.Error && isLiveConfigured && isDeviceOffline()) {
+            return JanAuthResult.Error("Network connection is bad. Please check your internet connection and try again.")
+        }
+        if (result is JanAuthResult.Error && !result.message.contains("network", ignoreCase = true) && !result.message.contains("internet", ignoreCase = true)) {
+            val resetResult = authRepo.verifyPasswordResetCode(email, code)
+            if (resetResult is JanAuthResult.Success) {
+                result = resetResult
+            }
         }
         if (result is JanAuthResult.Success) {
             if (!newPassword.isNullOrBlank()) {
@@ -1383,15 +1496,7 @@ class VtuRepository(
                 it.isNotBlank() && !it.equals("null", ignoreCase = true)
             } ?: cleanFullName
 
-            val dbRow = try {
-                val sb = authRepo.supabase
-                if (sb != null && realUserId.isNotBlank()) {
-                    sb.from("users").select {
-                        filter { eq("id", realUserId) }
-                        limit(1)
-                    }.decodeSingleOrNull<JsonObject>()
-                } else null
-            } catch (_: Throwable) { null }
+            val dbRow = fetchSafeUsersRow(authRepo.supabase, realUserId)
 
             val dbPhone = sanitizeRealPhone(
                 dbRow?.get("phone")?.jsonPrimitive?.contentOrNull
@@ -1670,6 +1775,27 @@ class VtuRepository(
         }
     }
 
+    private suspend fun fetchSafeUsersRow(
+        sb: io.github.jan.supabase.SupabaseClient?,
+        userId: String
+    ): JsonObject? {
+        if (sb == null || userId.isBlank()) return null
+        val columnSets = listOf(
+            USERS_SAFE_COLUMNS_FULL,
+            USERS_SAFE_COLUMNS_STANDARD,
+            USERS_SAFE_COLUMNS_MINIMAL
+        )
+        for (cols in columnSets) {
+            try {
+                return sb.from("users").select(Columns.list(*cols.toTypedArray())) {
+                    filter { eq("id", userId) }
+                    limit(1)
+                }.decodeSingleOrNull<JsonObject>()
+            } catch (_: Throwable) {}
+        }
+        return null
+    }
+
     /**
      * Queries public.users strictly where id = current logged-in user's id for wallet_balance,
      * phone, permanent_account_number/bank, and nin_hash, and reads full_name from current auth user's metadata "full_name".
@@ -1697,12 +1823,7 @@ class VtuRepository(
         // 1. Direct Supabase query on public.users strictly where id = userId
         if (supabase != null) {
             try {
-                val data = try {
-                    supabase.from("users").select {
-                        filter { eq("id", userId) }
-                        limit(1)
-                    }.decodeSingleOrNull<JsonObject>()
-                } catch (_: Throwable) { null }
+                val data = fetchSafeUsersRow(supabase, userId)
 
                 val vaTableRow = try {
                     supabase.from("virtual_accounts").select {
@@ -1841,25 +1962,40 @@ class VtuRepository(
 
         val token = currentAccessToken ?: return
         val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-        val urlUsers = "$baseUrl/rest/v1/users?select=*&id=eq.$userId&limit=1"
 
         val httpClient = OkHttpClient.Builder()
             .connectTimeout(7, TimeUnit.SECONDS)
             .readTimeout(7, TimeUnit.SECONDS)
             .build()
 
-        try {
-            val requestUsers = Request.Builder()
-                .url(urlUsers)
-                .addHeader("apikey", anonKey)
-                .addHeader("Authorization", bearer)
-                .get()
-                .build()
+        val selectCandidates = listOf(
+            USERS_SAFE_COLUMNS_FULL.joinToString(","),
+            USERS_SAFE_COLUMNS_STANDARD.joinToString(","),
+            USERS_SAFE_COLUMNS_MINIMAL.joinToString(",")
+        )
 
-            httpClient.newCall(requestUsers).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyStr = response.body?.string() ?: ""
-                    val array = JSONArray(bodyStr)
+        try {
+            var bodyStr = ""
+            for (cols in selectCandidates) {
+                val urlUsers = "$baseUrl/rest/v1/users?select=$cols&id=eq.$userId&limit=1"
+                val requestUsers = Request.Builder()
+                    .url(urlUsers)
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .get()
+                    .build()
+                val succeeded = httpClient.newCall(requestUsers).execute().use { response ->
+                    if (response.isSuccessful) {
+                        bodyStr = response.body?.string().orEmpty()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (succeeded) break
+            }
+            if (bodyStr.isNotBlank()) {
+                val array = JSONArray(bodyStr)
                     if (array.length() > 0) {
                         val obj = array.getJSONObject(0)
                         if (obj.has("wallet_balance") && !obj.isNull("wallet_balance")) {
@@ -1934,7 +2070,6 @@ class VtuRepository(
                             persistCurrentUserToLocalDatabase(updated)
                         }
                     }
-                }
             }
         } catch (_: Exception) {}
     }
@@ -2555,6 +2690,7 @@ class VtuRepository(
 
         repoScope.launch {
             persistCurrentUserToLocalDatabase(resolvedUser)
+            refreshAirtimePrices()
         }
         startRealtimeBalanceListener()
 
@@ -2938,8 +3074,8 @@ class VtuRepository(
         }
 
         val error = result.exceptionOrNull()
-        Log.e("VtuRepository", "Supabase Generate-api-key failed: ${error?.message}")
-        Result.failure(error ?: Exception("Failed to generate API key from Supabase"))
+        Log.e("VtuRepository", "Generate-api-key failed: ${error?.message}")
+        Result.failure(error ?: Exception("Network connection bad. Please check your internet connection and try again."))
     }
 
     suspend fun regenerateApiKeyRemote(
@@ -2984,8 +3120,8 @@ class VtuRepository(
             Result.success(newKey)
         } else {
             val error = result.exceptionOrNull()
-            Log.e("VtuRepository", "Supabase Regenerate-api-key failed: ${error?.message}")
-            Result.failure(error ?: Exception("Failed to regenerate API key from Supabase"))
+            Log.e("VtuRepository", "Regenerate-api-key failed: ${error?.message}")
+            Result.failure(error ?: Exception("Network connection bad. Please check your internet connection and try again."))
         }
     }
 

@@ -267,25 +267,21 @@ class ApiKeyRepository(private val service: VtuApiService = ApiNetworkClient.ser
                     if (!extractedKey.isNullOrBlank()) {
                         return Result.success(extractedKey)
                     } else {
-                        val msg = json?.optString("message") ?: json?.optString("error") ?: "No API key found in response"
-                        lastError = IOException(msg)
+                        lastError = IOException("Network connection bad. Please check your internet connection and try again.")
                     }
                 } else {
-                    val errorMsg = json?.optString("error")
-                        ?.ifBlank { json.optString("message") }
-                        ?: "Edge function error ($statusCode)"
-                    lastError = IOException(errorMsg)
+                    lastError = IOException("Network connection bad. Please check your internet connection and try again.")
                     if (statusCode != 404) {
-                        return Result.failure(lastError ?: IOException("Request failed ($statusCode)"))
+                        return Result.failure(lastError)
                     }
                 }
             } catch (e: Exception) {
                 Log.w("ApiKeyRepository", "Attempt to call $fnName failed: ${e.message}")
-                lastError = e
+                lastError = IOException("Network connection bad. Please check your internet connection and try again.")
             }
         }
 
-        return Result.failure(lastError ?: IOException("Failed to connect to Supabase Edge Function"))
+        return Result.failure(IOException("Network connection bad. Please check your internet connection and try again."))
     }
 
     private fun parseKeyFromJson(json: JSONObject): String? {
