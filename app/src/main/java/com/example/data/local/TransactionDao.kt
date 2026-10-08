@@ -8,14 +8,17 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface TransactionDao {
-    @Query("SELECT * FROM transactions WHERE userId = :userId ORDER BY timestamp DESC")
+    @Query("SELECT * FROM transactions WHERE userId = :userId ORDER BY timestamp DESC, id ASC")
     fun getAllTransactionsForUser(userId: String): Flow<List<TransactionEntity>>
 
-    @Query("SELECT * FROM transactions WHERE userId = :userId AND serviceType = :serviceType ORDER BY timestamp DESC")
+    @Query("SELECT * FROM transactions WHERE userId = :userId ORDER BY timestamp DESC, id ASC")
+    suspend fun getTransactionsListForUser(userId: String): List<TransactionEntity>
+
+    @Query("SELECT * FROM transactions WHERE userId = :userId AND serviceType = :serviceType ORDER BY timestamp DESC, id ASC")
     fun getTransactionsByServiceForUser(userId: String, serviceType: String): Flow<List<TransactionEntity>>
 
-    @Query("SELECT * FROM transactions WHERE userId = :userId ORDER BY timestamp DESC LIMIT :limit")
-    fun getRecentTransactionsForUser(userId: String, limit: Int = 10): Flow<List<TransactionEntity>>
+    @Query("SELECT * FROM transactions WHERE userId = :userId ORDER BY timestamp DESC, id ASC LIMIT :limit")
+    fun getRecentTransactionsForUser(userId: String, limit: Int = 20): Flow<List<TransactionEntity>>
 
     @Query("SELECT * FROM transactions WHERE userId = :userId AND reference = :reference LIMIT 1")
     suspend fun getTransactionByRefForUser(userId: String, reference: String): TransactionEntity?

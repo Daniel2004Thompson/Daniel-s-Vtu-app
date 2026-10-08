@@ -202,7 +202,7 @@ fun ChangeEmailScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = currentUser?.email ?: "danielkaladathompson@gmail.com",
+                            text = currentUser?.email ?: "Not signed in",
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface

@@ -174,6 +174,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
             if (observedUserId != newId) {
                 observedUserId = newId
                 resetTransientUserStates()
+                refreshMyTransactions()
             }
         }.launchIn(viewModelScope)
     }
@@ -207,9 +208,16 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
     val currentAccessToken: String?
         get() = repository.currentAccessToken
 
+    fun refreshMyTransactions(limit: Int = 20) {
+        viewModelScope.launch {
+            repository.refreshMyTransactions(limit)
+        }
+    }
+
     fun refreshRemoteBalance() {
         viewModelScope.launch {
             repository.syncRemoteProfileBalance()
+            repository.refreshMyTransactions(20)
         }
     }
 
@@ -222,6 +230,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshWalletRealtime(onDone: ((Double) -> Unit)? = null) {
         viewModelScope.launch {
             repository.syncRemoteProfileBalance()
+            repository.refreshMyTransactions(20)
             val bal = repository.walletBalance.value
             onDone?.invoke(bal)
         }
@@ -542,6 +551,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 is AuthResult.Success -> {
                     _authSuccessMessage.value = "Welcome back, ${result.user.fullName}!"
                     _uiMessage.value = "Signed in as ${result.user.email}"
+                    refreshMyTransactions()
                     onSuccess()
                 }
                 is AuthResult.RequiresEmailConfirmation -> {
@@ -581,6 +591,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 is AuthResult.Success -> {
                     _authSuccessMessage.value = "Account created successfully!"
                     _uiMessage.value = "Welcome to Daniel VTU, ${result.user.fullName}!"
+                    refreshMyTransactions()
                     onSuccess()
                 }
                 is AuthResult.RequiresEmailConfirmation -> {
@@ -599,6 +610,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 repository.logout()
             } catch (_: Throwable) {}
+            repository.refreshMyTransactions()
             resetTransientUserStates()
             _signInStep.value = 1
             _signUpStep.value = 1
@@ -797,6 +809,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     _signUpStep.value = 1
                     _authSuccessMessage.value = "Account verified! Welcome to Daniel VTU."
                     _uiMessage.value = "Welcome, $fullName!"
+                    refreshMyTransactions()
                     onSuccess()
                 }
                 is JanAuthResult.Error -> {
@@ -883,6 +896,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     _signInStep.value = 1
                     _authSuccessMessage.value = "Code verified successfully! Welcome back."
                     _uiMessage.value = "Signed in as $email"
+                    refreshMyTransactions()
                     onSuccess()
                 }
                 is JanAuthResult.Error -> {
@@ -1346,10 +1360,12 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     discountOrCashback = 0.0,
                     status = "FAILED",
                     timestamp = System.currentTimeMillis(),
-                    tokenOrDetails = errMsg,
-                    customerName = pending.customerName
+                    tokenOrDetails = null,
+                    customerName = pending.customerName,
+                    title = pending.title.ifBlank { "${pending.provider} ${pending.serviceType.replace('_', ' ')}".trim() }
                 )
                 repository.recordTransaction(failedEntity)
+                _activeReceipt.value = failedEntity
                 onComplete()
                 return@launch
             }
@@ -1376,14 +1392,17 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     "$baseStatusText [SERVER_RECEIPT:airtime=$serverAirtimeValue,cashback=$serverCashback,charged=$serverCharged]"
                 }
                 pending.serviceType == "ELECTRICITY" -> {
-                    val rawToken = (gsubzResult.tokenOrPin ?: "Token: ${generateMeterToken()}")
+                    val rawToken = (gsubzResult.tokenOrPin ?: gsubzResult.message)
                         .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
                         .trim()
-                    if (rawToken.startsWith("Token", ignoreCase = true)) rawToken else "Token: $rawToken"
+                    if (rawToken.isBlank()) null
+                    else if (rawToken.startsWith("Token", ignoreCase = true)) rawToken
+                    else "Token: $rawToken"
                 }
-                pending.serviceType == "EDUCATION" -> (gsubzResult.tokenOrPin ?: generateExamPin())
+                pending.serviceType == "EDUCATION" -> (gsubzResult.tokenOrPin ?: gsubzResult.message)
                     .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
                     .trim()
+                    .ifBlank { null }
                 pending.serviceType == "CABLE_TV" -> {
                     val cleanDetails = pending.details
                         ?.replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
@@ -1413,10 +1432,12 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 status = txStatus,
                 timestamp = System.currentTimeMillis(),
                 tokenOrDetails = tokenOrDetails,
-                customerName = pending.customerName
+                customerName = pending.customerName,
+                title = pending.title.ifBlank { "${pending.provider} ${pending.serviceType.replace('_', ' ')}".trim() }
             )
 
             repository.recordTransaction(entity)
+            repository.refreshMyTransactions(20)
 
             repository.saveBeneficiary(
                 BeneficiaryEntity(
@@ -1624,24 +1645,6 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openReceiptForTransaction(tx: TransactionEntity) {
         _activeReceipt.value = tx
-    }
-
-    private fun generateMeterToken(): String {
-        val r = Random()
-        return "%04d-%04d-%04d-%04d-%04d".format(
-            r.nextInt(9000) + 1000,
-            r.nextInt(9000) + 1000,
-            r.nextInt(9000) + 1000,
-            r.nextInt(9000) + 1000,
-            r.nextInt(9000) + 1000
-        )
-    }
-
-    private fun generateExamPin(): String {
-        val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        val serial = (1..10).map { chars.random() }.joinToString("")
-        val pin = (1000000000..9999999999).random().toString()
-        return "Serial: $serial | PIN: $pin"
     }
 
     fun getBusinessAccount(): Triple<String, String, String> {

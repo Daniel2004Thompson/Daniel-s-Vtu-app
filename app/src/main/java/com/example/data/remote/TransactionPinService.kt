@@ -52,6 +52,31 @@ class ChangeTransactionPinRequest(
     override fun toString(): String = "ChangeTransactionPinRequest(p_old=****, p_new=****)"
 }
 
+/**
+ * Request body for get_my_transactions RPC: {"p_limit": 20}.
+ */
+data class GetMyTransactionsRequest(
+    @SerializedName("p_limit") val pLimit: Int = 20
+)
+
+/**
+ * Row returned by the Supabase RPC get_my_transactions for the authenticated user.
+ */
+data class RemoteTransactionDto(
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("title", alternate = ["narration", "description"]) val title: String? = null,
+    @SerializedName("service", alternate = ["service_type", "type", "category"]) val service: String? = null,
+    @SerializedName("provider", alternate = ["network"]) val provider: String? = null,
+    @SerializedName("recipient", alternate = ["phone", "beneficiary", "account_number", "meter_number"]) val recipient: String? = null,
+    @SerializedName("amount") val amount: Double? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("reference", alternate = ["tx_ref", "ref", "transaction_ref"]) val reference: String? = null,
+    @SerializedName("created_at", alternate = ["timestamp", "date"]) val createdAt: String? = null,
+    @SerializedName("details", alternate = ["token", "reason"]) val details: String? = null,
+    @SerializedName("customer_name") val customerName: String? = null,
+    @SerializedName("discount", alternate = ["cashback"]) val discount: Double? = null
+)
+
 sealed class PinVerifyOutcome {
     data object Verified : PinVerifyOutcome()
     data object WrongPin : PinVerifyOutcome()
@@ -95,6 +120,13 @@ interface TransactionPinRetrofitService {
         @Header("Authorization") authorization: String,
         @Body body: ChangeTransactionPinRequest
     ): Response<ResponseBody>
+
+    @POST("rest/v1/rpc/get_my_transactions")
+    suspend fun getMyTransactions(
+        @Header("apikey") apiKey: String,
+        @Header("Authorization") authorization: String,
+        @Body body: GetMyTransactionsRequest = GetMyTransactionsRequest(20)
+    ): Response<List<RemoteTransactionDto>>
 }
 
 class TransactionPinClient(
@@ -289,6 +321,31 @@ class TransactionPinClient(
             } else {
                 PinChangeOutcome.Error("Network connection bad. Please check your internet connection and try again.")
             }
+        }
+    }
+
+    suspend fun getMyTransactions(
+        accessToken: String,
+        limit: Int = 20
+    ): Result<List<RemoteTransactionDto>> = withContext(Dispatchers.IO) {
+        if (accessToken.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Missing user access token"))
+        }
+        try {
+            val response = service.getMyTransactions(
+                apiKey = supabaseAnonKeyProvider(),
+                authorization = buildBearerHeader(accessToken),
+                body = GetMyTransactionsRequest(pLimit = limit)
+            )
+            if (response.isSuccessful) {
+                Result.success(response.body() ?: emptyList())
+            } else {
+                val errRaw = response.errorBody()?.string()?.trim().orEmpty()
+                val errMsg = extractErrorMessage(errRaw, response.code())
+                Result.failure(IllegalStateException(errMsg))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

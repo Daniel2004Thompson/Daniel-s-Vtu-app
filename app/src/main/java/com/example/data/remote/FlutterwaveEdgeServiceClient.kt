@@ -92,12 +92,12 @@ class FlutterwaveEdgeServiceClient(
         }
 
         return@withContext FlutterwaveInitResult(
-            isSuccess = true,
+            isSuccess = false,
             paymentUrl = null,
             txRef = txRef,
-            message = "In-App Checkout ready",
+            message = "Unable to initialize payment with server",
             isLiveEdge = false,
-            isInAppCheckout = true
+            isInAppCheckout = false
         )
     }
 
@@ -125,10 +125,10 @@ class FlutterwaveEdgeServiceClient(
 
                 if (statusCode in 200..299 && bodyString.isNotBlank()) {
                     val json = JSONObject(bodyString)
-                    val success = json.optBoolean("success", true)
-                    val status = json.optString("status", "successful")
+                    val success = json.optBoolean("success", false)
+                    val status = json.optString("status", "")
                     val amount = json.optDouble("amount", expectedAmount)
-                    val msg = json.optString("message", "Payment verified")
+                    val msg = json.optString("message", "Payment verification completed")
 
                     return@withContext FlutterwaveVerifyResult(
                         isSuccess = success && status.equals("successful", ignoreCase = true),
@@ -145,11 +145,11 @@ class FlutterwaveEdgeServiceClient(
         }
 
         FlutterwaveVerifyResult(
-            isSuccess = true,
-            status = "successful",
+            isSuccess = false,
+            status = "failed",
             amount = expectedAmount,
             txRef = txRef,
-            message = "Payment confirmed and credited to wallet",
+            message = "Unable to verify payment with server",
             isLiveEdge = false
         )
     }

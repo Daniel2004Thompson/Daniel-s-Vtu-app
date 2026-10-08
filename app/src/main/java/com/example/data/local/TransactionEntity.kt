@@ -24,6 +24,8 @@ data class TransactionEntity(
     val status: String,      // SUCCESSFUL, PENDING, FAILED
     val timestamp: Long = System.currentTimeMillis(),
     val tokenOrDetails: String? = null, // e.g. Prepaid meter 20-digit token or bundle name
-    val customerName: String? = null
+    val customerName: String? = null,
+    val title: String = "",
+    val createdAt: String = ""
 )
 

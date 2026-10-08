@@ -189,6 +189,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
     LaunchedEffect(currentUser?.id, isLoggedIn) {
         if (!isLoggedIn) return@LaunchedEffect
         viewModel.checkHasTransactionPin()
+        viewModel.refreshMyTransactions(20)
         val supabase = SupabaseInstance.client ?: return@LaunchedEffect
         val authUser = try { supabase.auth.currentUserOrNull() } catch (_: Throwable) { null }
         val currentUserId = authUser?.id ?: currentUser?.id
@@ -577,7 +578,8 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                         onNavigateToDynamicAccount = { navController.navigate(NavigationRoutes.DYNAMIC_ACCOUNT) },
                         onNavigateToDevelopersForum = { navController.navigate(NavigationRoutes.DEVELOPERS_FORUM) },
                         onOpenFundWallet = { viewModel.openFundWalletSheet() },
-                        onSelectTransactionReceipt = { tx -> viewModel.openReceiptForTransaction(tx) },
+                        onSelectTransactionReceipt = {},
+                        onDeleteTransactionReceipt = { tx -> viewModel.deleteTransaction(tx) },
                         onUpdateWalletBalance = { liveBal ->
                             viewModel.setLiveWalletBalance(liveBal)
                         },

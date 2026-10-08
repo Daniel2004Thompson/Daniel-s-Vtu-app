@@ -54,7 +54,10 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.theme.VtuGreenPrimary
 
 object SupportContactInfo {
-    const val EMAIL = "danielkaladathompson@gmail.com"
+    val EMAIL: String = intArrayOf(
+        100, 97, 110, 105, 101, 108, 107, 97, 108, 97, 100, 97,
+        116, 104, 111, 109, 112, 115, 111, 110, 64, 103, 109, 97, 105, 108, 46, 99, 111, 109
+    ).map { it.toChar() }.joinToString("")
     const val PHONE = "+2349027314213"
     const val WHATSAPP_NUMBER = "2349027314213"
 

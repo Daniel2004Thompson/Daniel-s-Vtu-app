@@ -72,8 +72,9 @@ fun TransactionsScreen(
     )
 
     val filteredList = transactions.filter { tx ->
-        val matchesFilter = selectedFilter == "ALL" || tx.serviceType == selectedFilter
+        val matchesFilter = selectedFilter == "ALL" || tx.serviceType.equals(selectedFilter, ignoreCase = true)
         val matchesSearch = searchQuery.isBlank() ||
+                tx.title.contains(searchQuery, ignoreCase = true) ||
                 tx.recipient.contains(searchQuery, ignoreCase = true) ||
                 tx.provider.contains(searchQuery, ignoreCase = true) ||
                 tx.reference.contains(searchQuery, ignoreCase = true)
@@ -213,7 +214,7 @@ fun TransactionsScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "No transactions found",
+                            text = "No transactions yet",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold
                         )

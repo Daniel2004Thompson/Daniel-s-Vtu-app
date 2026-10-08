@@ -120,36 +120,67 @@ fun TransactionReceiptDialog(
 ) {
     val context = LocalContext.current
     var showDeleteDialog by remember { mutableStateOf(false) }
-    val formattedDate = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
-        .format(Date(transaction.timestamp))
+    val formattedDate = remember(transaction.createdAt, transaction.timestamp) {
+        com.example.util.TransactionDateFormatter.formatUtcToLagos(
+            createdAt = transaction.createdAt,
+            fallbackEpochMillis = transaction.timestamp
+        ).trim()
+    }
 
-    val isTxSuccessful = transaction.status.equals("SUCCESSFUL", ignoreCase = true)
-    val isTxPending = transaction.status.equals("PENDING", ignoreCase = true)
+    val isFailedOrRefunded = remember(transaction.status, transaction.title, transaction.serviceType) {
+        com.example.data.repository.VtuRepository.isFailedOrRefundedTransaction(
+            status = transaction.status,
+            title = transaction.title,
+            service = transaction.serviceType
+        )
+    }
+    val isTxSuccessful = !isFailedOrRefunded && (
+        transaction.status.equals("SUCCESSFUL", ignoreCase = true) ||
+            transaction.status.equals("SUCCESS", ignoreCase = true) ||
+            transaction.status.equals("COMPLETED", ignoreCase = true)
+        )
+    val isTxPending = !isFailedOrRefunded && (
+        transaction.status.equals("PENDING", ignoreCase = true) ||
+            transaction.status.equals("PROCESSING", ignoreCase = true)
+        )
     val isAirtime = transaction.serviceType.equals("AIRTIME", ignoreCase = true)
-    val airtimeBreakdown = remember(transaction) {
-        if (isAirtime) parseAirtimeReceiptBreakdown(transaction) else null
+    val hasExplicitAirtimeBreakdown = remember(transaction) {
+        isAirtime && (transaction.tokenOrDetails?.contains("[SERVER_RECEIPT:") == true || transaction.discountOrCashback > 0.0)
+    }
+    val airtimeBreakdown = remember(transaction, hasExplicitAirtimeBreakdown) {
+        if (hasExplicitAirtimeBreakdown) parseAirtimeReceiptBreakdown(transaction) else null
     }
 
-    val cleanReference = remember(transaction.reference) {
-        transaction.reference.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
+    val cleanService = remember(transaction.serviceType) {
+        transaction.serviceType.replace('_', ' ').trim()
     }
-    val cleanDetails = remember(transaction.tokenOrDetails, isTxSuccessful, isTxPending, transaction.serviceType, transaction.recipient) {
+    val cleanProvider = remember(transaction.provider) {
+        transaction.provider.trim()
+    }
+    val cleanRecipient = remember(transaction.recipient) {
+        transaction.recipient.trim()
+    }
+    val cleanCustomer = remember(transaction.customerName) {
+        transaction.customerName?.trim().orEmpty()
+    }
+    val cleanStatus = remember(transaction.status, isFailedOrRefunded, isTxSuccessful, isTxPending) {
+        when {
+            isFailedOrRefunded -> "FAILED"
+            isTxSuccessful -> "SUCCESSFUL"
+            isTxPending -> "PENDING"
+            else -> transaction.status.trim().ifEmpty { "FAILED" }
+        }
+    }
+    val cleanReference = remember(transaction.reference) {
+        transaction.reference.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-").trim()
+    }
+    val cleanDetails = remember(transaction.tokenOrDetails, isTxSuccessful, isTxPending) {
         val raw = transaction.tokenOrDetails
             ?.replace(Regex("\\s*\\[SERVER_RECEIPT:[^\\]]*\\]"), "")
             ?.trim()
             .orEmpty()
         if (raw.isBlank()) {
-            when {
-                isTxPending -> "Purchase is being confirmed"
-                isTxSuccessful -> when (transaction.serviceType) {
-                    "DATA" -> "Data Bundle Activated • Successful"
-                    "CABLE_TV" -> "Bouquet Activated • IUC: ${transaction.recipient} • Successful"
-                    "AIRTIME" -> "Instant Top-up Successful"
-                    "WALLET_FUNDING" -> "Wallet Funded Successfully"
-                    else -> null
-                }
-                else -> null
-            }
+            null
         } else if (isTxPending) {
             "Purchase is being confirmed"
         } else if (isTxSuccessful) {
@@ -159,16 +190,9 @@ fun TransactionReceiptDialog(
                 .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("\\s+•\\s*$"), "")
                 .trim()
-            stripped.ifBlank {
-                when (transaction.serviceType) {
-                    "DATA" -> "Data Bundle Activated • Successful"
-                    "CABLE_TV" -> "Bouquet Activated • IUC: ${transaction.recipient} • Successful"
-                    "AIRTIME" -> "Instant Top-up Successful"
-                    else -> "Transaction Successful"
-                }
-            }
+            stripped.ifBlank { null }
         } else {
-            raw
+            null
         }
     }
 
@@ -185,28 +209,41 @@ fun TransactionReceiptDialog(
             if (isTxPending) {
                 append("Purchase is being confirmed\n")
             }
-            append("Service: ${transaction.serviceType}\n")
-            append("Provider: ${transaction.provider}\n")
-            append("Recipient: ${transaction.recipient}\n")
-            if (transaction.customerName != null) {
-                append("Customer: ${transaction.customerName}\n")
+            if (cleanService.isNotEmpty()) {
+                append("Service: $cleanService\n")
+            }
+            if (cleanProvider.isNotEmpty()) {
+                append("Provider: $cleanProvider\n")
+            }
+            if (cleanRecipient.isNotEmpty()) {
+                append("Recipient: $cleanRecipient\n")
+            }
+            if (cleanCustomer.isNotEmpty()) {
+                append("Customer: $cleanCustomer\n")
             }
             if (isAirtime && airtimeBreakdown != null) {
                 append("Airtime: ${formatReceiptNaira(airtimeBreakdown.airtimeValue)}\n")
                 append("Cashback: ${formatReceiptNaira(airtimeBreakdown.cashback)}\n")
                 append("You paid: ${formatReceiptNaira(airtimeBreakdown.charged)}\n")
             } else {
-                append("Amount: ₦%,.2f\n".format(transaction.amount))
+                append("Amount: ₦%,.2f\n".format(Locale.US, transaction.amount))
                 if (transaction.discountOrCashback > 0) {
-                    append("Discount/Cashback: ₦%,.2f\n".format(transaction.discountOrCashback))
+                    append("Discount/Cashback: ₦%,.2f\n".format(Locale.US, transaction.discountOrCashback))
                 }
             }
             if (!cleanDetails.isNullOrBlank()) {
                 append("Details: $cleanDetails\n")
             }
-            append("Status: ${transaction.status}\n")
-            append("Ref: $cleanReference\n")
-            append("Date: $formattedDate\n")
+            if (cleanReference.isNotEmpty()) {
+                append("Ref: $cleanReference\n")
+            }
+            if (formattedDate.isNotEmpty()) {
+                append("Date: $formattedDate\n")
+            }
+            append("Payment Method: Daniel VTU Wallet\n")
+            if (cleanStatus.isNotEmpty()) {
+                append("Status: $cleanStatus\n")
+            }
             append("==========================\n")
             append("Thank you for choosing Daniel VTU!")
         }
@@ -261,7 +298,8 @@ fun TransactionReceiptDialog(
                 modifier = Modifier
                     .padding(20.dp)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .testTag("transaction_receipt_dialog"),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(
@@ -451,163 +489,188 @@ fun TransactionReceiptDialog(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     val txProvider = com.example.data.model.NetworkProvider.detectFromTextOrPhone(
-                        transaction.provider,
-                        transaction.recipient
+                        cleanProvider,
+                        cleanRecipient
                     )
-                    val txExam = if (transaction.serviceType == "EDUCATION") {
-                        VtuCatalog.findExamByProvider(transaction.provider)
+                    val txExam = if (transaction.serviceType.equals("EDUCATION", ignoreCase = true)) {
+                        VtuCatalog.findExamByProvider(cleanProvider)
                     } else null
-                    val txCable = if (transaction.serviceType == "CABLE_TV") {
-                        VtuCatalog.findCableByProvider(transaction.provider)
+                    val txCable = if (transaction.serviceType.equals("CABLE_TV", ignoreCase = true) || transaction.serviceType.equals("CABLE", ignoreCase = true)) {
+                        VtuCatalog.findCableByProvider(cleanProvider)
                     } else null
-                    val txDisco = if (transaction.serviceType == "ELECTRICITY") {
-                        VtuCatalog.findDiscoByProvider(transaction.provider)
+                    val txDisco = if (transaction.serviceType.equals("ELECTRICITY", ignoreCase = true)) {
+                        VtuCatalog.findDiscoByProvider(cleanProvider)
                     } else null
-                    ReceiptRow(label = "Service", value = transaction.serviceType.replace('_', ' '))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Provider",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (txProvider != null && (transaction.serviceType == "AIRTIME" || transaction.serviceType == "DATA")) {
-                                NetworkLogoIcon(
-                                    provider = txProvider,
-                                    size = 18.dp,
-                                    isCircular = true
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            } else if (txExam != null) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White)
-                                        .border(0.8.dp, txExam.brandColor.copy(alpha = 0.4f), CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Image(
-                                        painter = painterResource(id = txExam.logoRes),
-                                        contentDescription = txExam.shortName,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(6.dp))
-                            } else if (txCable != null) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White)
-                                        .border(0.8.dp, txCable.brandColor.copy(alpha = 0.4f), CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Image(
-                                        painter = painterResource(id = txCable.logoRes),
-                                        contentDescription = txCable.name,
-                                        contentScale = ContentScale.Fit,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(6.dp))
-                            } else if (txDisco != null) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White)
-                                        .border(0.8.dp, txDisco.brandColor.copy(alpha = 0.4f), CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Image(
-                                        painter = painterResource(id = txDisco.logoRes),
-                                        contentDescription = txDisco.shortName,
-                                        contentScale = ContentScale.Fit,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
+
+                    if (cleanService.isNotEmpty()) {
+                        ReceiptRow(label = "Service", value = cleanService)
+                    }
+
+                    if (cleanProvider.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                text = transaction.provider,
+                                text = "Provider",
                                 style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (txProvider != null && (transaction.serviceType.equals("AIRTIME", ignoreCase = true) || transaction.serviceType.equals("DATA", ignoreCase = true))) {
+                                    NetworkLogoIcon(
+                                        provider = txProvider,
+                                        size = 18.dp,
+                                        isCircular = true
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                } else if (txExam != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.White)
+                                            .border(0.8.dp, txExam.brandColor.copy(alpha = 0.4f), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Image(
+                                            painter = painterResource(id = txExam.logoRes),
+                                            contentDescription = txExam.shortName,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                } else if (txCable != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.White)
+                                            .border(0.8.dp, txCable.brandColor.copy(alpha = 0.4f), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Image(
+                                            painter = painterResource(id = txCable.logoRes),
+                                            contentDescription = txCable.name,
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                } else if (txDisco != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.White)
+                                            .border(0.8.dp, txDisco.brandColor.copy(alpha = 0.4f), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Image(
+                                            painter = painterResource(id = txDisco.logoRes),
+                                            contentDescription = txDisco.shortName,
+                                            contentScale = ContentScale.Fit,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text(
+                                    text = cleanProvider,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Recipient",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val recipientNet = com.example.data.model.NetworkProvider.detectFromPhone(transaction.recipient)
-                            if (recipientNet != null) {
-                                NetworkLogoIcon(
-                                    provider = recipientNet,
-                                    size = 18.dp,
-                                    isCircular = true
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
+
+                    if (cleanRecipient.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                text = transaction.recipient,
+                                text = "Recipient",
                                 style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                val recipientNet = com.example.data.model.NetworkProvider.detectFromPhone(cleanRecipient)
+                                if (recipientNet != null) {
+                                    NetworkLogoIcon(
+                                        provider = recipientNet,
+                                        size = 18.dp,
+                                        isCircular = true
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text(
+                                    text = cleanRecipient,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
-                    if (transaction.customerName != null) {
-                        ReceiptRow(label = "Customer", value = transaction.customerName)
+
+                    if (cleanCustomer.isNotEmpty()) {
+                        ReceiptRow(label = "Customer", value = cleanCustomer)
                     }
+
                     if (isAirtime && airtimeBreakdown != null) {
                         ReceiptRow(label = "Airtime", value = formatReceiptNaira(airtimeBreakdown.airtimeValue))
                         ReceiptRow(label = "Cashback", value = formatReceiptNaira(airtimeBreakdown.cashback))
                         ReceiptRow(label = "You paid", value = formatReceiptNaira(airtimeBreakdown.charged), isHighlighted = true)
                     }
+
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Reference",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+
+                    if (cleanReference.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                text = cleanReference,
+                                text = "Reference",
                                 style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            IconButton(
-                                onClick = { copyToClipboard(cleanReference, "Reference") },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy Reference", modifier = Modifier.size(14.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = cleanReference,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = { copyToClipboard(cleanReference, "Reference") },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy Reference", modifier = Modifier.size(14.dp))
+                                }
                             }
                         }
                     }
-                    ReceiptRow(label = "Date & Time", value = formattedDate)
+
+                    if (formattedDate.isNotEmpty()) {
+                        ReceiptRow(label = "Date & Time", value = formattedDate)
+                    }
                     ReceiptRow(label = "Payment Method", value = "Daniel VTU Wallet")
-                    ReceiptRow(label = "Status", value = transaction.status, isHighlighted = isTxSuccessful)
+                    if (cleanStatus.isNotEmpty()) {
+                        ReceiptRow(
+                            label = "Status",
+                            value = cleanStatus,
+                            isHighlighted = true,
+                            highlightColor = statusHeaderColor
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
@@ -657,8 +720,10 @@ fun TransactionReceiptDialog(
 private fun ReceiptRow(
     label: String,
     value: String,
-    isHighlighted: Boolean = false
+    isHighlighted: Boolean = false,
+    highlightColor: Color = StatusSuccess
 ) {
+    if (value.trim().isEmpty()) return
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -673,7 +738,7 @@ private fun ReceiptRow(
             text = value,
             style = MaterialTheme.typography.bodySmall,
             fontWeight = if (isHighlighted) FontWeight.Bold else FontWeight.SemiBold,
-            color = if (isHighlighted) StatusSuccess else MaterialTheme.colorScheme.onSurface
+            color = if (isHighlighted) highlightColor else MaterialTheme.colorScheme.onSurface
         )
     }
 }

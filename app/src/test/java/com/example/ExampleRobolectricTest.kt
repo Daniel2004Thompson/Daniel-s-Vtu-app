@@ -765,7 +765,7 @@ class ExampleRobolectricTest {
     val testUser = com.example.data.model.SupabaseUser(
       id = "user-123",
       fullName = "Daniel Kalada Thompson",
-      email = "danielkaladathompson@gmail.com",
+      email = "user@example.com",
       phone = "08031234567",
       dynamicAccountNumber = "9691882461",
       dynamicBankName = "Palmpay"
@@ -812,6 +812,136 @@ class ExampleRobolectricTest {
       "Expected green ACTIVE badge (${badgeBounds.left}) to be spaced to the right of dynamic account number (${numberBounds.right})",
       badgeBounds.left > numberBounds.right + 4f
     )
+  }
+
+  @Test
+  fun `test recent transactions formatting lagos timezone and receipt dialog hiding empty fields`() {
+    // 1. Verify UTC to Africa/Lagos (WAT = UTC+1) date formatting: 2026-10-08T14:00:00Z -> "08 Oct 2026, 03:00 pm"
+    val formattedLagos = com.example.util.TransactionDateFormatter.formatUtcToLagos("2026-10-08T14:00:00Z")
+    assertEquals("08 Oct 2026, 03:00 pm", formattedLagos)
+
+    // 2. Verify RemoteTransactionDto mapping from get_my_transactions RPC
+    val dto1 = com.example.data.remote.RemoteTransactionDto(
+      id = "101",
+      title = "Airtel Airtime Top-up",
+      service = "AIRTIME",
+      provider = "Airtel",
+      recipient = "09027314213",
+      amount = 100.0,
+      status = "SUCCESSFUL",
+      reference = "REF-AIR-101",
+      createdAt = "2026-10-08T14:00:00Z"
+    )
+    val dto2 = com.example.data.remote.RemoteTransactionDto(
+      id = "102",
+      title = "Wallet Funding",
+      service = "",
+      provider = "",
+      recipient = "",
+      amount = 2500.0,
+      status = "PENDING",
+      reference = "",
+      createdAt = "2026-10-08T08:30:00Z"
+    )
+    val dto3 = com.example.data.remote.RemoteTransactionDto(
+      id = "103",
+      title = "purchase_failed_refunded",
+      service = "purchase_failed_refunded",
+      provider = "",
+      recipient = "",
+      amount = 50.0,
+      status = "completed",
+      reference = "REF-FAIL-103",
+      createdAt = "2026-10-08T15:00:00Z"
+    )
+    val tx1 = com.example.data.repository.VtuRepository.mapRemoteTransactionDtoToEntity(dto1, "usr-1", 0)
+    val tx2 = com.example.data.repository.VtuRepository.mapRemoteTransactionDtoToEntity(dto2, "usr-1", 1)
+    val tx3 = com.example.data.repository.VtuRepository.mapRemoteTransactionDtoToEntity(dto3, "usr-1", 2).copy(
+      tokenOrDetails = "This plan is not valid for this service"
+    )
+    assertEquals("FAILED", tx3.status)
+
+    // Verify that even if a legacy local row had status = "SUCCESSFUL" for purchase_failed_refunded,
+    // mergeTransactionLists preserves the history and normalizes its status to "FAILED"
+    val legacyLocalFailed = tx3.copy(status = "SUCCESSFUL")
+    val mergedHistory = com.example.data.repository.VtuRepository.mergeTransactionLists(
+      primaryList = emptyList(),
+      mainDbList = listOf(tx1, tx2, legacyLocalFailed)
+    )
+    assertEquals(3, mergedHistory.size)
+    assertEquals("FAILED", mergedHistory.first { it.reference == "REF-FAIL-103" }.status)
+
+    composeTestRule.setContent {
+      DanielVtuTheme {
+        com.example.ui.screens.HomeScreen(
+          walletBalance = 500.0,
+          cashbackBalance = 0.0,
+          isBiometricEnabled = true,
+          notifications = emptyList(),
+          recentTransactions = listOf(tx1, tx2, tx3),
+          currentUser = null,
+          onNavigateToAirtime = {},
+          onNavigateToData = {},
+          onNavigateToBills = {},
+          onNavigateToTransactions = {},
+          onNavigateToNotifications = {},
+          onNavigateToProfile = {},
+          onNavigateToDynamicAccount = {},
+          onNavigateToDevelopersForum = {},
+          onOpenFundWallet = {},
+          onSelectTransactionReceipt = {}
+        )
+      }
+    }
+
+    composeTestRule.waitForIdle()
+
+    // Scroll to Recent Transactions header and verify rows
+    composeTestRule.onNodeWithTag("recent_transactions_header").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("Recent Transactions").assertIsDisplayed()
+
+    // Row 1: provider="Airtel" -> circle "A", title "Airtel Airtime Top-up", "09027314213 • 08 Oct 2026, 03:00 pm", "₦100.00", "SUCCESSFUL"
+    composeTestRule.onNodeWithTag("tx_item_REF-AIR-101").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("Airtel Airtime Top-up").assertIsDisplayed()
+    composeTestRule.onNodeWithText("09027314213 • 08 Oct 2026, 03:00 pm").assertIsDisplayed()
+    composeTestRule.onNodeWithText("₦100.00").assertIsDisplayed()
+    composeTestRule.onNodeWithText("SUCCESSFUL").assertIsDisplayed()
+
+    // Row 2: empty provider -> circle uses title's first letter "W", empty recipient -> just date "08 Oct 2026, 09:30 am", "₦2,500.00", "PENDING"
+    composeTestRule.onNodeWithTag("tx_item_").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("Wallet Funding").assertIsDisplayed()
+    composeTestRule.onNodeWithText("08 Oct 2026, 09:30 am").assertIsDisplayed()
+    composeTestRule.onNodeWithText("₦2,500.00").assertIsDisplayed()
+    composeTestRule.onNodeWithText("PENDING").assertIsDisplayed()
+
+    // Row 3: purchase_failed_refunded shows FAILED (not SUCCESSFUL)
+    composeTestRule.onNodeWithTag("tx_item_REF-FAIL-103").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("purchase_failed_refunded").assertIsDisplayed()
+    composeTestRule.onNodeWithText("FAILED").assertIsDisplayed()
+
+    // Tap Row 3 -> opens receipt dialog showing Payment Failed, Status FAILED, and no "This plan is not valid..." text
+    composeTestRule.onNodeWithTag("tx_item_REF-FAIL-103").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("transaction_receipt_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Payment Failed").assertIsDisplayed()
+    composeTestRule.onNodeWithText("This plan is not valid for this service").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Done").performClick()
+    composeTestRule.waitForIdle()
+
+    // Tap Row 2 (which has empty service, provider, recipient, reference) -> opens receipt dialog and hides empty fields
+    composeTestRule.onNodeWithTag("tx_item_").performScrollTo().performClick()
+    composeTestRule.waitForIdle()
+
+    composeTestRule.onNodeWithTag("transaction_receipt_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Daniel VTU Wallet").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Date & Time").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Payment Method").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Status").assertIsDisplayed()
+    // Empty fields (Service, Provider, Recipient, Reference) must be hidden
+    composeTestRule.onNodeWithText("Service").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Provider").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Recipient").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Reference").assertDoesNotExist()
   }
 }
 

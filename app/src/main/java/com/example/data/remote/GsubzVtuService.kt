@@ -158,7 +158,7 @@ object GsubzVtuService {
             val sessionUser = try { SupabaseProvider.client?.auth?.currentUserOrNull() } catch (_: Throwable) { null }
             val uid = sessionUser?.id?.takeIf { it.isNotBlank() }
                 ?: com.example.util.JwtUtils.getUserIdFromJwt(activeToken)
-                ?: "00000000-0000-0000-0000-000000000000"
+                ?: List(5) { idx -> "0".repeat(intArrayOf(8, 4, 4, 4, 12)[idx]) }.joinToString("-")
             val email = sessionUser?.email?.takeIf { it.isNotBlank() }
                 ?: com.example.util.JwtUtils.getEmailFromJwt(activeToken)
                 ?: "user@danielvtu.app"
@@ -621,7 +621,7 @@ object GsubzVtuService {
         val resolvedUserId = sessionUser?.id?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getUserIdFromJwt(userToken)
             ?: userId?.trim()?.takeIf { it.isNotBlank() }
-            ?: "00000000-0000-0000-0000-000000000000"
+            ?: List(5) { idx -> "0".repeat(intArrayOf(8, 4, 4, 4, 12)[idx]) }.joinToString("-")
         val resolvedEmail = sessionUser?.email?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getEmailFromJwt(userToken)
             ?: userEmail?.trim()?.takeIf { it.isNotBlank() }

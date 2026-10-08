@@ -492,9 +492,7 @@ class PermanentAccountViewModel : ViewModel() {
             .readTimeout(6, TimeUnit.SECONDS)
             .build()
 
-        val userProfileFullName = if (email.trim().equals("danielkaladathompson@gmail.com", ignoreCase = true)) {
-            "Daniel Thompson"
-        } else null
+        val userProfileFullName: String? = null
 
         // Persist into public.users table where id = userId (never overwrite full_name with NIN account_name)
         val candidatePayloads = listOf(

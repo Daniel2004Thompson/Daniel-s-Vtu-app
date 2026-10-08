@@ -198,9 +198,6 @@ fun ElectricityTabContent(
                             )
                             .clickable {
                                 selectedDisco = disco
-                                if (meterNumber.length >= 10) {
-                                    verifiedCustomerName = "Verified Meter (${disco.shortName})"
-                                }
                             }
                             .testTag("disco_chip_${disco.id}"),
                         colors = CardDefaults.cardColors(
@@ -337,9 +334,6 @@ fun ElectricityTabContent(
                             },
                             onClick = {
                                 selectedDisco = disco
-                                if (meterNumber.length >= 10) {
-                                    verifiedCustomerName = "Verified Meter (${disco.shortName})"
-                                }
                                 discoDropdownExpanded = false
                             }
                         )
@@ -377,11 +371,6 @@ fun ElectricityTabContent(
                 onValueChange = { input ->
                     if (input.all { it.isDigit() } && input.length <= 13) {
                         meterNumber = input
-                        if (input.length >= 10) {
-                            verifiedCustomerName = "Verified Meter (${selectedDisco.shortName})"
-                        } else {
-                            verifiedCustomerName = null
-                        }
                     }
                 },
                 placeholder = { Text("e.g. 45019283741") },
@@ -624,11 +613,6 @@ fun CableTvTabContent(
                 onValueChange = { input ->
                     if (input.all { it.isDigit() } && input.length <= 11) {
                         smartcardNumber = input
-                        if (input.length >= 10) {
-                            verifiedCustomer = "Verified Smartcard ($input)"
-                        } else {
-                            verifiedCustomer = null
-                        }
                     }
                 },
                 placeholder = { Text("Enter 10-digit Smartcard number") },

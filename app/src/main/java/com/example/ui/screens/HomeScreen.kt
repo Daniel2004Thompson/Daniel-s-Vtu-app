@@ -141,8 +141,9 @@ fun HomeScreen(
     onNavigateToProfile: () -> Unit = {},
     onNavigateToDynamicAccount: () -> Unit = {},
     onNavigateToDevelopersForum: () -> Unit = {},
-    onOpenFundWallet: () -> Unit,
-    onSelectTransactionReceipt: (TransactionEntity) -> Unit,
+    onOpenFundWallet: () -> Unit = {},
+    onSelectTransactionReceipt: (TransactionEntity) -> Unit = {},
+    onDeleteTransactionReceipt: ((TransactionEntity) -> Unit)? = null,
     walletViewModel: WalletViewModel = viewModel(),
     onUpdateWalletBalance: ((Double) -> Unit)? = null,
     onUserPhoneFetched: ((String, String?) -> Unit)? = null,
@@ -152,6 +153,7 @@ fun HomeScreen(
     val unreadCount = notifications.count { !it.isRead }
 
     var showSupportDialog by remember { mutableStateOf(false) }
+    var selectedReceiptTransaction by remember { mutableStateOf<TransactionEntity?>(null) }
     var isRealtimeReloading by remember { mutableStateOf(false) }
     val reloadRotation by animateFloatAsState(
         targetValue = if (isRealtimeReloading) 360f else 0f,
@@ -715,8 +717,9 @@ fun HomeScreen(
             }
         }
 
-        // Dedicated Flutterwave Virtual Account Card
+        // Dedicated Flutterwave Virtual Account Card, Quick Services, and Recent Transactions
         item {
+            Column(modifier = Modifier.fillMaxWidth()) {
             val context = LocalContext.current
             val rawVa = currentUser?.virtualAccountNumber?.trim()
             val cleanVa = rawVa?.takeIf {
@@ -967,10 +970,8 @@ fun HomeScreen(
                     )
                 }
             }
-        }
 
-        // Quick Services Grid Section
-        item {
+            // Quick Services Grid Section
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1046,10 +1047,91 @@ fun HomeScreen(
                         onClick = { onNavigateToBills("EDUCATION") }
                     )
                 }
+            }
 
-                Spacer(modifier = Modifier.height(10.dp))
+            // Recent Transactions Section (directly below the service tiles)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 8.dp)
+                    .testTag("recent_transactions_header"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Recent Transactions",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
 
-                // Developer Forum & API Key Banner Card
+                TextButton(onClick = onNavigateToTransactions) {
+                    Text(
+                        text = "See All",
+                        color = VtuGreenPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = VtuGreenPrimary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+
+            // Recent Transactions List
+            if (recentTransactions.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 24.dp)
+                        .testTag("recent_transactions_empty"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Wallet,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "No transactions yet",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Recharge airtime or buy data to see records here.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            } else {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    recentTransactions.forEach { tx ->
+                        TransactionRowItem(
+                            transaction = tx,
+                            onClick = {
+                                selectedReceiptTransaction = tx
+                                onSelectTransactionReceipt(tx)
+                            }
+                        )
+                    }
+                }
+            }
+            }
+        }
+
+        // Developer Forum & API Key Banner Card
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 10.dp)
+            ) {
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = VtuNavyPrimary
@@ -1169,77 +1251,6 @@ fun HomeScreen(
             }
         }
 
-        // Recent Transactions Header
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Recent Transactions",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-
-                TextButton(onClick = onNavigateToTransactions) {
-                    Text(
-                        text = "See All",
-                        color = VtuGreenPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = VtuGreenPrimary,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-            }
-        }
-
-        // Recent Transactions List
-        if (recentTransactions.isEmpty()) {
-            item {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.Wallet,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.size(40.dp)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "No transactions yet",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = "Recharge airtime or buy data to see records here.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
-                }
-            }
-        } else {
-            items(recentTransactions) { tx ->
-                TransactionRowItem(
-                    transaction = tx,
-                    onClick = { onSelectTransactionReceipt(tx) }
-                )
-            }
-        }
-
         // Dedicated Contact Support Card
         item {
             ContactSupportCard(
@@ -1248,6 +1259,19 @@ fun HomeScreen(
                     .padding(horizontal = 20.dp, vertical = 14.dp)
             )
         }
+    }
+
+    selectedReceiptTransaction?.let { receiptTx ->
+        com.example.ui.components.TransactionReceiptDialog(
+            transaction = receiptTx,
+            onDismiss = { selectedReceiptTransaction = null },
+            onDelete = onDeleteTransactionReceipt?.let { deleteHandler ->
+                { tx ->
+                    deleteHandler(tx)
+                    selectedReceiptTransaction = null
+                }
+            }
+        )
     }
 
     if (showSupportDialog) {
@@ -1311,8 +1335,57 @@ fun TransactionRowItem(
     onClick: () -> Unit,
     onDelete: (() -> Unit)? = null
 ) {
-    val dateStr = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
-        .format(Date(transaction.timestamp))
+    val dateStr = remember(transaction.createdAt, transaction.timestamp) {
+        com.example.util.TransactionDateFormatter.formatUtcToLagos(
+            transaction.createdAt,
+            transaction.timestamp
+        )
+    }
+
+    val cleanProvider = transaction.provider.trim()
+    val cleanService = transaction.serviceType.replace('_', ' ').trim()
+    val displayTitle = transaction.title.trim().ifEmpty {
+        when {
+            cleanProvider.isNotEmpty() && cleanService.isNotEmpty() -> "$cleanProvider $cleanService"
+            cleanProvider.isNotEmpty() -> cleanProvider
+            cleanService.isNotEmpty() -> cleanService
+            else -> "Transaction"
+        }
+    }
+
+    val avatarLetter = cleanProvider.firstOrNull()?.uppercaseChar()?.toString()
+        ?: displayTitle.trim().firstOrNull()?.uppercaseChar()?.toString()
+        ?: "T"
+
+    val cleanRecipient = transaction.recipient.trim()
+    val subtitleText = when {
+        cleanRecipient.isNotEmpty() && dateStr.isNotEmpty() -> "$cleanRecipient • $dateStr"
+        cleanRecipient.isNotEmpty() -> cleanRecipient
+        else -> dateStr
+    }
+
+    val isFailedOrRefunded = com.example.data.repository.VtuRepository.isFailedOrRefundedTransaction(
+        status = transaction.status,
+        title = transaction.title,
+        service = transaction.serviceType
+    )
+    val normalizedStatus = if (isFailedOrRefunded) {
+        "FAILED"
+    } else {
+        transaction.status.trim().uppercase(Locale.US)
+    }
+    val statusColor = when (normalizedStatus) {
+        "SUCCESSFUL", "SUCCESS", "COMPLETED", "OK" -> StatusSuccess // green
+        "PENDING", "PROCESSING", "QUEUED" -> Color(0xFFF59E0B) // amber
+        "FAILED", "ERROR", "DECLINED" -> Color(0xFFE53935) // red
+        else -> Color(0xFFE53935)
+    }
+    val displayStatus = when (normalizedStatus) {
+        "SUCCESS", "SUCCESSFUL", "COMPLETED", "OK" -> "SUCCESSFUL"
+        "PENDING", "PROCESSING", "QUEUED" -> "PENDING"
+        "FAILED", "ERROR", "DECLINED" -> "FAILED"
+        else -> normalizedStatus.ifEmpty { "PENDING" }
+    }
 
     Surface(
         modifier = Modifier
@@ -1335,144 +1408,52 @@ fun TransactionRowItem(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val txNetwork = com.example.data.model.NetworkProvider.detectFromTextOrPhone(
-                    transaction.provider,
-                    transaction.recipient
-                )
-                val txExam = if (transaction.serviceType == "EDUCATION") {
-                    com.example.data.model.VtuCatalog.findExamByProvider(transaction.provider)
-                } else null
-                val txCable = if (transaction.serviceType == "CABLE_TV") {
-                    com.example.data.model.VtuCatalog.findCableByProvider(transaction.provider)
-                } else null
-                val txDisco = if (transaction.serviceType == "ELECTRICITY") {
-                    com.example.data.model.VtuCatalog.findDiscoByProvider(transaction.provider)
-                } else null
-                if (txNetwork != null && (transaction.serviceType == "AIRTIME" || transaction.serviceType == "DATA")) {
-                    com.example.ui.components.NetworkLogoIcon(
-                        provider = txNetwork,
-                        size = 44.dp,
-                        isCircular = true
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(VtuGreenPrimary.copy(alpha = 0.14f))
+                        .testTag("tx_avatar_circle_${transaction.reference}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = avatarLetter,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = VtuGreenPrimary
                     )
-                } else if (txExam != null) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(Color.White)
-                            .border(1.dp, txExam.brandColor.copy(alpha = 0.35f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(id = txExam.logoRes),
-                            contentDescription = txExam.shortName,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                } else if (txCable != null) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(Color.White)
-                            .border(1.dp, txCable.brandColor.copy(alpha = 0.35f), CircleShape)
-                            .padding(2.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(id = txCable.logoRes),
-                            contentDescription = txCable.name,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                } else if (txDisco != null) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(Color.White)
-                            .border(1.dp, txDisco.brandColor.copy(alpha = 0.35f), CircleShape)
-                            .padding(2.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(id = txDisco.logoRes),
-                            contentDescription = txDisco.shortName,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when (transaction.serviceType) {
-                                    "AIRTIME" -> VtuGreenPrimary.copy(alpha = 0.12f)
-                                    "DATA" -> VtuCyan.copy(alpha = 0.12f)
-                                    "ELECTRICITY" -> VtuGoldAccent.copy(alpha = 0.12f)
-                                    "CABLE_TV" -> Color(0xFFE11D48).copy(alpha = 0.12f)
-                                    "EDUCATION" -> Color(0xFF7C3AED).copy(alpha = 0.12f)
-                                    else -> VtuGreenPrimary.copy(alpha = 0.12f)
-                                }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = when (transaction.serviceType) {
-                                "AIRTIME" -> Icons.Default.PhoneAndroid
-                                "DATA" -> Icons.Default.Wifi
-                                "ELECTRICITY" -> Icons.Default.Bolt
-                                "CABLE_TV" -> Icons.Default.Tv
-                                "EDUCATION" -> Icons.Default.School
-                                else -> Icons.Default.Wallet
-                            },
-                            contentDescription = null,
-                            tint = when (transaction.serviceType) {
-                                "AIRTIME" -> VtuGreenPrimary
-                                "DATA" -> VtuCyan
-                                "ELECTRICITY" -> VtuGoldAccent
-                                "CABLE_TV" -> Color(0xFFE11D48)
-                                "EDUCATION" -> Color(0xFF7C3AED)
-                                else -> VtuGreenPrimary
-                            },
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
                 }
 
                 Spacer(modifier = Modifier.width(12.dp))
 
                 Column {
                     Text(
-                        text = "${transaction.provider} ${transaction.serviceType.replace('_', ' ')}",
+                        text = displayTitle,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = "${transaction.recipient} • $dateStr",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (subtitleText.isNotEmpty()) {
+                        Text(
+                            text = subtitleText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = if (transaction.serviceType == "WALLET_FUNDING") "+₦%,.2f".format(transaction.amount) else "-₦%,.2f".format(transaction.amount),
+                        text = "₦%,.2f".format(Locale.US, transaction.amount),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.ExtraBold,
-                        color = if (transaction.serviceType == "WALLET_FUNDING") StatusSuccess else MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface
                     )
-                    val isSuccess = transaction.status.equals("SUCCESSFUL", ignoreCase = true)
                     Text(
-                        text = transaction.status,
+                        text = displayStatus,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isSuccess) StatusSuccess else Color(0xFFE53935),
+                        color = statusColor,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
