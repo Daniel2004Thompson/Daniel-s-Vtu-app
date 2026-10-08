@@ -301,6 +301,37 @@ class ExampleRobolectricTest {
     println("CAPTURED_FINAL_OUTGOING_JSON=$capturedJson")
     println("CAPTURED_RESULT=$result")
     assertTrue(capturedJson.isNotBlank())
+
+    // Verify cable_tv is normalized to "cable" in buildRequestJson
+    val cableJson = com.example.data.remote.GsubzVtuService.buildRequestJson(
+      serviceID = "dstv",
+      amount = 3300.0,
+      phone = "08145551234",
+      plan = "dstv-padi",
+      service = "cable_tv",
+      network = "dstv",
+      userId = "usr_live_1",
+      userEmail = "user@example.com"
+    )
+    assertTrue(cableJson.contains("\"service_type\":\"cable\""))
+    assertTrue(cableJson.contains("\"service\":\"cable\""))
+
+    // Verify public.users safe columns do not include non-existent columns
+    assertTrue("full_name" !in com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_FULL)
+    assertTrue("permanent_account_name" !in com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_FULL)
+    assertTrue("nin_hash" !in com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_FULL)
+
+    // Verify Gsubz-VTU-Services Edge Function URL is the sole endpoint and parseGsubzPlansJson preserves exact prices
+    assertEquals(
+      "https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Gsubz-VTU-Services",
+      com.example.data.remote.GsubzVtuService.FUNCTION_URL
+    )
+    val parsedNested = com.example.data.remote.GsubzVtuService.parseGsubzPlansJson(
+      """{"gsubz_data":{"plans":[{"displayName":"1.0 GB - 30 Days","value":"166","price":399}]}}"""
+    )
+    assertEquals(1, parsedNested.size)
+    assertEquals("166", parsedNested.first().value)
+    assertEquals("399", parsedNested.first().price)
   }
 
   @Test

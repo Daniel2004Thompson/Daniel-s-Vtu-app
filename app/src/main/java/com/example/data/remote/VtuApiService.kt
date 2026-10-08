@@ -181,6 +181,7 @@ interface VtuApiService {
     @POST("functions/v1/Gsubz-VTU-Services")
     suspend fun processTransaction(
         @Header("Authorization") bearerToken: String,
+        @Header("apikey") apikey: String = SupabaseProvider.rawKey,
         @Header("Content-Type") contentType: String = "application/json",
         @Body request: VtuRequest
     ): Response<VtuResponse>
@@ -470,10 +471,31 @@ class VtuManager(
             } else {
                 "Bearer $activeToken"
             }
-            val response = apiService.processTransaction(
-                bearerToken = bearerHeader,
-                request = payload
+            val normalizedService = when (payload.service.trim().lowercase()) {
+                "cable_tv", "tv", "cablesub" -> "cable"
+                "power", "meter" -> "electricity"
+                else -> payload.service.trim().lowercase()
+            }
+            val normalizedPayload = payload.copy(
+                service = normalizedService,
+                serviceType = normalizedService
             )
+            var response = apiService.processTransaction(
+                bearerToken = bearerHeader,
+                apikey = supabaseAnonKey,
+                request = normalizedPayload
+            )
+            if (response.code() == 400 && normalizedService == "education") {
+                val fallbackPayload = normalizedPayload.copy(
+                    service = "data",
+                    serviceType = "data"
+                )
+                response = apiService.processTransaction(
+                    bearerToken = bearerHeader,
+                    apikey = supabaseAnonKey,
+                    request = fallbackPayload
+                )
+            }
             if (response.isSuccessful && response.body() != null) {
                 Result.success(response.body()!!)
             } else {
@@ -489,7 +511,7 @@ class VtuManager(
 
 object ApiNetworkClient {
     private val BASE_URL: String
-        get() = "${com.example.util.SecurityVault.supabaseUrl()}/functions/v1/"
+        get() = "${com.example.util.SecurityVault.supabaseUrl().trimEnd('/')}/"
 
     val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()

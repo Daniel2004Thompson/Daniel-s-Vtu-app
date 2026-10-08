@@ -490,11 +490,25 @@ fun CableTvTabContent(
     val livePlansByService by GsubzVtuService.liveServicePlans.collectAsState()
     val effectiveBouquets = remember(selectedProvider, livePlansByService) {
         val liveList = livePlansByService[selectedProvider.gsubzServiceId.lowercase()].orEmpty()
-        selectedProvider.bouquets.map { b ->
+        val mappedCatalog = selectedProvider.bouquets.map { b ->
             val liveMatch = liveList.firstOrNull { it.value.equals(b.planCode, ignoreCase = true) }
             val livePrice = liveMatch?.price?.toDoubleOrNull()
             if (livePrice != null && livePrice > 0.0) b.copy(price = livePrice) else b
         }
+        val knownCodes = selectedProvider.bouquets.map { it.planCode.lowercase() }.toSet()
+        val extraBouquets = liveList.mapNotNull { item ->
+            val priceVal = item.price.toDoubleOrNull()
+            if (item.value.lowercase() !in knownCodes && priceVal != null && priceVal > 0.0) {
+                com.example.data.model.CableBouquet(
+                    id = "live_${selectedProvider.id}_${item.value}",
+                    name = item.displayName.ifBlank { item.value },
+                    price = priceVal,
+                    channelsCount = 60,
+                    planCode = item.value
+                )
+            } else null
+        }
+        mappedCatalog + extraBouquets
     }
     var selectedBouquet by remember(selectedProvider.id, effectiveBouquets) {
         mutableStateOf(effectiveBouquets.first())

@@ -114,13 +114,12 @@ class VtuRepository(
         val USERS_SAFE_COLUMNS_FULL = listOf(
             "id",
             "email",
-            "full_name",
             "phone",
             "wallet_balance",
             "permanent_account_number",
             "permanent_account_bank",
-            "permanent_account_name",
-            "nin_hash"
+            "bvn",
+            "nin"
         )
         val USERS_SAFE_COLUMNS_STANDARD = listOf(
             "id",
@@ -128,11 +127,11 @@ class VtuRepository(
             "phone",
             "wallet_balance",
             "permanent_account_number",
-            "permanent_account_bank",
-            "nin_hash"
+            "permanent_account_bank"
         )
         val USERS_SAFE_COLUMNS_MINIMAL = listOf(
             "id",
+            "email",
             "phone",
             "wallet_balance"
         )
@@ -935,6 +934,7 @@ class VtuRepository(
     private suspend fun resolveValidAccessToken(): String {
         val directToken = currentAccessToken?.trim().orEmpty()
         if (directToken.isNotBlank() && !com.example.util.JwtUtils.isExpired(directToken)) {
+            SupabaseProvider.activeUserAccessToken = directToken
             return directToken
         }
         try {
@@ -942,6 +942,7 @@ class VtuRepository(
             val refreshed = SupabaseInstance.client?.auth?.currentAccessTokenOrNull()?.trim().orEmpty()
             if (refreshed.isNotBlank()) {
                 _accessToken.value = refreshed
+                SupabaseProvider.activeUserAccessToken = refreshed
                 prefs.edit().putString(KEY_ACCESS_TOKEN, refreshed).apply()
                 return refreshed
             }
@@ -974,6 +975,7 @@ class VtuRepository(
                                 val newRefresh = json.optString("refresh_token").trim()
                                 if (newAccess.isNotBlank()) {
                                     _accessToken.value = newAccess
+                                    SupabaseProvider.activeUserAccessToken = newAccess
                                     val ed = prefs.edit().putString(KEY_ACCESS_TOKEN, newAccess)
                                     if (newRefresh.isNotBlank()) {
                                         ed.putString(KEY_REFRESH_TOKEN, newRefresh)
@@ -985,6 +987,9 @@ class VtuRepository(
                         }
                 } catch (_: Throwable) {}
             }
+        }
+        if (directToken.isNotBlank()) {
+            SupabaseProvider.activeUserAccessToken = directToken
         }
         return directToken
     }
@@ -1033,17 +1038,30 @@ class VtuRepository(
     ): GsubzOrderResult {
         val current = _currentUser.value
         val validToken = resolveValidAccessToken()
-        val resolvedUserId = current?.id?.takeIf { it.isNotBlank() }
-            ?: prefs.getString(KEY_USER_ID, null)?.takeIf { it.isNotBlank() }
+        val authUser = try { SupabaseInstance.client?.auth?.currentUserOrNull() } catch (_: Throwable) { null }
+        val resolvedUserId = authUser?.id?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getUserIdFromJwt(validToken)
-        val resolvedEmail = current?.email?.takeIf { it.isNotBlank() }
-            ?: prefs.getString(KEY_USER_EMAIL, null)?.takeIf { it.isNotBlank() }
+            ?: current?.id?.takeIf { it.isNotBlank() && it != "usr_default" && it != "usr_guest" }
+            ?: prefs.getString(KEY_USER_ID, null)?.takeIf { it.isNotBlank() }
+        val resolvedEmail = authUser?.email?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getEmailFromJwt(validToken)
+            ?: current?.email?.takeIf { it.isNotBlank() }
+            ?: prefs.getString(KEY_USER_EMAIL, null)?.takeIf { it.isNotBlank() }
         val resolvedNarration = narration?.takeIf { it.isNotBlank() }
             ?: current?.fullName?.takeIf { it.isNotBlank() }
 
+        if (!resolvedUserId.isNullOrBlank() && !resolvedEmail.isNullOrBlank()) {
+            ensureRemoteUserRecordExists(
+                userId = resolvedUserId,
+                email = resolvedEmail,
+                fullName = current?.fullName,
+                phone = current?.phone,
+                accessToken = validToken
+            )
+        }
+
         return try {
-            val result = gsubzClient.executeVtuOrder(
+            var result = gsubzClient.executeVtuOrder(
                 serviceType = serviceType,
                 provider = provider,
                 recipient = recipient,
@@ -1057,6 +1075,34 @@ class VtuRepository(
                 userId = resolvedUserId,
                 userEmail = resolvedEmail
             )
+            if (!result.isSuccess &&
+                result.message.contains("User account or wallet balance record not found", ignoreCase = true) &&
+                !resolvedUserId.isNullOrBlank() &&
+                !resolvedEmail.isNullOrBlank()
+            ) {
+                ensureRemoteUserRecordExists(
+                    userId = resolvedUserId,
+                    email = resolvedEmail,
+                    fullName = current?.fullName,
+                    phone = current?.phone,
+                    accessToken = validToken,
+                    forceUpsert = true
+                )
+                result = gsubzClient.executeVtuOrder(
+                    serviceType = serviceType,
+                    provider = provider,
+                    recipient = recipient,
+                    amount = amount,
+                    planId = planId,
+                    meterNumber = meterNumber,
+                    smartcardNumber = smartcardNumber,
+                    serviceIdOverride = serviceIdOverride,
+                    narration = resolvedNarration,
+                    userToken = validToken,
+                    userId = resolvedUserId,
+                    userEmail = resolvedEmail
+                )
+            }
             if (result.newBalance != null && result.newBalance >= 0.0) {
                 setWalletBalance(result.newBalance)
             }
@@ -1336,7 +1382,10 @@ class VtuRepository(
             val realRefreshToken = try { authRepo.supabase?.auth?.currentSessionOrNull()?.refreshToken } catch (_: Throwable) { null }
             val currentAuthUser = try { authRepo.supabase?.auth?.currentUserOrNull() } catch (_: Throwable) { null }
                 ?: authRepo.lastPasswordVerifiedUser
-            val realUserId = currentAuthUser?.id ?: authRepo.currentUserId() ?: UUID.randomUUID().toString()
+            val realUserId = currentAuthUser?.id
+                ?: authRepo.currentUserId()
+                ?: com.example.util.JwtUtils.getUserIdFromJwt(realToken)
+                ?: UUID.randomUUID().toString()
             val meta = currentAuthUser?.userMetadata
 
             val metaName = meta?.get("full_name")?.toString()?.trim('"')?.takeIf { it.isNotBlank() && it != "null" }
@@ -1396,7 +1445,8 @@ class VtuRepository(
             val dbAccName = if (dbVa != null) {
                 resolveAccountHolderName(rawDbAccName, resolvedFullName, email).ifBlank { null }
             } else null
-            val dbNinHash = dbRow?.get("nin_hash")?.toString()?.trim('"')?.takeIf {
+            val dbNinHash = (dbRow?.get("nin")?.toString()?.trim('"')
+                ?: dbRow?.get("nin_hash")?.toString()?.trim('"'))?.takeIf {
                 !it.equals("null", ignoreCase = true) && it.isNotBlank()
             } ?: metaNin ?: existingLocalProfile?.ninHash
 
@@ -1406,6 +1456,17 @@ class VtuRepository(
                 setWalletBalance(dbWalletBal)
             } else if (existingLocalProfile != null && existingLocalProfile.walletBalance > 0.0) {
                 setWalletBalance(existingLocalProfile.walletBalance)
+            }
+
+            if (dbRow == null) {
+                ensureRemoteUserRecordExists(
+                    userId = realUserId,
+                    email = email.trim(),
+                    fullName = resolvedFullName,
+                    phone = dbPhone,
+                    accessToken = realToken,
+                    forceUpsert = true
+                )
             }
 
             val user = SupabaseUser(
@@ -1494,26 +1555,23 @@ class VtuRepository(
             val realToken = authRepo.currentAccessToken() ?: ""
             val realRefreshToken = try { authRepo.supabase?.auth?.currentSessionOrNull()?.refreshToken } catch (_: Throwable) { null }
             val currentAuthUser = try { authRepo.supabase?.auth?.currentUserOrNull() } catch (_: Throwable) { null }
-            val realUserId = currentAuthUser?.id ?: authRepo.currentUserId() ?: ""
+            val realUserId = currentAuthUser?.id
+                ?: authRepo.currentUserId()
+                ?: com.example.util.JwtUtils.getUserIdFromJwt(realToken)
+                ?: ""
 
             markEmailAsRegistered(email)
             setNewAccountZeroBalance(email, realUserId)
 
-            if (realUserId.isNotBlank() && (!cleanInputPhone.isNullOrBlank() || cleanFullName.isNotBlank())) {
-                try {
-                    authRepo.supabase?.from("users")?.update(
-                        buildJsonObject {
-                            if (!cleanInputPhone.isNullOrBlank()) {
-                                put("phone", JsonPrimitive(cleanInputPhone))
-                            }
-                            if (cleanFullName.isNotBlank()) {
-                                put("full_name", JsonPrimitive(cleanFullName))
-                            }
-                        }
-                    ) {
-                        filter { eq("id", realUserId) }
-                    }
-                } catch (_: Throwable) {}
+            if (realUserId.isNotBlank()) {
+                ensureRemoteUserRecordExists(
+                    userId = realUserId,
+                    email = email.trim(),
+                    fullName = cleanFullName,
+                    phone = cleanInputPhone,
+                    accessToken = realToken,
+                    forceUpsert = true
+                )
             }
 
             val meta = currentAuthUser?.userMetadata
@@ -1546,7 +1604,8 @@ class VtuRepository(
                     !it.equals("null", ignoreCase = true) && it.isNotBlank()
                 }
             } else null
-            val dbNinHash = dbRow?.get("nin_hash")?.toString()?.trim('"')?.takeIf {
+            val dbNinHash = (dbRow?.get("nin")?.toString()?.trim('"')
+                ?: dbRow?.get("nin_hash")?.toString()?.trim('"'))?.takeIf {
                 !it.equals("null", ignoreCase = true) && it.isNotBlank()
             }
 
@@ -1735,6 +1794,8 @@ class VtuRepository(
     private var realtimeChannel: io.github.jan.supabase.realtime.RealtimeChannel? = null
 
     init {
+        SupabaseProvider.activeUserAccessToken = currentAccessToken
+        SupabaseProvider.tokenRefreshCallback = { resolveValidAccessToken() }
         if (_isLoggedIn.value) {
             val initUid = _currentUser.value?.id?.trim()
             if (!initUid.isNullOrBlank()) {
@@ -1800,6 +1861,109 @@ class VtuRepository(
         }
     }
 
+    /**
+     * Ensures the authenticated user has a record in both `public.users` and `public.profiles`
+     * so `Gsubz-VTU-Services` never fails with 404 "User account or wallet balance record not found."
+     * Uses only columns that actually exist on each table (`public.users`: id, email, phone, wallet_balance;
+     * `public.profiles`: id, email, full_name, phone, wallet_balance).
+     */
+    suspend fun ensureRemoteUserRecordExists(
+        userId: String,
+        email: String,
+        fullName: String? = null,
+        phone: String? = null,
+        accessToken: String? = null,
+        forceUpsert: Boolean = false
+    ) = withContext(Dispatchers.IO) {
+        val cleanUid = userId.trim()
+        val cleanEmail = email.trim()
+        val isValidUuid = cleanUid.length == 36 && cleanUid.count { it == '-' } == 4
+        if (!isValidUuid || cleanEmail.isBlank()) return@withContext
+
+        val anonKey = authClient.supabaseAnonKey
+        val baseUrl = authClient.supabaseUrl.trimEnd('/')
+        if (baseUrl.isBlank() || anonKey.isBlank()) return@withContext
+
+        val activeToken = (accessToken?.takeIf { it.isNotBlank() } ?: currentAccessToken ?: anonKey).trim()
+        val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
+        val cleanPhone = sanitizeRealPhone(phone)
+        val cleanFullName = sanitizeFullName(fullName, cleanEmail)
+
+        val http = OkHttpClient.Builder()
+            .connectTimeout(7, TimeUnit.SECONDS)
+            .readTimeout(7, TimeUnit.SECONDS)
+            .build()
+
+        // 1. Check if public.users row already exists
+        var usersRowExists = false
+        if (!forceUpsert) {
+            try {
+                val checkReq = Request.Builder()
+                    .url("$baseUrl/rest/v1/users?select=id,wallet_balance&id=eq.$cleanUid&limit=1")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .get()
+                    .build()
+                http.newCall(checkReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val arr = JSONArray(resp.body?.string().orEmpty().ifBlank { "[]" })
+                        usersRowExists = arr.length() > 0 && !arr.getJSONObject(0).isNull("wallet_balance")
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        if (!usersRowExists || forceUpsert) {
+            try {
+                val insertUsersJson = JSONObject().apply {
+                    put("id", cleanUid)
+                    put("email", cleanEmail)
+                    if (!cleanPhone.isNullOrBlank()) {
+                        put("phone", cleanPhone)
+                    }
+                    if (!usersRowExists) {
+                        put("wallet_balance", _walletBalance.value.coerceAtLeast(0.0))
+                    }
+                }
+                val upsertUsersReq = Request.Builder()
+                    .url("$baseUrl/rest/v1/users?on_conflict=id")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                    .post(insertUsersJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                http.newCall(upsertUsersReq).execute().close()
+            } catch (_: Throwable) {}
+        }
+
+        // 2. Also ensure public.profiles row exists (which has full_name & wallet_balance)
+        try {
+            val insertProfilesJson = JSONObject().apply {
+                put("id", cleanUid)
+                put("email", cleanEmail)
+                if (cleanFullName.isNotBlank()) {
+                    put("full_name", cleanFullName)
+                }
+                if (!cleanPhone.isNullOrBlank()) {
+                    put("phone", cleanPhone)
+                }
+                if (!usersRowExists) {
+                    put("wallet_balance", _walletBalance.value.coerceAtLeast(0.0))
+                }
+            }
+            val upsertProfilesReq = Request.Builder()
+                .url("$baseUrl/rest/v1/profiles?on_conflict=id")
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", bearer)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(insertProfilesJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            http.newCall(upsertProfilesReq).execute().close()
+        } catch (_: Throwable) {}
+    }
+
     private suspend fun fetchSafeUsersRow(
         sb: io.github.jan.supabase.SupabaseClient?,
         userId: String
@@ -1810,15 +1974,28 @@ class VtuRepository(
             USERS_SAFE_COLUMNS_STANDARD,
             USERS_SAFE_COLUMNS_MINIMAL
         )
+        var usersObj: JsonObject? = null
         for (cols in columnSets) {
             try {
-                return sb.from("users").select(Columns.list(*cols.toTypedArray())) {
+                usersObj = sb.from("users").select(Columns.list(*cols.toTypedArray())) {
                     filter { eq("id", userId) }
                     limit(1)
                 }.decodeSingleOrNull<JsonObject>()
+                if (usersObj != null) break
             } catch (_: Throwable) {}
         }
-        return null
+        val profilesObj: JsonObject? = try {
+            sb.from("profiles").select(Columns.list("id", "email", "full_name", "phone", "wallet_balance")) {
+                filter { eq("id", userId) }
+                limit(1)
+            }.decodeSingleOrNull<JsonObject>()
+        } catch (_: Throwable) { null }
+
+        if (usersObj == null && profilesObj == null) return null
+        return buildJsonObject {
+            profilesObj?.forEach { (k, v) -> put(k, v) }
+            usersObj?.forEach { (k, v) -> put(k, v) }
+        }
     }
 
     /**
@@ -2496,33 +2673,23 @@ class VtuRepository(
         }
 
         // 2. Persist to public.users where id = userId using separate column-safe PATCH payloads
+        // Note: public.users has columns (id, email, phone, wallet_balance, permanent_account_number, permanent_account_bank, bvn, nin)
         val candidatePayloads = mutableListOf<org.json.JSONObject>()
-        if (cleanPhone != null || cleanFullName.isNotBlank()) {
+        if (cleanPhone != null) {
             candidatePayloads.add(org.json.JSONObject().apply {
-                if (cleanPhone != null) put("phone", cleanPhone)
-                if (cleanFullName.isNotBlank()) put("full_name", cleanFullName)
+                put("phone", cleanPhone)
+            })
+        }
+        if (!nin.isNullOrBlank()) {
+            candidatePayloads.add(org.json.JSONObject().apply {
+                put("nin", nin.trim())
             })
         }
         if (accNumber.isNotBlank()) {
             candidatePayloads.add(org.json.JSONObject().apply {
-                put("virtual_account_number", accNumber)
-                if (bank.isNotBlank()) put("virtual_bank", bank)
-            })
-            candidatePayloads.add(org.json.JSONObject().apply {
-                put("virtual_account_number", accNumber)
-                if (bank.isNotBlank()) put("virtual_bank_name", bank)
-                if (accName.isNotBlank()) put("virtual_account_name", accName)
-            })
-            candidatePayloads.add(org.json.JSONObject().apply {
                 put("permanent_account_number", accNumber)
                 if (bank.isNotBlank()) put("permanent_account_bank", bank)
-                if (accName.isNotBlank()) put("permanent_account_name", accName)
             })
-            if (accName.isNotBlank()) {
-                candidatePayloads.add(org.json.JSONObject().apply {
-                    put("account_name", accName)
-                })
-            }
         }
 
         val filterParam = "id=eq.$userId"
@@ -2537,6 +2704,26 @@ class VtuRepository(
                     .addHeader("Authorization", bearer)
                     .addHeader("Prefer", "return=minimal")
                     .patch(requestBody)
+                    .build()
+                client.newCall(req).execute().close()
+            } catch (_: Throwable) {}
+        }
+
+        // 2b. Persist full_name and phone to public.profiles where id = userId
+        if (cleanFullName.isNotBlank() || cleanPhone != null) {
+            try {
+                val profileJson = org.json.JSONObject().apply {
+                    put("id", userId)
+                    if (email.isNotBlank()) put("email", email)
+                    if (cleanFullName.isNotBlank()) put("full_name", cleanFullName)
+                    if (cleanPhone != null) put("phone", cleanPhone)
+                }
+                val req = Request.Builder()
+                    .url("$baseUrl/rest/v1/profiles?on_conflict=id")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                    .post(profileJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
                 client.newCall(req).execute().close()
             } catch (_: Throwable) {}
@@ -2652,6 +2839,8 @@ class VtuRepository(
 
         _currentUser.value = resolvedUser
         _accessToken.value = token
+        SupabaseProvider.activeUserAccessToken = token
+        SupabaseProvider.tokenRefreshCallback = { resolveValidAccessToken() }
         _isLoggedIn.value = true
 
         loadUserBalance(resolvedUser.email, userId)
@@ -2739,6 +2928,7 @@ class VtuRepository(
 
         _currentUser.value = null
         _accessToken.value = null
+        SupabaseProvider.activeUserAccessToken = null
         _isLoggedIn.value = false
         _walletBalance.value = 0.0
         _cashbackBalance.value = 0.0

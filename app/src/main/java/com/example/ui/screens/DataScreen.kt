@@ -97,13 +97,13 @@ fun DataScreen(
     }
 
     val filteredPlans = remember(selectedNetwork, selectedCategory, livePlansByService) {
-        VtuCatalog.dataPlans
+        val basePlans = VtuCatalog.dataPlans
             .filter {
                 it.network == selectedNetwork && (selectedCategory == null || it.category == selectedCategory)
             }
             .map { catalogPlan ->
                 val liveMatch = livePlansByService[catalogPlan.gsubzServiceId.lowercase()]
-                    ?.firstOrNull { it.value == catalogPlan.planCode }
+                    ?.firstOrNull { it.value.equals(catalogPlan.planCode, ignoreCase = true) }
                 val livePrice = liveMatch?.price?.toDoubleOrNull()
                 if (livePrice != null && livePrice > 0.0) {
                     catalogPlan.copy(price = livePrice)
@@ -111,6 +111,38 @@ fun DataScreen(
                     catalogPlan
                 }
             }
+        val knownPlanKeys = VtuCatalog.dataPlans
+            .filter { it.network == selectedNetwork }
+            .map { "${it.gsubzServiceId.lowercase()}_${it.planCode.lowercase()}" }
+            .toSet()
+        val serviceIdsForNetwork = when (selectedNetwork) {
+            NetworkProvider.MTN -> listOf("mtn_sme", "mtn_gifting")
+            NetworkProvider.AIRTEL -> listOf("airtel_sme", "airtel_gifting")
+            NetworkProvider.GLO -> listOf("glo_data", "glo_sme")
+            NetworkProvider.NINEMOBILE -> listOf("etisalat_data")
+        }
+        val extraDynamicPlans = serviceIdsForNetwork.flatMap { sId ->
+            val cat = if (sId.contains("sme")) DataCategory.SME else DataCategory.GIFTING
+            livePlansByService[sId.lowercase()].orEmpty().mapNotNull { item ->
+                val key = "${sId.lowercase()}_${item.value.lowercase()}"
+                val priceVal = item.price.toDoubleOrNull()
+                if (key !in knownPlanKeys && priceVal != null && priceVal > 0.0 && (selectedCategory == null || selectedCategory == cat)) {
+                    val parts = item.displayName.split("-").map { it.trim() }
+                    DataPlan(
+                        id = "live_${sId}_${item.value}",
+                        network = selectedNetwork,
+                        category = cat,
+                        dataAmount = parts.firstOrNull()?.takeIf { it.isNotBlank() } ?: item.displayName,
+                        validity = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: "30 Days",
+                        price = priceVal,
+                        originalPrice = priceVal,
+                        planCode = item.value,
+                        gsubzServiceId = sId
+                    )
+                } else null
+            }
+        }
+        basePlans + extraDynamicPlans
     }
 
     if (showNetworkPicker) {

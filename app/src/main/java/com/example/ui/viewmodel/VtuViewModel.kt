@@ -1789,7 +1789,13 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
             return "Network connection bad. Please check your internet connection and try again."
         }
         val lower = text.lowercase()
-        if (lower.contains("insufficient")) {
+        if (lower.contains("insufficient") ||
+            lower.contains("wallet balance") ||
+            lower.contains("not available") ||
+            lower.contains("invalid") ||
+            lower.contains("below the minimum") ||
+            lower.contains("record not found")
+        ) {
             return text.replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "").trim()
         }
         if (lower.contains("gsubz") ||

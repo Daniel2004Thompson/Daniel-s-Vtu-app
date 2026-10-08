@@ -150,10 +150,66 @@ object GsubzVtuService {
 
         val baseUrl = SUPABASE_URL.trimEnd('/')
         val anonKey = SupabaseProvider.rawKey
-        val activeToken = SupabaseProvider.resolveSessionAccessToken(null)
+        val activeToken = SupabaseProvider.resolveValidSessionAccessToken(null)
         val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
 
-        // 1. Query Supabase vtu_prices table for active plans belonging to this service_id
+        // 1. Call Gsubz-VTU-Services Edge Function (https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Gsubz-VTU-Services) via POST
+        try {
+            val sessionUser = try { SupabaseProvider.client?.auth?.currentUserOrNull() } catch (_: Throwable) { null }
+            val uid = sessionUser?.id?.takeIf { it.isNotBlank() }
+                ?: com.example.util.JwtUtils.getUserIdFromJwt(activeToken)
+                ?: "00000000-0000-0000-0000-000000000000"
+            val email = sessionUser?.email?.takeIf { it.isNotBlank() }
+                ?: com.example.util.JwtUtils.getEmailFromJwt(activeToken)
+                ?: "user@danielvtu.app"
+            val rawCategory = inferEdgeServiceCategory(cleanId)
+            val resolvedCategory = if (rawCategory == "education") "data" else rawCategory
+            val edgePlanPayload = buildJsonObject {
+                put("action", JsonPrimitive("get_plans"))
+                put("user_id", JsonPrimitive(uid))
+                put("email", JsonPrimitive(email))
+                put("service_type", JsonPrimitive(resolvedCategory))
+                put("service", JsonPrimitive(cleanId))
+                put("service_id", JsonPrimitive(cleanId))
+                put("serviceID", JsonPrimitive(cleanId))
+            }.toString()
+            val (edgeCode, edgeBody) = SupabaseProvider.postEdgeFunction(
+                functionName = FUNCTION_NAME,
+                bodyJson = edgePlanPayload,
+                accessTokenOverride = activeToken
+            )
+            if (edgeCode in 200..299 && edgeBody.isNotBlank()) {
+                val parsedEdgePlans = parseGsubzPlansJson(edgeBody)
+                if (parsedEdgePlans.isNotEmpty()) {
+                    _liveServicePlans.value = _liveServicePlans.value + (cleanId to parsedEdgePlans)
+                    return@withContext parsedEdgePlans
+                }
+            }
+        } catch (_: Throwable) {}
+
+        // 1b. Call Gsubz-VTU-Services Edge Function via GET query (?service=<cleanId>&service_id=<cleanId>&serviceID=<cleanId>)
+        try {
+            val edgeGetUrl = "$baseUrl/functions/v1/$FUNCTION_NAME?service=$cleanId&service_id=$cleanId&serviceID=$cleanId&action=get_plans"
+            val edgeGetReq = Request.Builder()
+                .url(edgeGetUrl)
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", bearer)
+                .addHeader("x-client-info", "vtu-android-client/1.0")
+                .get()
+                .build()
+            httpClient.newCall(edgeGetReq).execute().use { res ->
+                if (res.isSuccessful) {
+                    val edgeBody = res.body?.string().orEmpty()
+                    val parsedEdgePlans = parseGsubzPlansJson(edgeBody)
+                    if (parsedEdgePlans.isNotEmpty()) {
+                        _liveServicePlans.value = _liveServicePlans.value + (cleanId to parsedEdgePlans)
+                        return@withContext parsedEdgePlans
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+
+        // 2. Query Supabase vtu_prices table for active plans belonging to this service_id
         try {
             val url = "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price,cashback_percent,active&service_id=eq.$cleanId"
             val req = Request.Builder()
@@ -198,7 +254,7 @@ object GsubzVtuService {
             Log.w(TAG, "Error querying Supabase vtu_prices for $cleanId: ${e.message}")
         }
 
-        // 2. Fallback to catalog plans configured for this Gsubz service ID
+        // 3. Fallback to catalog plans configured for this Gsubz service ID
         val catalogItems = com.example.data.model.VtuCatalog.dataPlans
             .filter { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
             .map { plan ->
@@ -245,26 +301,64 @@ object GsubzVtuService {
     }
 
     /**
-     * Parses Gsubz plans response JSON, supporting both `"plans"` (used by Data & Education services)
-     * and `"list"` (used by Cable TV services like DStv, GOtv, StarTimes), as well as both
-     * `"displayName"` and `"display_name"`.
+     * Parses Gsubz plans response JSON from Gsubz-VTU-Services, supporting `"plans"`, `"list"`,
+     * `"prices"`, nested `"gsubz_data"` / `"data"` envelopes, and top-level JSON arrays, as well as
+     * both `"displayName"` and `"display_name"`.
      */
     fun parseGsubzPlansJson(rawJson: String): List<GsubzPlanItem> {
-        if (rawJson.isBlank()) return emptyList()
+        val trimmed = rawJson.trim()
+        if (trimmed.isBlank()) return emptyList()
         val list = mutableListOf<GsubzPlanItem>()
         try {
-            val root = JSONObject(rawJson)
-            val plansArr = root.optJSONArray("plans")
-                ?: root.optJSONArray("list")
-                ?: return emptyList()
+            val plansArr: JSONArray = if (trimmed.startsWith("[")) {
+                JSONArray(trimmed)
+            } else {
+                val root = JSONObject(trimmed)
+                val gsubzData = root.optJSONObject("gsubz_data")
+                val gsubzContent = gsubzData?.optJSONObject("content")
+                val dataObj = root.optJSONObject("data")
+                root.optJSONArray("plans")
+                    ?: root.optJSONArray("list")
+                    ?: root.optJSONArray("prices")
+                    ?: root.optJSONArray("data")
+                    ?: gsubzData?.optJSONArray("plans")
+                    ?: gsubzData?.optJSONArray("list")
+                    ?: gsubzContent?.optJSONArray("plans")
+                    ?: gsubzContent?.optJSONArray("list")
+                    ?: dataObj?.optJSONArray("plans")
+                    ?: dataObj?.optJSONArray("list")
+                    ?: dataObj?.optJSONArray("prices")
+                    ?: return emptyList()
+            }
             for (i in 0 until plansArr.length()) {
                 val item = plansArr.optJSONObject(i) ?: continue
+                if (item.has("active") && !item.isNull("active") && !item.optBoolean("active", true)) continue
                 val displayName = item.optString("displayName", "")
                     .ifBlank { item.optString("display_name", "") }
+                    .ifBlank { item.optString("name", "") }
+                    .ifBlank { item.optString("plan_name", "") }
+                    .ifBlank { item.optString("label", "") }
                     .trim()
-                val value = item.optString("value", "").trim()
-                val price = item.optString("price", "").trim()
-                val apiPrice = item.optString("api_price", "").trim()
+                val value = item.optString("value", "")
+                    .ifBlank { item.optString("plan", "") }
+                    .ifBlank { item.optString("plan_id", "") }
+                    .ifBlank { item.optString("planCode", "") }
+                    .ifBlank { item.optString("variation_code", "") }
+                    .trim()
+                val rawPriceNum = item.optDouble("price", Double.NaN)
+                    .let { if (it.isNaN()) item.optDouble("amount", Double.NaN) else it }
+                    .let { if (it.isNaN()) item.optDouble("selling_price", Double.NaN) else it }
+                val price = if (!rawPriceNum.isNaN() && rawPriceNum > 0.0) {
+                    if (rawPriceNum % 1.0 == 0.0) rawPriceNum.toLong().toString() else rawPriceNum.toString()
+                } else {
+                    item.optString("price", "")
+                        .ifBlank { item.optString("amount", "") }
+                        .ifBlank { item.optString("selling_price", "") }
+                        .trim()
+                }
+                val apiPrice = item.optString("api_price", "")
+                    .ifBlank { item.optString("apiPrice", "") }
+                    .trim()
                 if (value.isNotBlank()) {
                     list.add(
                         GsubzPlanItem(
@@ -292,7 +386,7 @@ object GsubzVtuService {
     ): Map<NetworkProvider, AirtimeNetworkPricing> = withContext(Dispatchers.IO) {
         val baseUrl = SUPABASE_URL.trimEnd('/')
         val anonKey = supabaseAnonKey.ifBlank { SupabaseProvider.rawKey }
-        val activeToken = SupabaseProvider.resolveSessionAccessToken(accessToken)
+        val activeToken = SupabaseProvider.resolveValidSessionAccessToken(accessToken)
         val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
 
         val candidateUrls = listOf(
@@ -507,8 +601,13 @@ object GsubzVtuService {
             JsonPrimitive(amount)
         }
 
-        val resolvedService = service.trim().lowercase().ifBlank {
+        val rawService = service.trim().lowercase().ifBlank {
             inferEdgeServiceCategory(serviceID, plan)
+        }
+        val resolvedService = when (rawService) {
+            "cable_tv", "tv", "cablesub" -> "cable"
+            "power", "meter" -> "electricity"
+            else -> rawService
         }
         val resolvedNetwork = network.trim().lowercase().ifBlank {
             serviceID.trim().lowercase()
@@ -519,13 +618,13 @@ object GsubzVtuService {
         } catch (_: Throwable) {
             null
         }
-        val resolvedUserId = userId?.trim()?.takeIf { it.isNotBlank() }
-            ?: sessionUser?.id?.takeIf { it.isNotBlank() }
+        val resolvedUserId = sessionUser?.id?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getUserIdFromJwt(userToken)
+            ?: userId?.trim()?.takeIf { it.isNotBlank() }
             ?: "00000000-0000-0000-0000-000000000000"
-        val resolvedEmail = userEmail?.trim()?.takeIf { it.isNotBlank() }
-            ?: sessionUser?.email?.takeIf { it.isNotBlank() }
+        val resolvedEmail = sessionUser?.email?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getEmailFromJwt(userToken)
+            ?: userEmail?.trim()?.takeIf { it.isNotBlank() }
             ?: "user@danielvtu.app"
 
         val resolvedServiceId = serviceID.trim().lowercase().ifBlank { resolvedNetwork }
@@ -611,7 +710,7 @@ object GsubzVtuService {
         )
         lastOutgoingRequestBodyString = requestJsonString
 
-        val (httpStatusCode, rawBody) = try {
+        var (httpStatusCode, rawBody) = try {
             SupabaseProvider.postEdgeFunction(
                 functionName = FUNCTION_NAME,
                 bodyJson = requestJsonString,
@@ -628,6 +727,42 @@ object GsubzVtuService {
                 amountPaid = 0.0,
                 isLiveEdge = false
             )
+        }
+
+        // If the Edge Function only accepts ["airtime", "data", "cable", "electricity"] for service_type
+        // and rejects "education" with HTTP 400 ("Invalid service type: education"), automatically retry
+        // with service = "data" while preserving service_id ("waec", "neco", "nabteb") and plan.
+        if (httpStatusCode == 400 && rawBody.contains("Invalid service type", ignoreCase = true)) {
+            val fallbackService = if (serviceID.contains("dstv", ignoreCase = true) ||
+                serviceID.contains("gotv", ignoreCase = true) ||
+                serviceID.contains("startimes", ignoreCase = true) ||
+                serviceID.contains("showmax", ignoreCase = true)
+            ) "cable" else "data"
+            val retryJsonString = buildRequestJson(
+                serviceID = serviceID,
+                amount = amount,
+                phone = cleanPhone,
+                plan = plan,
+                customerID = customerID,
+                service = fallbackService,
+                network = network,
+                userId = userId,
+                userEmail = userEmail,
+                narration = narration,
+                meterNumber = meterNumber,
+                smartcardNumber = smartcardNumber,
+                userToken = activeToken
+            )
+            lastOutgoingRequestBodyString = retryJsonString
+            try {
+                val retryResp = SupabaseProvider.postEdgeFunction(
+                    functionName = FUNCTION_NAME,
+                    bodyJson = retryJsonString,
+                    accessTokenOverride = activeToken
+                )
+                httpStatusCode = retryResp.first
+                rawBody = retryResp.second
+            } catch (_: Exception) {}
         }
 
         return@withContext parseAndFinalizeGsubzResponse(

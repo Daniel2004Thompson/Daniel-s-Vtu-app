@@ -96,21 +96,55 @@ object SupabaseProvider {
         }
     }
 
+    @Volatile
+    var activeUserAccessToken: String? = null
+
+    @Volatile
+    var tokenRefreshCallback: (suspend () -> String?)? = null
+
     /**
-     * Resolves the logged-in user's session access token from the single SupabaseProvider.client,
-     * falling back to the provided token or the Supabase anon key if unauthenticated.
+     * Resolves the logged-in user's session access token from the single SupabaseProvider.client
+     * or the repository's persisted user session token, falling back to the provided token or the
+     * Supabase anon key if unauthenticated.
      */
     fun resolveSessionAccessToken(fallbackToken: String? = null): String {
         val cleanFallback = fallbackToken?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
+        val cleanActive = activeUserAccessToken?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
         val sessionToken = try {
             client?.auth?.currentAccessTokenOrNull()?.takeIf { it.isNotBlank() }
                 ?: client?.auth?.currentSessionOrNull()?.accessToken?.takeIf { it.isNotBlank() }
         } catch (_: Throwable) {
             null
         }
-        return sessionToken
+        val validSession = sessionToken?.takeIf { !com.example.util.JwtUtils.isExpired(it) }
+        val validFallback = cleanFallback?.takeIf {
+            it.isNotBlank() && it != rawKey && !it.startsWith("session_") && !it.startsWith("demo_") && !com.example.util.JwtUtils.isExpired(it)
+        }
+        val validActive = cleanActive?.takeIf {
+            it.isNotBlank() && it != rawKey && !it.startsWith("session_") && !it.startsWith("demo_") && !com.example.util.JwtUtils.isExpired(it)
+        }
+        return validSession
+            ?: validFallback
+            ?: validActive
+            ?: sessionToken
             ?: cleanFallback?.takeIf { it.isNotBlank() && !it.startsWith("session_") && !it.startsWith("demo_") }
+            ?: cleanActive?.takeIf { it.isNotBlank() && !it.startsWith("session_") && !it.startsWith("demo_") }
             ?: rawKey
+    }
+
+    suspend fun resolveValidSessionAccessToken(fallbackToken: String? = null): String {
+        val initial = resolveSessionAccessToken(fallbackToken)
+        if (initial != rawKey && !com.example.util.JwtUtils.isExpired(initial)) {
+            return initial
+        }
+        try {
+            val refreshed = tokenRefreshCallback?.invoke()?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
+            if (!refreshed.isNullOrBlank() && refreshed != rawKey && !com.example.util.JwtUtils.isExpired(refreshed)) {
+                activeUserAccessToken = refreshed
+                return refreshed
+            }
+        } catch (_: Throwable) {}
+        return resolveSessionAccessToken(fallbackToken)
     }
 
     /**
@@ -124,10 +158,10 @@ object SupabaseProvider {
     ): Pair<Int, String> {
         val cleanFunction = functionName.trim().trimStart('/')
         val url = "${safeUrl.trimEnd('/')}/functions/v1/$cleanFunction"
-        val accessToken = resolveSessionAccessToken(accessTokenOverride)
+        val accessToken = resolveValidSessionAccessToken(accessTokenOverride)
         val bearer = if (accessToken.startsWith("Bearer ", ignoreCase = true)) accessToken else "Bearer $accessToken"
 
-        return try {
+        val firstAttempt = try {
             val response = ktorClient.post(url) {
                 header(HttpHeaders.Authorization, bearer)
                 header("apikey", rawKey)
@@ -139,6 +173,30 @@ object SupabaseProvider {
         } catch (e: io.ktor.client.plugins.ResponseException) {
             Pair(e.response.status.value, e.response.bodyAsText())
         }
+
+        if (firstAttempt.first == 401) {
+            try {
+                val refreshed = tokenRefreshCallback?.invoke()?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
+                if (!refreshed.isNullOrBlank() && refreshed != accessToken && refreshed != rawKey) {
+                    activeUserAccessToken = refreshed
+                    val retryBearer = "Bearer $refreshed"
+                    return try {
+                        val retryRes = ktorClient.post(url) {
+                            header(HttpHeaders.Authorization, retryBearer)
+                            header("apikey", rawKey)
+                            header("x-client-info", "vtu-android-client/1.0")
+                            contentType(ContentType.Application.Json)
+                            setBody(bodyJson)
+                        }
+                        Pair(retryRes.status.value, retryRes.bodyAsText())
+                    } catch (e: io.ktor.client.plugins.ResponseException) {
+                        Pair(e.response.status.value, e.response.bodyAsText())
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        return firstAttempt
     }
 }
 
