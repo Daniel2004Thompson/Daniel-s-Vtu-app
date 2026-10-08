@@ -313,10 +313,10 @@ fun ProfileSecurityScreen(
                                     if (detectedProvider != null) {
                                         com.example.ui.components.NetworkLogoIcon(
                                             provider = detectedProvider,
-                                            size = 14.dp,
+                                            size = 22.dp,
                                             isCircular = true
                                         )
-                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Spacer(modifier = Modifier.width(5.dp))
                                     }
                                     Text(
                                         text = providerLabel,
