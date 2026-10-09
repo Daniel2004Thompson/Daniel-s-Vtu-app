@@ -731,11 +731,13 @@ fun HomeScreen(
                 !it.equals("null", ignoreCase = true) && !it.equals("nil", ignoreCase = true) && it.isNotBlank()
             }
             val vaBank = if (isVaVerified) (rawBank ?: "") else "Tap to enter NIN & get permanent account"
-            val vaAccountName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                rawAccountName = currentUser?.virtualAccountName,
-                fullName = displayFullName,
-                email = currentUser?.email
-            )
+            val vaAccountName = if (isVaVerified) {
+                com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                    rawAccountName = currentUser?.virtualAccountName,
+                    fullName = currentUser?.fullName,
+                    email = currentUser?.email
+                )
+            } else ""
 
             Card(
                 colors = CardDefaults.cardColors(
@@ -1346,7 +1348,7 @@ fun TransactionRowItem(
     val cleanProvider = if (isWalletFunding) "" else transaction.provider.trim()
     val cleanService = if (isWalletFunding) "" else transaction.serviceType.replace('_', ' ').trim()
     val displayTitle = if (isWalletFunding) {
-        "Wallet Funding"
+        "credit"
     } else {
         transaction.title.trim().ifEmpty {
             when {

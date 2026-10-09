@@ -76,7 +76,7 @@ fun FundWalletSheet(
     onPayWithFlutterwave: ((amount: Double, onReady: (url: String, ref: String) -> Unit, onError: (String) -> Unit) -> Unit)? = null,
     isFlutterwaveLoading: Boolean = false,
     flutterwaveError: String? = null,
-    onPermanentAccountCreated: ((accountNumber: String, bankName: String) -> Unit)? = null,
+    onPermanentAccountCreated: ((accountNumber: String, bankName: String, accountName: String) -> Unit)? = null,
     onPermanentAccountReset: (() -> Unit)? = null,
     onNavigateToDynamicAccount: (() -> Unit)? = null,
     businessAccount: Triple<String, String, String>? = null
@@ -96,11 +96,13 @@ fun FundWalletSheet(
         !it.equals("null", ignoreCase = true) && !it.equals("nil", ignoreCase = true) && it.isNotBlank()
     }
     val userVaBank = rawBank ?: ""
-    val userVaName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-        rawAccountName = currentUser?.virtualAccountName,
-        fullName = currentUser?.fullName,
-        email = currentUser?.email
-    )
+    val userVaName = if (isVaVerified) {
+        com.example.data.repository.VtuRepository.resolveAccountHolderName(
+            rawAccountName = currentUser?.virtualAccountName,
+            fullName = currentUser?.fullName,
+            email = currentUser?.email
+        )
+    } else ""
 
     // Dedicated Dynamic Virtual Account details (strictly isolated from NIN)
     val rawDyn = currentUser?.dynamicAccountNumber?.trim()
@@ -554,8 +556,8 @@ fun FundWalletSheet(
                         item {
                             PermanentAccountSection(
                                 currentUser = currentUser,
-                                onAccountCreated = { accNum, bankName ->
-                                    onPermanentAccountCreated?.invoke(accNum, bankName)
+                                onAccountCreated = { accNum, bankName, acctName ->
+                                    onPermanentAccountCreated?.invoke(accNum, bankName, acctName)
                                 },
                                 onAccountReset = onPermanentAccountReset
                             )

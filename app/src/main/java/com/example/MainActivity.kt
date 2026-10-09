@@ -673,8 +673,8 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                         onNavigateToResetPassword = { navController.navigate(NavigationRoutes.FORGOT_PASSWORD_BASE) },
                         onNavigateToLogout = { navController.navigate(NavigationRoutes.LOGOUT) },
                         onNavigateToDevelopersForum = { navController.navigate(NavigationRoutes.DEVELOPERS_FORUM) },
-                        onPermanentAccountCreated = { acc, bank ->
-                            viewModel.updateUserVirtualAccount(acc, bank)
+                        onPermanentAccountCreated = { acc, bank, acctName ->
+                            viewModel.updateUserVirtualAccount(acc, bank, acctName)
                         },
                         onPermanentAccountReset = {
                             currentUser?.id?.let { uid -> viewModel.clearUserVirtualAccount(uid) }
@@ -806,8 +806,8 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
             },
             isFlutterwaveLoading = isFlutterwaveLoading,
             currentUser = currentUser,
-            onPermanentAccountCreated = { acc, bank ->
-                viewModel.updateUserVirtualAccount(acc, bank)
+            onPermanentAccountCreated = { acc, bank, acctName ->
+                viewModel.updateUserVirtualAccount(acc, bank, acctName)
             },
             onPermanentAccountReset = {
                 currentUser?.id?.let { uid -> viewModel.clearUserVirtualAccount(uid) }

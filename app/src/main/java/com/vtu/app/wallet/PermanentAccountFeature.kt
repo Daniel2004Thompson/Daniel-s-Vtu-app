@@ -118,8 +118,11 @@ class PermanentAccountViewModel : ViewModel() {
     fun checkExisting(
         userId: String,
         email: String? = null,
+        fullName: String? = null,
+        phone: String? = null,
+        nin: String? = null,
         currentVa: String? = null,
-        onAccountRestored: ((String, String) -> Unit)? = null
+        onAccountRestored: ((String, String, String) -> Unit)? = null
     ) {
         val cleanUid = userId.trim()
         if (cleanUid.isBlank() || cleanUid == "usr_guest" || cleanUid == "usr_default") {
@@ -133,11 +136,16 @@ class PermanentAccountViewModel : ViewModel() {
             lastCheckedUserId = cleanUid
         }
         val cleanVa = currentVa.cleanAccountNumber()
+        val initialResolvedName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+            rawAccountName = _accountDetails.value?.account_name,
+            fullName = fullName,
+            email = email
+        )
         if (cleanVa != null && !explicitlyResetInSession) {
             _accountDetails.value = PermanentAccountResponse(
                 account_number = cleanVa,
                 bank_name = _accountDetails.value?.bank_name,
-                account_name = _accountDetails.value?.account_name
+                account_name = initialResolvedName.ifBlank { null }
             )
         }
 
@@ -146,13 +154,19 @@ class PermanentAccountViewModel : ViewModel() {
             val token = resolveAuthToken()
             val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
             val okClient = OkHttpClient.Builder()
-                .connectTimeout(6, TimeUnit.SECONDS)
-                .readTimeout(6, TimeUnit.SECONDS)
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
                 .build()
+
+            var dbAccNum: String? = cleanVa
+            var dbBank: String? = _accountDetails.value?.bank_name
+            var dbNin: String? = nin?.filter { it.isDigit() }?.takeIf { it.length == 11 }
+            var dbPhone: String? = com.example.data.repository.VtuRepository.sanitizeRealPhone(phone)
+            var dbEmail: String = email?.trim().orEmpty()
 
             try {
                 val userSelectCandidates = listOf(
-                    com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_FULL.joinToString(","),
+                    "id,email,phone,permanent_account_number,permanent_account_bank",
                     com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_STANDARD.joinToString(","),
                     "id,permanent_account_number,permanent_account_bank"
                 )
@@ -174,97 +188,103 @@ class PermanentAccountViewModel : ViewModel() {
                     }
                     if (ok) break
                 }
-                var foundInUsers = false
                 if (body.isNotBlank()) {
                     val arr = JSONArray(body)
                     if (arr.length() > 0) {
                         val obj = arr.getJSONObject(0)
-                        val ninHash = obj.optCleanString("nin_hash")
-                        _ninVerified.value = !ninHash.isNullOrBlank()
+                        val ninVal = obj.optCleanString("nin") ?: obj.optCleanString("nin_hash")
+                        if (!ninVal.isNullOrBlank()) {
+                            _ninVerified.value = true
+                            if (dbNin.isNullOrBlank()) {
+                                dbNin = ninVal.filter { it.isDigit() }.takeIf { it.length == 11 }
+                            }
+                        }
+                        if (dbPhone.isNullOrBlank()) {
+                            dbPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(obj.optCleanString("phone"))
+                        }
+                        if (dbEmail.isBlank()) {
+                            dbEmail = obj.optCleanString("email").orEmpty()
+                        }
 
                         val num = (obj.optCleanString("permanent_account_number")
                             ?: obj.optCleanString("virtual_account_number"))?.cleanAccountNumber()
                         if (num != null && !explicitlyResetInSession) {
-                            foundInUsers = true
+                            dbAccNum = num
                             val bank = obj.optCleanString("bank_name")
                                 ?: obj.optCleanString("permanent_account_bank")
                                 ?: obj.optCleanString("virtual_bank_name")
                                 ?: obj.optCleanString("virtual_bank")
-                            val rawName = obj.optCleanString("account_name")
-                                ?: obj.optCleanString("permanent_account_name")
-                                ?: obj.optCleanString("virtual_account_name")
-                            val rawFullName = obj.optCleanString("full_name") ?: obj.optCleanString("name")
-                            val rowEmail = obj.optCleanString("email") ?: email
-                            val name = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                                rawAccountName = rawName,
-                                fullName = rawFullName,
-                                email = rowEmail
+                            if (!bank.isNullOrBlank()) {
+                                dbBank = bank
+                            }
+                            val resolvedDbName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                                rawAccountName = _accountDetails.value?.account_name,
+                                fullName = fullName,
+                                email = dbEmail
                             )
-
                             _accountDetails.value = PermanentAccountResponse(
                                 account_number = num,
-                                bank_name = bank,
-                                account_name = name
+                                bank_name = dbBank,
+                                account_name = resolvedDbName.ifBlank { null }
                             )
-                            if (name.isNotBlank() && rawName != name) {
-                                persistToSupabase(
-                                    userId = cleanUid,
-                                    email = rowEmail.orEmpty(),
-                                    accNumber = num,
-                                    bank = bank.orEmpty(),
-                                    accName = name,
-                                    nin = ""
-                                )
-                            }
-                            withContext(Dispatchers.Main) {
-                                onAccountRestored?.invoke(num, bank.orEmpty())
-                            }
                         }
                     }
                 }
-                if (!foundInUsers && !explicitlyResetInSession) {
-                    val vaReq = Request.Builder()
-                        .url("$baseUrl/rest/v1/virtual_accounts?select=user_id,email,account_number,bank_name,account_name&user_id=eq.$cleanUid&limit=1")
-                        .addHeader("apikey", anonKey)
-                        .addHeader("Authorization", bearer)
-                        .get()
-                        .build()
-                    okClient.newCall(vaReq).execute().use { vaRes ->
-                        if (vaRes.isSuccessful) {
-                            val vaBody = vaRes.body?.string().orEmpty()
-                            val vaArr = JSONArray(vaBody)
-                            if (vaArr.length() > 0) {
-                                val vaObj = vaArr.getJSONObject(0)
-                                val num = vaObj.optCleanString("account_number")?.cleanAccountNumber()
-                                if (num != null) {
-                                    val bank = vaObj.optCleanString("bank_name")
-                                    val rawName = vaObj.optCleanString("account_name")
-                                    val rowEmail = vaObj.optCleanString("email") ?: email
-                                    val name = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                                        rawAccountName = rawName,
-                                        fullName = null,
-                                        email = rowEmail
-                                    )
-                                    _accountDetails.value = PermanentAccountResponse(
-                                        account_number = num,
-                                        bank_name = bank,
-                                        account_name = name
-                                    )
-                                    if (name.isNotBlank() && rawName != name) {
-                                        persistToSupabase(
-                                            userId = cleanUid,
-                                            email = rowEmail.orEmpty(),
-                                            accNumber = num,
-                                            bank = bank.orEmpty(),
-                                            accName = name,
-                                            nin = ""
-                                        )
-                                    }
-                                    withContext(Dispatchers.Main) {
-                                        onAccountRestored?.invoke(num, bank.orEmpty())
-                                    }
-                                }
+
+                // Query Create-Permanent-Account Supabase Edge Function URL and format as "Thompson Daniel/ <Full Name>"
+                if (!explicitlyResetInSession) {
+                    val edgeResult = fetchFromCreatePermanentAccountEdgeFunction(
+                        userId = cleanUid,
+                        email = dbEmail,
+                        fullName = fullName.orEmpty(),
+                        phone = dbPhone,
+                        nin = dbNin,
+                        accessToken = token
+                    )
+                    if (edgeResult != null) {
+                        val finalNum = edgeResult.account_number.cleanAccountNumber() ?: dbAccNum
+                        val finalBank = edgeResult.bank_name?.takeIf { it.isNotBlank() } ?: dbBank.orEmpty()
+                        val strictEdgeAccountName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                            rawAccountName = edgeResult.account_name,
+                            fullName = fullName,
+                            email = dbEmail
+                        )
+                        if (finalNum != null) {
+                            _ninVerified.value = true
+                            _accountDetails.value = PermanentAccountResponse(
+                                account_number = finalNum,
+                                bank_name = finalBank,
+                                account_name = strictEdgeAccountName
+                            )
+                            persistToSupabase(
+                                userId = cleanUid,
+                                email = dbEmail,
+                                accNumber = finalNum,
+                                bank = finalBank,
+                                accName = strictEdgeAccountName,
+                                nin = dbNin.orEmpty()
+                            )
+                            withContext(Dispatchers.Main) {
+                                onAccountRestored?.invoke(finalNum, finalBank, strictEdgeAccountName)
                             }
+                        }
+                    } else if (dbAccNum != null) {
+                        val resolvedFallbackName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                            rawAccountName = _accountDetails.value?.account_name,
+                            fullName = fullName,
+                            email = dbEmail
+                        )
+                        _accountDetails.value = PermanentAccountResponse(
+                            account_number = dbAccNum,
+                            bank_name = dbBank,
+                            account_name = resolvedFallbackName.ifBlank { null }
+                        )
+                        withContext(Dispatchers.Main) {
+                            onAccountRestored?.invoke(
+                                dbAccNum!!,
+                                dbBank.orEmpty(),
+                                resolvedFallbackName
+                            )
                         }
                     }
                 }
@@ -278,13 +298,30 @@ class PermanentAccountViewModel : ViewModel() {
         val cleanUid = userId.trim()
         if (cleanUid.isBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
+            val baseUrl = com.example.util.SecurityVault.supabaseUrl()
+            val token = resolveAuthToken()
+            val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+            val okClient = OkHttpClient.Builder()
+                .connectTimeout(6, TimeUnit.SECONDS)
+                .readTimeout(6, TimeUnit.SECONDS)
+                .build()
+            try {
+                val resetJson = JSONObject().apply {
+                    put("permanent_account_number", JSONObject.NULL)
+                    put("permanent_account_bank", JSONObject.NULL)
+                    put("is_creating_account", false)
+                }
+                val req = Request.Builder()
+                    .url("$baseUrl/rest/v1/users?id=eq.$cleanUid")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Prefer", "return=minimal")
+                    .patch(resetJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                okClient.newCall(req).execute().close()
+            } catch (_: Throwable) {}
             val client = supabase
             if (client != null) {
-                try {
-                    client.from("users").update(mapOf("virtual_account_number" to null)) {
-                        filter { eq("id", cleanUid) }
-                    }
-                } catch (_: Throwable) {}
                 try {
                     client.from("users").update(mapOf("permanent_account_number" to null)) {
                         filter { eq("id", cleanUid) }
@@ -297,6 +334,289 @@ class PermanentAccountViewModel : ViewModel() {
     companion object {
         val CREATE_PERMANENT_ACCOUNT_URL: String
             get() = "${com.example.util.SecurityVault.supabaseUrl()}/functions/v1/Create-Permanent-Account"
+
+        /**
+         * Extracts the account holder name returned by the Create-Permanent-Account
+         * Supabase Edge Function response JSON and ensures it follows the required
+         * "Thompson Daniel/ <Customer Full Name>" format.
+         */
+        fun extractAccountNameFromEdgeResponse(
+            json: JSONObject?,
+            fallbackFullName: String? = null,
+            email: String? = null
+        ): String {
+            if (json == null) {
+                return com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                    rawAccountName = null,
+                    fullName = fallbackFullName,
+                    email = email
+                )
+            }
+            val dataObj = json.optJSONObject("data")
+            val nestedDataObj = dataObj?.optJSONObject("data")
+            val accountObj = json.optJSONObject("account") ?: dataObj?.optJSONObject("account")
+            val virtualAccountObj = json.optJSONObject("virtual_account") ?: dataObj?.optJSONObject("virtual_account")
+            val resultObj = json.optJSONObject("result") ?: dataObj?.optJSONObject("result")
+
+            val containers = listOfNotNull(json, dataObj, nestedDataObj, accountObj, virtualAccountObj, resultObj)
+            val nameKeys = listOf(
+                "account_name",
+                "accountName",
+                "permanent_account_name",
+                "permanentAccountName",
+                "virtual_account_name",
+                "virtualAccountName",
+                "account_holder_name",
+                "accountHolderName",
+                "customer_name",
+                "customerName",
+                "narration",
+                "account_narration",
+                "full_name",
+                "fullName",
+                "name"
+            )
+
+            for (key in nameKeys) {
+                for (container in containers) {
+                    val rawKeyVal = container.optCleanString(key)
+                    if (!rawKeyVal.isNullOrBlank()) {
+                        val candidate = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                            rawAccountName = rawKeyVal,
+                            fullName = fallbackFullName,
+                            email = email
+                        )
+                        if (candidate.isNotBlank()) {
+                            return candidate
+                        }
+                    }
+                }
+            }
+
+            // Check if first_name / last_name are explicitly provided inside the Edge Function response
+            for (container in containers) {
+                val first = container.optCleanString("firstname")
+                    ?: container.optCleanString("firstName")
+                    ?: container.optCleanString("first_name")
+                val last = container.optCleanString("lastname")
+                    ?: container.optCleanString("lastName")
+                    ?: container.optCleanString("last_name")
+                if (!first.isNullOrBlank() || !last.isNullOrBlank()) {
+                    val combined = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                        rawAccountName = listOfNotNull(first, last).joinToString(" "),
+                        fullName = fallbackFullName,
+                        email = email
+                    )
+                    if (combined.isNotBlank()) {
+                        return combined
+                    }
+                }
+            }
+
+            // Check Flutterwave's "note" field if formatted as "Please make a bank transfer to <Account Name>"
+            for (container in containers) {
+                val note = container.optCleanString("note") ?: continue
+                val prefix = "Please make a bank transfer to "
+                if (note.startsWith(prefix, ignoreCase = true)) {
+                    val extracted = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                        rawAccountName = note.substring(prefix.length).trim().trimEnd('.'),
+                        fullName = fallbackFullName,
+                        email = email
+                    )
+                    if (extracted.isNotBlank()) {
+                        return extracted
+                    }
+                }
+            }
+
+            return com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                rawAccountName = null,
+                fullName = fallbackFullName,
+                email = email
+            )
+        }
+
+        fun extractAccountNameFromEdgeResponseString(
+            responseText: String?,
+            fallbackFullName: String? = null,
+            email: String? = null
+        ): String {
+            if (responseText.isNullOrBlank()) {
+                return com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                    rawAccountName = null,
+                    fullName = fallbackFullName,
+                    email = email
+                )
+            }
+            val fromOrgJson = try {
+                extractAccountNameFromEdgeResponse(JSONObject(responseText), fallbackFullName, email)
+            } catch (_: Throwable) {
+                ""
+            }
+            if (fromOrgJson.isNotBlank()) return fromOrgJson
+
+            return try {
+                val root = kotlinx.serialization.json.Json.parseToJsonElement(responseText) as? kotlinx.serialization.json.JsonObject
+                    ?: return com.example.data.repository.VtuRepository.resolveAccountHolderName(null, fallbackFullName, email)
+                val dataObj = root["data"] as? kotlinx.serialization.json.JsonObject
+                val nestedDataObj = dataObj?.get("data") as? kotlinx.serialization.json.JsonObject
+                val accountObj = (root["account"] as? kotlinx.serialization.json.JsonObject)
+                    ?: (dataObj?.get("account") as? kotlinx.serialization.json.JsonObject)
+                val virtualAccountObj = (root["virtual_account"] as? kotlinx.serialization.json.JsonObject)
+                    ?: (dataObj?.get("virtual_account") as? kotlinx.serialization.json.JsonObject)
+                val resultObj = (root["result"] as? kotlinx.serialization.json.JsonObject)
+                    ?: (dataObj?.get("result") as? kotlinx.serialization.json.JsonObject)
+
+                val containers = listOfNotNull(root, dataObj, nestedDataObj, accountObj, virtualAccountObj, resultObj)
+                val nameKeys = listOf(
+                    "account_name",
+                    "accountName",
+                    "permanent_account_name",
+                    "permanentAccountName",
+                    "virtual_account_name",
+                    "virtualAccountName",
+                    "account_holder_name",
+                    "accountHolderName",
+                    "customer_name",
+                    "customerName",
+                    "narration",
+                    "account_narration",
+                    "full_name",
+                    "fullName",
+                    "name"
+                )
+                for (key in nameKeys) {
+                    for (container in containers) {
+                        val rawVal = (container[key] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                        if (!rawVal.isNullOrBlank()) {
+                            val candidate = com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                                rawAccountName = rawVal,
+                                fullName = fallbackFullName,
+                                email = email
+                            )
+                            if (candidate.isNotBlank()) {
+                                return candidate
+                            }
+                        }
+                    }
+                }
+                com.example.data.repository.VtuRepository.resolveAccountHolderName(null, fallbackFullName, email)
+            } catch (_: Throwable) {
+                com.example.data.repository.VtuRepository.resolveAccountHolderName(null, fallbackFullName, email)
+            }
+        }
+
+        suspend fun fetchFromCreatePermanentAccountEdgeFunction(
+            userId: String,
+            email: String = "",
+            fullName: String = "",
+            phone: String? = null,
+            nin: String? = null,
+            accessToken: String? = null
+        ): PermanentAccountResponse? = withContext(Dispatchers.IO) {
+            val cleanUid = userId.trim()
+            if (cleanUid.isBlank() || cleanUid == "usr_guest" || cleanUid == "usr_default") return@withContext null
+            val cleanPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(phone)?.filter { it.isDigit() }.orEmpty()
+            val cleanNin = nin?.filter { it.isDigit() }?.take(11).orEmpty()
+            val sanitizedName = com.example.data.repository.VtuRepository.sanitizeFullName(fullName, email)
+            val nameParts = sanitizedName.split("\\s+".toRegex()).filter { it.isNotBlank() }
+            val firstName = nameParts.firstOrNull().orEmpty()
+            val lastName = if (nameParts.size > 1) nameParts.drop(1).joinToString(" ") else firstName
+
+            // Release any stale lock on public.users before querying Create-Permanent-Account
+            try {
+                val baseUrl = com.example.util.SecurityVault.supabaseUrl()
+                val anonKey = SupabaseProvider.rawKey
+                val token = accessToken ?: SupabaseProvider.resolveSessionAccessToken()
+                val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+                val unlockBody = JSONObject().apply { put("is_creating_account", false) }
+                val unlockReq = Request.Builder()
+                    .url("$baseUrl/rest/v1/users?id=eq.$cleanUid")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Prefer", "return=minimal")
+                    .patch(unlockBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                OkHttpClient.Builder()
+                    .connectTimeout(5, TimeUnit.SECONDS)
+                    .readTimeout(5, TimeUnit.SECONDS)
+                    .build()
+                    .newCall(unlockReq)
+                    .execute()
+                    .close()
+            } catch (_: Throwable) {}
+
+            val payload = JSONObject().apply {
+                put("userId", cleanUid)
+                put("user_id", cleanUid)
+                if (email.isNotBlank()) put("email", email.trim().lowercase())
+                if (firstName.isNotBlank()) {
+                    put("firstname", firstName)
+                    put("firstName", firstName)
+                }
+                if (lastName.isNotBlank()) {
+                    put("lastname", lastName)
+                    put("lastName", lastName)
+                }
+                if (cleanPhone.isNotBlank()) {
+                    put("phone", cleanPhone)
+                    put("phonenumber", cleanPhone)
+                }
+                if (cleanNin.length == 11) {
+                    put("nin", cleanNin)
+                    put("id_number", cleanNin)
+                    put("id_type", "NIN")
+                }
+            }
+
+            try {
+                val (_, responseText) = SupabaseProvider.postEdgeFunction(
+                    functionName = "Create-Permanent-Account",
+                    bodyJson = payload.toString(),
+                    accessTokenOverride = accessToken
+                )
+                if (responseText.isBlank()) return@withContext null
+                val json = try { JSONObject(responseText) } catch (_: Throwable) { null } ?: return@withContext null
+                val dataObj = json.optJSONObject("data")
+                val nestedDataObj = dataObj?.optJSONObject("data")
+                val accountObj = json.optJSONObject("account") ?: dataObj?.optJSONObject("account")
+                val virtualAccountObj = json.optJSONObject("virtual_account") ?: dataObj?.optJSONObject("virtual_account")
+
+                val rawAccNumber = json.optCleanString("account_number")
+                    ?: json.optCleanString("accountNumber")
+                    ?: json.optCleanString("permanent_account_number")
+                    ?: dataObj?.optCleanString("account_number")
+                    ?: dataObj?.optCleanString("accountNumber")
+                    ?: nestedDataObj?.optCleanString("account_number")
+                    ?: accountObj?.optCleanString("account_number")
+                    ?: virtualAccountObj?.optCleanString("account_number")
+                val accNumber = rawAccNumber?.cleanAccountNumber()
+
+                val bank = json.optCleanString("bank_name")
+                    ?: json.optCleanString("bankName")
+                    ?: json.optCleanString("permanent_account_bank")
+                    ?: dataObj?.optCleanString("bank_name")
+                    ?: dataObj?.optCleanString("bankName")
+                    ?: nestedDataObj?.optCleanString("bank_name")
+                    ?: accountObj?.optCleanString("bank_name")
+                    ?: virtualAccountObj?.optCleanString("bank_name")
+
+                val acctName = extractAccountNameFromEdgeResponse(
+                    json = json,
+                    fallbackFullName = sanitizedName,
+                    email = email
+                )
+
+                if (accNumber != null) {
+                    return@withContext PermanentAccountResponse(
+                        account_number = accNumber,
+                        bank_name = bank,
+                        account_name = acctName
+                    )
+                }
+            } catch (_: Throwable) {}
+            null
+        }
     }
 
     fun createPermanentAccount(
@@ -308,7 +628,7 @@ class PermanentAccountViewModel : ViewModel() {
         idNumber: String,
         idType: String = "NIN",
         phone: String? = null,
-        onSuccess: ((String, String) -> Unit)? = null
+        onSuccess: ((String, String, String) -> Unit)? = null
     ) {
         viewModelScope.launch {
             _isLoading.value = true
@@ -316,56 +636,74 @@ class PermanentAccountViewModel : ViewModel() {
 
             withContext(Dispatchers.IO) {
                 try {
+                    val cleanUid = userId.trim()
                     val cleanId = idNumber.filter { it.isDigit() }.take(11)
                     val cleanPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(phone)?.filter { it.isDigit() } ?: ""
-
-                    val resolvedFullName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                        rawAccountName = fullName,
-                        fullName = "${firstname.trim()} ${lastname.trim()}".trim(),
-                        email = email
+                    val cleanFullName = com.example.data.repository.VtuRepository.sanitizeFullName(
+                        fullName.ifBlank { listOf(firstname.trim(), lastname.trim()).filter { it.isNotBlank() }.joinToString(" ") },
+                        email
                     )
-                    val nameParts = resolvedFullName.split("\\s+".toRegex()).filter { it.isNotBlank() }
-                    val firstWithMiddle = if (nameParts.size > 2) nameParts.dropLast(1).joinToString(" ") else nameParts.firstOrNull() ?: firstname.trim()
-                    val lastOnly = if (nameParts.size > 1) nameParts.last() else lastname.trim()
-                    val middleOnly = if (nameParts.size > 2) nameParts.drop(1).dropLast(1).joinToString(" ") else ""
+                    val nameParts = cleanFullName.split("\\s+".toRegex()).filter { it.isNotBlank() }
+                    val resolvedFirst = nameParts.firstOrNull() ?: firstname.trim()
+                    val resolvedLast = if (nameParts.size > 1) nameParts.drop(1).joinToString(" ") else lastname.trim().ifBlank { resolvedFirst }
 
-                    // Payload matching user's Create-Permanent-Account edge function
-                    val payload = JSONObject().apply {
-                        put("userId", userId)
-                        put("user_id", userId)
+                    // Ensure public.users lock is cleared before invoking Create-Permanent-Account
+                    try {
+                        val baseUrl = com.example.util.SecurityVault.supabaseUrl()
+                        val token = resolveAuthToken()
+                        val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+                        val unlockJson = JSONObject().apply {
+                            put("is_creating_account", false)
+                        }
+                        val unlockReq = Request.Builder()
+                            .url("$baseUrl/rest/v1/users?id=eq.$cleanUid")
+                            .addHeader("apikey", anonKey)
+                            .addHeader("Authorization", bearer)
+                            .addHeader("Prefer", "return=minimal")
+                            .patch(unlockJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                            .build()
+                        OkHttpClient.Builder()
+                            .connectTimeout(5, TimeUnit.SECONDS)
+                            .readTimeout(5, TimeUnit.SECONDS)
+                            .build()
+                            .newCall(unlockReq)
+                            .execute()
+                            .close()
+                    } catch (_: Throwable) {}
+
+                    // Send request to Create-Permanent-Account with firstname & lastname so the Edge Function formats "Thompson Daniel/ <Name>"
+                    val primaryPayload = JSONObject().apply {
+                        put("userId", cleanUid)
+                        put("user_id", cleanUid)
                         put("email", email.trim().lowercase())
-                        put("firstname", firstWithMiddle)
-                        put("firstName", firstWithMiddle)
-                        put("middlename", middleOnly)
-                        put("middleName", middleOnly)
-                        put("lastname", lastOnly)
-                        put("lastName", lastOnly)
-                        put("full_name", resolvedFullName)
-                        put("fullName", resolvedFullName)
-                        put("name", resolvedFullName)
-                        put("account_name", resolvedFullName)
-                        put("accountName", resolvedFullName)
-                        put("narration", resolvedFullName)
+                        if (resolvedFirst.isNotBlank()) {
+                            put("firstname", resolvedFirst)
+                            put("firstName", resolvedFirst)
+                        }
+                        if (resolvedLast.isNotBlank()) {
+                            put("lastname", resolvedLast)
+                            put("lastName", resolvedLast)
+                        }
                         put("phone", cleanPhone)
                         put("phonenumber", cleanPhone)
                         put("nin", cleanId)
-                        put("id_type", "NIN")
+                        put("id_number", cleanId)
+                        put("id_type", idType)
                     }
 
                     val token = resolveAuthToken()
                     val (statusCode, responseText) = SupabaseProvider.postEdgeFunction(
                         functionName = "Create-Permanent-Account",
-                        bodyJson = payload.toString(),
+                        bodyJson = primaryPayload.toString(),
                         accessTokenOverride = token
                     )
-                    Log.d("PermanentAccount", "Response from Create-Permanent-Account ($userId): $responseText")
+                    Log.d("PermanentAccount", "Response from Create-Permanent-Account ($cleanUid): $responseText")
 
                     val json = try { JSONObject(responseText) } catch (_: Throwable) { null }
                     val dataObj = json?.optJSONObject("data")
-
-                    // Extract account number from top-level or data object
                     val rawAccNumber = json?.optCleanString("account_number")
                         ?: json?.optCleanString("accountNumber")
+                        ?: json?.optCleanString("permanent_account_number")
                         ?: dataObj?.optCleanString("account_number")
                         ?: dataObj?.optCleanString("accountNumber")
                         ?: dataObj?.optCleanString("order_ref")
@@ -375,19 +713,16 @@ class PermanentAccountViewModel : ViewModel() {
                     if (accNumber != null) {
                         val bank = json?.optCleanString("bank_name")
                             ?: json?.optCleanString("bankName")
+                            ?: json?.optCleanString("permanent_account_bank")
                             ?: dataObj?.optCleanString("bank_name")
                             ?: dataObj?.optCleanString("bankName")
                             ?: ""
 
-                        val rawAcctName = json?.optCleanString("account_name")
-                            ?: json?.optCleanString("accountName")
-                            ?: dataObj?.optCleanString("account_name")
-                            ?: dataObj?.optCleanString("accountName")
-                        val acctName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                            rawAccountName = rawAcctName,
-                            fullName = resolvedFullName,
+                        val acctName = extractAccountNameFromEdgeResponse(
+                            json = json,
+                            fallbackFullName = cleanFullName,
                             email = email
-                        ).ifBlank { resolvedFullName }
+                        )
 
                         val successResp = PermanentAccountResponse(
                             account_number = accNumber,
@@ -401,7 +736,7 @@ class PermanentAccountViewModel : ViewModel() {
 
                         // Persist to Supabase database where id = current user id
                         persistToSupabase(
-                            userId = userId,
+                            userId = cleanUid,
                             email = email,
                             accNumber = accNumber,
                             bank = bank,
@@ -410,7 +745,7 @@ class PermanentAccountViewModel : ViewModel() {
                         )
 
                         withContext(Dispatchers.Main) {
-                            onSuccess?.invoke(accNumber, bank)
+                            onSuccess?.invoke(accNumber, bank, acctName)
                         }
                     } else {
                         // Extract error message from edge function response
@@ -492,66 +827,22 @@ class PermanentAccountViewModel : ViewModel() {
             .readTimeout(6, TimeUnit.SECONDS)
             .build()
 
-        val userProfileFullName: String? = null
-
-        // Persist into public.users table where id = userId (never overwrite full_name with NIN account_name)
-        val candidatePayloads = listOf(
-            JSONObject().apply {
-                put("virtual_account_number", accNumber)
-                if (bank.isNotBlank()) put("virtual_bank", bank)
-                if (!userProfileFullName.isNullOrBlank()) put("full_name", userProfileFullName)
-            },
-            JSONObject().apply {
-                put("virtual_account_number", accNumber)
-                if (bank.isNotBlank()) put("virtual_bank_name", bank)
-                if (accName.isNotBlank()) put("virtual_account_name", accName)
-                if (!userProfileFullName.isNullOrBlank()) put("full_name", userProfileFullName)
-            },
-            JSONObject().apply {
-                put("permanent_account_number", accNumber)
-                if (bank.isNotBlank()) put("permanent_account_bank", bank)
-                if (accName.isNotBlank()) {
-                    put("permanent_account_name", accName)
-                    put("account_name", accName)
-                }
-                if (!userProfileFullName.isNullOrBlank()) put("full_name", userProfileFullName)
-            }
-        )
-
-        val filterParam = "id=eq.$cleanUid"
-
-        for (payloadObj in candidatePayloads) {
-            if (payloadObj.length() == 0) continue
-            try {
-                val reqBody = payloadObj.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-                val req = Request.Builder()
-                    .url("$baseUrl/rest/v1/users?$filterParam")
-                    .addHeader("apikey", anonKey)
-                    .addHeader("Authorization", bearer)
-                    .addHeader("Prefer", "return=minimal")
-                    .patch(reqBody)
-                    .build()
-                client.newCall(req).execute().close()
-            } catch (_: Throwable) {}
+        val payloadObj = JSONObject().apply {
+            put("permanent_account_number", accNumber)
+            if (bank.isNotBlank()) put("permanent_account_bank", bank)
         }
 
-        // Also upsert into public.virtual_accounts keyed by user_id
+        val filterParam = "id=eq.$cleanUid"
         try {
-            val vaJson = JSONObject().apply {
-                put("user_id", cleanUid)
-                put("email", email.trim().lowercase())
-                put("account_number", accNumber)
-                if (bank.isNotBlank()) put("bank_name", bank)
-                if (accName.isNotBlank()) put("account_name", accName)
-            }
-            val vaReq = Request.Builder()
-                .url("$baseUrl/rest/v1/virtual_accounts?on_conflict=user_id")
+            val reqBody = payloadObj.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+            val req = Request.Builder()
+                .url("$baseUrl/rest/v1/users?$filterParam")
                 .addHeader("apikey", anonKey)
                 .addHeader("Authorization", bearer)
-                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-                .post(vaJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .addHeader("Prefer", "return=minimal")
+                .patch(reqBody)
                 .build()
-            client.newCall(vaReq).execute().close()
+            client.newCall(req).execute().close()
         } catch (_: Throwable) {}
     }
 }
@@ -559,7 +850,7 @@ class PermanentAccountViewModel : ViewModel() {
 @Composable
 fun PermanentAccountSection(
     currentUser: SupabaseUser? = null,
-    onAccountCreated: ((accountNumber: String, bankName: String) -> Unit)? = null,
+    onAccountCreated: ((accountNumber: String, bankName: String, accountName: String) -> Unit)? = null,
     onAccountReset: (() -> Unit)? = null,
     viewModel: PermanentAccountViewModel = viewModel()
 ) {
@@ -578,7 +869,7 @@ fun PermanentAccountSection(
         ?: supabaseClient?.auth?.currentUserOrNull()?.id
         ?: ""
 
-    LaunchedEffect(userId, currentUser?.virtualAccountNumber) {
+    LaunchedEffect(userId, currentUser?.virtualAccountNumber, currentUser?.virtualAccountName) {
         if (userId.isBlank()) {
             idNumber = ""
             viewModel.resetState()
@@ -586,13 +877,23 @@ fun PermanentAccountSection(
             val email = currentUser?.email
                 ?: supabaseClient?.auth?.currentUserOrNull()?.email
                 ?: ""
+            val resolvedFullName = com.example.data.repository.VtuRepository.sanitizeFullName(
+                currentUser?.fullName,
+                email
+            )
             viewModel.checkExisting(
                 userId = userId,
                 email = email,
+                fullName = resolvedFullName,
+                phone = currentUser?.phone,
+                nin = currentUser?.nin ?: currentUser?.ninHash,
                 currentVa = currentUser?.virtualAccountNumber,
-                onAccountRestored = { acc, bankName ->
-                    if (currentUser?.virtualAccountNumber != acc) {
-                        onAccountCreated?.invoke(acc, bankName)
+                onAccountRestored = { acc, bankName, acctName ->
+                    if (currentUser?.virtualAccountNumber != acc ||
+                        currentUser?.virtualBankName != bankName ||
+                        (acctName.isNotBlank() && currentUser?.virtualAccountName != acctName)
+                    ) {
+                        onAccountCreated?.invoke(acc, bankName, acctName)
                     }
                 }
             )
@@ -633,7 +934,7 @@ fun PermanentAccountSection(
                     !it.equals("null", ignoreCase = true) && !it.equals("nil", ignoreCase = true) && it.isNotBlank()
                 } ?: ""
                 val acctName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                    rawAccountName = details?.account_name ?: currentUser?.virtualAccountName,
+                    rawAccountName = details?.account_name?.takeIf { it.isNotBlank() } ?: currentUser?.virtualAccountName,
                     fullName = fullName,
                     email = email
                 )
@@ -965,8 +1266,8 @@ fun PermanentAccountSection(
                             idNumber = idNumber,
                             idType = idType,
                             phone = currentUser?.phone,
-                            onSuccess = { acc, bankName ->
-                                onAccountCreated?.invoke(acc, bankName)
+                            onSuccess = { acc, bankName, acctName ->
+                                onAccountCreated?.invoke(acc, bankName, acctName)
                                 Toast.makeText(context, "Permanent Account Created: $acc", Toast.LENGTH_LONG).show()
                             }
                         )

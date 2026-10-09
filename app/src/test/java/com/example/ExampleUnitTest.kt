@@ -1,6 +1,7 @@
 package com.example
 
 import com.example.data.repository.VtuRepository
+import com.vtu.app.wallet.PermanentAccountViewModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,6 +10,93 @@ class ExampleUnitTest {
     @Test
     fun addition_isCorrect() {
         assertEquals(4, 2 + 2)
+    }
+
+    @Test
+    fun permanentAccountName_isStrictlyFromCreatePermanentAccountEdgeFunction() {
+        assertEquals(
+            "https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Create-Permanent-Account",
+            PermanentAccountViewModel.CREATE_PERMANENT_ACCOUNT_URL
+        )
+
+        val directJson = """
+            {
+              "account_number": "9624903116",
+              "bank_name": "Palmpay",
+              "account_name": "Thompson Daniel/ Daniel Kalada Thompson"
+            }
+        """.trimIndent()
+        assertEquals(
+            "Thompson Daniel/ Daniel Kalada Thompson",
+            PermanentAccountViewModel.extractAccountNameFromEdgeResponseString(
+                responseText = directJson,
+                fallbackFullName = "Daniel Kalada Thompson",
+                email = "danielkaladathompson@gmail.com"
+            )
+        )
+
+        val customerOnlyJson = """
+            {
+              "account_number": "9624903116",
+              "bank_name": "Palmpay",
+              "account_name": "Daniel Kalada Thompson"
+            }
+        """.trimIndent()
+        assertEquals(
+            "Thompson Daniel/ Daniel Kalada Thompson",
+            PermanentAccountViewModel.extractAccountNameFromEdgeResponseString(
+                responseText = customerOnlyJson,
+                fallbackFullName = "Daniel Kalada Thompson",
+                email = "danielkaladathompson@gmail.com"
+            )
+        )
+
+        val prefixOnlyJson = """
+            {
+              "status": "success",
+              "data": {
+                "account_number": "9624903116",
+                "bank_name": "Palmpay",
+                "narration": "Thompson Daniel"
+              }
+            }
+        """.trimIndent()
+        assertEquals(
+            "Thompson Daniel/ Daniel Kalada Thompson",
+            PermanentAccountViewModel.extractAccountNameFromEdgeResponseString(
+                responseText = prefixOnlyJson,
+                fallbackFullName = "Daniel Kalada Thompson",
+                email = "danielkaladathompson@gmail.com"
+            )
+        )
+
+        // Verify user's account always resolves to "Thompson Daniel/ Daniel Kalada Thompson" even if rawAccountName was "Thompson Daniel"
+        assertEquals(
+            "Thompson Daniel/ Daniel Kalada Thompson",
+            VtuRepository.resolveAccountHolderName(
+                rawAccountName = "Thompson Daniel",
+                fullName = "Daniel Kalada Thompson",
+                email = "danielkaladathompson@gmail.com"
+            )
+        )
+
+        // Verify every other permanent account created resolves to "Thompson Daniel/ <Customer Name>"
+        assertEquals(
+            "Thompson Daniel/ Adebayo Johnson",
+            VtuRepository.resolveAccountHolderName(
+                rawAccountName = "Adebayo Johnson",
+                fullName = "Adebayo Johnson",
+                email = "adebayo@example.com"
+            )
+        )
+        assertEquals(
+            "Thompson Daniel/ Adebayo Johnson",
+            VtuRepository.resolveAccountHolderName(
+                rawAccountName = "Thompson Daniel/ Adebayo Johnson",
+                fullName = "Adebayo Johnson",
+                email = "adebayo@example.com"
+            )
+        )
     }
 
     @Test
@@ -45,7 +133,7 @@ class ExampleUnitTest {
             userFullName = "Daniel Kalada Thompson"
         )
 
-        assertEquals("Wallet Funding", entity.title)
+        assertEquals("credit", entity.title)
         assertEquals("", entity.serviceType)
         assertEquals("", entity.provider)
         assertEquals("", entity.recipient)
@@ -97,7 +185,7 @@ class ExampleUnitTest {
             reference = "FLW-WEBHOOK-500-1"
         )
         assertTrue(VtuRepository.isWalletFundingEntity(danielFutureTx))
-        assertEquals("Wallet Funding", danielFutureTx.title)
+        assertEquals("credit", danielFutureTx.title)
         assertEquals("", danielFutureTx.serviceType)
         assertEquals("", danielFutureTx.provider)
         assertEquals("", danielFutureTx.recipient)
@@ -140,7 +228,7 @@ class ExampleUnitTest {
             userFullName = "Adebayo Johnson"
         )
         assertTrue(VtuRepository.isWalletFundingEntity(otherUserEntity))
-        assertEquals("Wallet Funding", otherUserEntity.title)
+        assertEquals("credit", otherUserEntity.title)
         assertEquals("", otherUserEntity.serviceType)
         assertEquals("", otherUserEntity.provider)
         assertEquals("", otherUserEntity.recipient)

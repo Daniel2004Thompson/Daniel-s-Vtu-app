@@ -171,10 +171,7 @@ class FlutterwaveEdgeServiceClient(
 
         if (isLiveConfigured) {
             val functionNames = listOf(
-                "Create-Permanent-Account",
-                "Create-Virtual-Account",
-                "create-virtual-account",
-                "flutterwave-payment"
+                "Create-Permanent-Account"
             )
 
             for (fnName in functionNames) {
@@ -183,7 +180,6 @@ class FlutterwaveEdgeServiceClient(
                         put("action", "virtual_account")
                         put("firstName", firstName)
                         put("lastName", lastName)
-                        put("name", name)
                         put("email", email)
                         if (cleanNin.isNotBlank()) put("nin", cleanNin)
                         if (!phone.isNullOrBlank()) put("phone", phone)
@@ -198,11 +194,13 @@ class FlutterwaveEdgeServiceClient(
                         val json = JSONObject(bodyString)
                         val data = json.optJSONObject("data")
                         val acctNo = json.optString("accountNumber").ifBlank { null }
+                            ?: json.optString("account_number").ifBlank { null }
                             ?: data?.optString("account_number")
                         val rawBank = json.optString("bankName").ifBlank { null }
+                            ?: json.optString("bank_name").ifBlank { null }
                             ?: data?.optString("bank_name") ?: "Flutterwave MFB"
                         val bank = if (rawBank.contains("Wema", ignoreCase = true)) "Flutterwave MFB" else rawBank
-                        val acctName = data?.optString("account_name")?.takeIf { it.isNotBlank() && it != "null" } ?: name
+                        val acctName = com.vtu.app.wallet.PermanentAccountViewModel.extractAccountNameFromEdgeResponse(json)
                         val flwRef = data?.optString("flw_ref")
 
                         if (!acctNo.isNullOrBlank()) {

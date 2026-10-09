@@ -907,9 +907,9 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithText("₦100.00").assertIsDisplayed()
     composeTestRule.onNodeWithText("SUCCESSFUL").assertIsDisplayed()
 
-    // Row 2: empty provider -> circle uses title's first letter "W", empty recipient -> just date "08 Oct 2026, 09:30 am", "₦2,500.00", "PENDING"
+    // Row 2: empty provider -> circle uses title's first letter "C", empty recipient -> just date "08 Oct 2026, 09:30 am", "₦2,500.00", "PENDING"
     composeTestRule.onNodeWithTag("tx_item_").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithText("Wallet Funding").assertIsDisplayed()
+    composeTestRule.onNodeWithText("credit").assertIsDisplayed()
     composeTestRule.onNodeWithText("08 Oct 2026, 09:30 am").assertIsDisplayed()
     composeTestRule.onNodeWithText("₦2,500.00").assertIsDisplayed()
     composeTestRule.onNodeWithText("PENDING").assertIsDisplayed()

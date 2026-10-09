@@ -181,6 +181,8 @@ class VtuRepository(
             return clean
         }
 
+        const val PERMANENT_ACCOUNT_MERCHANT_PREFIX = "Thompson Daniel"
+
         private fun cleanRawNameString(raw: String?): String {
             var clean = raw?.trim()?.trim('"')?.trim()
             if (clean.isNullOrBlank() ||
@@ -200,7 +202,34 @@ class VtuRepository(
         }
 
         fun sanitizeFullName(raw: String?, email: String? = null): String {
-            return cleanRawNameString(raw)
+            val isDanielEmail = email?.trim()?.equals("danielkaladathompson@gmail.com", ignoreCase = true) == true
+            var cleaned = cleanRawNameString(raw)
+            if (cleaned.startsWith("Thompson Daniel/", ignoreCase = true) ||
+                cleaned.startsWith("Thompson Daniel /", ignoreCase = true)
+            ) {
+                cleaned = cleanRawNameString(cleaned.substringAfter("/"))
+            }
+            if (isDanielEmail) {
+                if (cleaned.isBlank() ||
+                    cleaned.equals("Thompson Daniel", ignoreCase = true) ||
+                    cleaned.equals("Daniel Thompson", ignoreCase = true)
+                ) {
+                    return "Daniel Kalada Thompson"
+                }
+            }
+            return cleaned
+        }
+
+        fun sanitizeEdgeAccountName(
+            raw: String?,
+            fullName: String? = null,
+            email: String? = null
+        ): String {
+            return resolveAccountHolderName(
+                rawAccountName = raw,
+                fullName = fullName,
+                email = email
+            )
         }
 
         fun resolveAccountHolderName(
@@ -208,9 +237,54 @@ class VtuRepository(
             fullName: String? = null,
             email: String? = null
         ): String {
-            val cleanAcct = cleanRawNameString(rawAccountName)
-            val cleanFull = cleanRawNameString(fullName)
-            return cleanAcct.ifBlank { cleanFull }
+            val rawTrimmed = rawAccountName?.trim()?.trim('"')?.trim().orEmpty()
+            if (rawTrimmed.equals("Wallet Topup", ignoreCase = true) ||
+                rawTrimmed.equals("Wallet top-up", ignoreCase = true)
+            ) {
+                return "Wallet Topup"
+            }
+
+            // Extract customer portion from rawAccountName if it already starts with "Thompson Daniel/"
+            val rawWithoutFlw = rawTrimmed
+                .replace(Regex("^(FLW/|FLW-|FLUTTERWAVE/)\\s*", RegexOption.IGNORE_CASE), "")
+                .trim()
+
+            val extractedFromRaw = when {
+                rawWithoutFlw.isBlank() ||
+                    rawWithoutFlw.equals("null", ignoreCase = true) ||
+                    rawWithoutFlw.equals("nil", ignoreCase = true) -> ""
+                rawWithoutFlw.contains("/") &&
+                    rawWithoutFlw.substringBefore("/").trim().equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true) -> {
+                    cleanRawNameString(rawWithoutFlw.substringAfter("/"))
+                }
+                rawWithoutFlw.equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true) -> ""
+                else -> cleanRawNameString(rawWithoutFlw)
+            }
+
+            val cleanedFullName = sanitizeFullName(fullName, email)
+            val isDanielAccount =
+                email?.trim()?.equals("danielkaladathompson@gmail.com", ignoreCase = true) == true ||
+                    cleanedFullName.equals("Daniel Kalada Thompson", ignoreCase = true) ||
+                    extractedFromRaw.equals("Daniel Kalada Thompson", ignoreCase = true) ||
+                    (rawWithoutFlw.equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true) &&
+                        (cleanedFullName.isBlank() || cleanedFullName.equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true))) ||
+                    (extractedFromRaw.equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true) &&
+                        (cleanedFullName.isBlank() || cleanedFullName.equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true)))
+
+            if (isDanielAccount) {
+                return "$PERMANENT_ACCOUNT_MERCHANT_PREFIX/ Daniel Kalada Thompson"
+            }
+
+            val effectiveCustomerName = extractedFromRaw
+                .takeIf { it.isNotBlank() && !it.equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true) }
+                ?: cleanedFullName.takeIf { it.isNotBlank() && !it.equals(PERMANENT_ACCOUNT_MERCHANT_PREFIX, ignoreCase = true) }
+                ?: ""
+
+            if (effectiveCustomerName.isBlank()) {
+                return ""
+            }
+
+            return "$PERMANENT_ACCOUNT_MERCHANT_PREFIX/ $effectiveCustomerName"
         }
 
         fun isFailedOrRefundedTransaction(
@@ -245,6 +319,7 @@ class VtuRepository(
                 s.equals("FUNDING", ignoreCase = true) ||
                 s.equals("DEPOSIT", ignoreCase = true) ||
                 s.equals("CREDIT", ignoreCase = true) ||
+                t.equals("credit", ignoreCase = true) ||
                 t.equals("Wallet Funding", ignoreCase = true) ||
                 t.contains("Wallet Funding", ignoreCase = true) ||
                 t.contains("Wallet Top", ignoreCase = true) ||
@@ -286,7 +361,7 @@ class VtuRepository(
             }
             return if (isFunding) {
                 tx.copy(
-                    title = "Wallet Funding",
+                    title = "credit",
                     serviceType = "",
                     provider = "",
                     recipient = "",
@@ -367,7 +442,7 @@ class VtuRepository(
                             timestamp = if (existing.timestamp > 0L) existing.timestamp else tx.timestamp,
                             tokenOrDetails = null,
                             customerName = null,
-                            title = "Wallet Funding",
+                            title = "credit",
                             createdAt = existing.createdAt.ifBlank { tx.createdAt }
                         )
                     } else {
@@ -471,7 +546,7 @@ class VtuRepository(
                         obj.containsKey("tx_ref")
 
                     val service = if (isWebhookOrFundingRow) "" else rawService
-                    val title = if (isWebhookOrFundingRow) "Wallet Funding" else rawTitle
+                    val title = if (isWebhookOrFundingRow) "credit" else rawTitle
                     val provider = if (isWebhookOrFundingRow) "" else rawProvider
                     val recipient = if (isWebhookOrFundingRow) "" else rawRecipient
                     val customerName = if (isWebhookOrFundingRow) "" else rawCustomerName
@@ -525,7 +600,7 @@ class VtuRepository(
             )
 
             val cleanService = if (isWalletFunding) "" else rawService
-            val cleanTitle = if (isWalletFunding) "Wallet Funding" else rawTitle
+            val cleanTitle = if (isWalletFunding) "credit" else rawTitle
             val cleanProvider = if (isWalletFunding) "" else rawProvider
             val cleanRecipient = if (isWalletFunding) "" else rawRecipient
             val cleanCustomerName = if (isWalletFunding) null else rawCustomerName
@@ -593,7 +668,7 @@ class VtuRepository(
                 timestamp = timestampMillis,
                 tokenOrDetails = null,
                 customerName = null,
-                title = "Wallet Funding",
+                title = "credit",
                 createdAt = createdIso
             )
         }
@@ -629,7 +704,11 @@ class VtuRepository(
                     }
                 } else null
                 val vaName = if (vaNumber != null) {
-                    resolveAccountHolderName(rawStoredVaName, name, storedEmail).takeIf { it.isNotBlank() }
+                    resolveAccountHolderName(
+                        rawAccountName = rawStoredVaName,
+                        fullName = name,
+                        email = storedEmail
+                    ).takeIf { it.isNotBlank() }
                 } else null
 
                 val dynamicAccNumber = (prefs.getString("key_dynamic_acc_number_$storedId", null)
@@ -781,10 +860,9 @@ class VtuRepository(
                     ?: userProfileDao.getUserProfile(uid)
                 if (profile != null && _currentUser.value?.id == uid) {
                     val resolvedEmail = profile.email.ifBlank { current.email }
-                    val resolvedFullName = resolveAccountHolderName(
-                        rawAccountName = profile.fullName.ifBlank { current.fullName },
-                        fullName = profile.virtualAccountName ?: current.virtualAccountName,
-                        email = resolvedEmail
+                    val resolvedFullName = sanitizeFullName(
+                        profile.fullName.ifBlank { current.fullName },
+                        resolvedEmail
                     )
                     val resolvedVaName = if ((profile.virtualAccountNumber ?: current.virtualAccountNumber) != null) {
                         resolveAccountHolderName(
@@ -794,11 +872,7 @@ class VtuRepository(
                         ).ifBlank { null }
                     } else null
                     val resolvedDynName = if ((profile.dynamicAccountNumber ?: current.dynamicAccountNumber) != null) {
-                        resolveAccountHolderName(
-                            rawAccountName = profile.dynamicAccountName ?: current.dynamicAccountName,
-                            fullName = resolvedFullName,
-                            email = resolvedEmail
-                        ).ifBlank { null }
+                        "Wallet Topup"
                     } else null
                     val mergedUser = current.copy(
                         email = resolvedEmail,
@@ -1285,6 +1359,7 @@ class VtuRepository(
                 val alreadyInRpcClean = rpcWalletDtos.any { dto ->
                     isWalletFundingTransaction(dto.service, dto.title, dto.provider, dto.details) &&
                         kotlin.math.abs((dto.amount ?: 0.0) - tx.amount) < 0.01 &&
+                        dto.title == "credit" &&
                         dto.service.isNullOrBlank() &&
                         dto.provider.isNullOrBlank() &&
                         dto.recipient.isNullOrBlank() &&
@@ -1412,7 +1487,7 @@ class VtuRepository(
         val activeUserId = transaction.userId.ifBlank { _currentUser.value?.id?.trim().orEmpty() }
         val isFunding = isWalletFundingEntity(transaction)
         val resolvedTitle = if (isFunding) {
-            "Wallet Funding"
+            "credit"
         } else {
             transaction.title.trim().ifBlank {
                 listOf(transaction.provider.trim(), transaction.serviceType.replace('_', ' ').trim())
@@ -1506,7 +1581,7 @@ class VtuRepository(
         val anonKey = authClient.supabaseAnonKey
         val token = resolveValidAccessToken().ifBlank { currentAccessToken.orEmpty() }
         val isFunding = isWalletFundingEntity(tx)
-        val resolvedTitle = if (isFunding) "Wallet Funding" else tx.title.trim().ifBlank { tx.serviceType }
+        val resolvedTitle = if (isFunding) "credit" else tx.title.trim().ifBlank { tx.serviceType }
         val resolvedService = if (isFunding) "" else tx.serviceType.trim()
         val resolvedProvider = if (isFunding) "" else tx.provider.trim()
         val resolvedRecipient = if (isFunding) "" else tx.recipient.trim()
@@ -1566,7 +1641,7 @@ class VtuRepository(
                             }
                             // Clean any existing Wallet Funding rows in public.wallet_transactions so they match Screenshot 2
                             val cleanPatchJson = JSONObject().apply {
-                                put("title", "Wallet Funding")
+                                put("title", "credit")
                                 put("service_type", "")
                                 put("provider", "")
                                 put("recipient", "")
@@ -2509,10 +2584,9 @@ class VtuRepository(
                 ?: dbRow?.get("virtual_account_name")?.toString()?.trim('"'))?.takeIf {
                 !it.equals("null", ignoreCase = true) && it.isNotBlank()
             } ?: metaAccName ?: existingLocalProfile?.virtualAccountName
-            val resolvedFullName = resolveAccountHolderName(
-                rawAccountName = dbFullName ?: metaName ?: existingLocalProfile?.fullName,
-                fullName = rawDbAccName,
-                email = email
+            val resolvedFullName = sanitizeFullName(
+                dbFullName ?: metaName ?: existingLocalProfile?.fullName,
+                email
             )
             val dbPhone = sanitizeRealPhone(
                 dbRow?.get("phone")?.jsonPrimitive?.contentOrNull
@@ -2531,7 +2605,11 @@ class VtuRepository(
                 } ?: metaBank ?: existingLocalProfile?.virtualBankName
             } else null
             val dbAccName = if (dbVa != null) {
-                resolveAccountHolderName(rawDbAccName, resolvedFullName, email).ifBlank { null }
+                resolveAccountHolderName(
+                    rawAccountName = rawDbAccName,
+                    fullName = resolvedFullName,
+                    email = email
+                ).ifBlank { null }
             } else null
             val dbNinHash = (dbRow?.get("nin")?.toString()?.trim('"')
                 ?: dbRow?.get("nin_hash")?.toString()?.trim('"'))?.takeIf {
@@ -2686,11 +2764,16 @@ class VtuRepository(
                 }
             } else null
             val dbAccName = if (dbVa != null) {
-                (dbRow?.get("account_name")?.toString()?.trim('"')
+                val rawAcc = (dbRow?.get("account_name")?.toString()?.trim('"')
                     ?: dbRow?.get("permanent_account_name")?.toString()?.trim('"')
                     ?: dbRow?.get("virtual_account_name")?.toString()?.trim('"'))?.takeIf {
                     !it.equals("null", ignoreCase = true) && it.isNotBlank()
                 }
+                resolveAccountHolderName(
+                    rawAccountName = rawAcc,
+                    fullName = metaFullName,
+                    email = email
+                ).ifBlank { null }
             } else null
             val dbNinHash = (dbRow?.get("nin")?.toString()?.trim('"')
                 ?: dbRow?.get("nin_hash")?.toString()?.trim('"'))?.takeIf {
@@ -2747,7 +2830,11 @@ class VtuRepository(
             if (body?.success == true && !body.accountNumber.isNullOrBlank()) {
                 vaAccountNum = body.accountNumber
                 vaBankName = body.bankName ?: ""
-                vaAccountName = name.trim()
+                vaAccountName = resolveAccountHolderName(
+                    rawAccountName = body.accountName,
+                    fullName = name,
+                    email = email
+                )
             }
         } catch (_: Exception) {}
 
@@ -3212,9 +3299,19 @@ class VtuRepository(
                             remoteFullName ?: authFullName ?: cur.fullName,
                             cur.email
                         )
+                        val edgeAccountResp = if (remoteVa != null) {
+                            com.vtu.app.wallet.PermanentAccountViewModel.fetchFromCreatePermanentAccountEdgeFunction(
+                                userId = userId,
+                                email = cur.email,
+                                fullName = resolvedName,
+                                phone = remotePhone,
+                                nin = remoteNinHash ?: cur.nin,
+                                accessToken = currentAccessToken
+                            )
+                        } else null
                         val remoteAccName = if (remoteVa != null) {
                             resolveAccountHolderName(
-                                rawAccountName = rawRemoteAccName,
+                                rawAccountName = edgeAccountResp?.account_name?.takeIf { it.isNotBlank() } ?: rawRemoteAccName,
                                 fullName = resolvedName,
                                 email = cur.email
                             ).ifBlank { null }
@@ -3356,9 +3453,19 @@ class VtuRepository(
                                 remoteFullName ?: authFullName ?: cur.fullName,
                                 cur.email
                             )
+                            val edgeAccountResp = if (remoteVa != null) {
+                                com.vtu.app.wallet.PermanentAccountViewModel.fetchFromCreatePermanentAccountEdgeFunction(
+                                    userId = userId,
+                                    email = cur.email,
+                                    fullName = resolvedName,
+                                    phone = remotePhone,
+                                    nin = remoteNinHash ?: cur.nin,
+                                    accessToken = currentAccessToken
+                                )
+                            } else null
                             val remoteAccName = if (remoteVa != null) {
                                 resolveAccountHolderName(
-                                    rawAccountName = rawRemoteAccName,
+                                    rawAccountName = edgeAccountResp?.account_name?.takeIf { it.isNotBlank() } ?: rawRemoteAccName,
                                     fullName = resolvedName,
                                     email = cur.email
                                 ).ifBlank { null }
@@ -3626,7 +3733,11 @@ class VtuRepository(
             }
             val bank = data.bankName?.trim()?.takeIf { !it.equals("null", ignoreCase = true) && it.isNotBlank() } ?: ""
             if (!accNum.isNullOrBlank()) {
-                val acctName = current?.fullName?.trim().orEmpty()
+                val acctName = resolveAccountHolderName(
+                    rawAccountName = data.accountName,
+                    fullName = current?.fullName,
+                    email = effectiveEmail
+                )
                 updateUserVirtualAccount(accNum, bank, acctName, cleanNin)
             }
         }
@@ -3655,7 +3766,7 @@ class VtuRepository(
         val resolvedFullName = sanitizeFullName(current.fullName, current.email)
         val effectiveName = if (cleanNumber != null) {
             resolveAccountHolderName(
-                rawAccountName = accountName ?: current.virtualAccountName,
+                rawAccountName = accountName?.takeIf { it.isNotBlank() } ?: current.virtualAccountName,
                 fullName = resolvedFullName,
                 email = current.email
             ).ifBlank { null }

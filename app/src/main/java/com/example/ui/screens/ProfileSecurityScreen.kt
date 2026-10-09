@@ -108,7 +108,7 @@ fun ProfileSecurityScreen(
     onNavigateToDevelopersForum: () -> Unit = {},
     userAuthToken: String = "",
     supabaseAnonKey: String = "",
-    onPermanentAccountCreated: ((String, String) -> Unit)? = null,
+    onPermanentAccountCreated: ((String, String, String) -> Unit)? = null,
     onPermanentAccountReset: (() -> Unit)? = null,
     onUserPhoneFetched: ((String, String?) -> Unit)? = null,
     onRefreshRemoteProfile: (() -> Unit)? = null,
@@ -355,11 +355,13 @@ fun ProfileSecurityScreen(
                                     !it.equals("null", ignoreCase = true) && !it.equals("nil", ignoreCase = true) && it.isNotBlank()
                                 }
                                 val bankName = rawBank ?: ""
-                                val acctName = com.example.data.repository.VtuRepository.resolveAccountHolderName(
-                                    rawAccountName = currentUser?.virtualAccountName,
-                                    fullName = userName,
-                                    email = currentUser?.email
-                                )
+                                val acctName = if (isVaVerified) {
+                                    com.example.data.repository.VtuRepository.resolveAccountHolderName(
+                                        rawAccountName = currentUser?.virtualAccountName,
+                                        fullName = currentUser?.fullName,
+                                        email = currentUser?.email
+                                    )
+                                } else ""
                                 val displayVa = if (isVaVerified) {
                                     if (bankName.isNotBlank()) "$cleanVa ($bankName)" else cleanVa!!
                                 } else {

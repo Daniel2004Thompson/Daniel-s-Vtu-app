@@ -171,6 +171,7 @@ data class VirtualAccountResponse(
     @SerializedName("success") val success: Boolean,
     @SerializedName("accountNumber") val accountNumber: String?,
     @SerializedName("bankName") val bankName: String?,
+    @SerializedName("accountName") val accountName: String? = null,
     @SerializedName("message") val message: String?,
     @SerializedName("isKycVerified") val isKycVerified: Boolean? = null,
     @SerializedName("isKycRequired") val isKycRequired: Boolean? = null
@@ -470,9 +471,7 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
                 }
 
                 val functionNames = listOf(
-                    "Create-Permanent-Account",
-                    "Create-Virtual-Account",
-                    "create-virtual-account"
+                    "Create-Permanent-Account"
                 )
 
                 var lastMessage: String? = null
@@ -496,6 +495,7 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
                                 ?: json.optString("bank_name").takeIf { it.isNotBlank() }
                                 ?: dataObj?.optString("bank_name")?.takeIf { it.isNotBlank() }
                                 ?: dataObj?.optString("bankName")?.takeIf { it.isNotBlank() }
+                            val acctName = PermanentAccountViewModel.extractAccountNameFromEdgeResponse(json)
 
                             if (statusCode in 200..299 && !accNum.isNullOrBlank()) {
                                 return@withContext Result.success(
@@ -503,6 +503,7 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
                                         success = true,
                                         accountNumber = accNum,
                                         bankName = bank ?: "",
+                                        accountName = acctName,
                                         message = json.optString("message").ifBlank { "Account created" },
                                         isKycVerified = true,
                                         isKycRequired = false
