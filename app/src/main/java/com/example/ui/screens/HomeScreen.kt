@@ -1342,14 +1342,19 @@ fun TransactionRowItem(
         )
     }
 
-    val cleanProvider = transaction.provider.trim()
-    val cleanService = transaction.serviceType.replace('_', ' ').trim()
-    val displayTitle = transaction.title.trim().ifEmpty {
-        when {
-            cleanProvider.isNotEmpty() && cleanService.isNotEmpty() -> "$cleanProvider $cleanService"
-            cleanProvider.isNotEmpty() -> cleanProvider
-            cleanService.isNotEmpty() -> cleanService
-            else -> "Transaction"
+    val isWalletFunding = com.example.data.repository.VtuRepository.isWalletFundingEntity(transaction)
+    val cleanProvider = if (isWalletFunding) "" else transaction.provider.trim()
+    val cleanService = if (isWalletFunding) "" else transaction.serviceType.replace('_', ' ').trim()
+    val displayTitle = if (isWalletFunding) {
+        "Wallet Funding"
+    } else {
+        transaction.title.trim().ifEmpty {
+            when {
+                cleanProvider.isNotEmpty() && cleanService.isNotEmpty() -> "$cleanProvider $cleanService"
+                cleanProvider.isNotEmpty() -> cleanProvider
+                cleanService.isNotEmpty() -> cleanService
+                else -> "Transaction"
+            }
         }
     }
 
@@ -1357,7 +1362,7 @@ fun TransactionRowItem(
         ?: displayTitle.trim().firstOrNull()?.uppercaseChar()?.toString()
         ?: "T"
 
-    val cleanRecipient = transaction.recipient.trim()
+    val cleanRecipient = if (isWalletFunding) "" else transaction.recipient.trim()
     val subtitleText = when {
         cleanRecipient.isNotEmpty() && dateStr.isNotEmpty() -> "$cleanRecipient • $dateStr"
         cleanRecipient.isNotEmpty() -> cleanRecipient

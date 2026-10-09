@@ -634,6 +634,9 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                 }
 
                 composable(NavigationRoutes.TRANSACTIONS) {
+                    LaunchedEffect(Unit) {
+                        viewModel.refreshRemoteBalance()
+                    }
                     TransactionsScreen(
                         transactions = allTransactions,
                         onBack = { navigateBackSafe() },

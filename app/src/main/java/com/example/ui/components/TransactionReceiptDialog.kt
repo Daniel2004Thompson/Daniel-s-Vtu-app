@@ -144,6 +144,9 @@ fun TransactionReceiptDialog(
             transaction.status.equals("PROCESSING", ignoreCase = true)
         )
     val isAirtime = transaction.serviceType.equals("AIRTIME", ignoreCase = true)
+    val isWalletFunding = remember(transaction.serviceType, transaction.title, transaction.provider, transaction.tokenOrDetails) {
+        com.example.data.repository.VtuRepository.isWalletFundingEntity(transaction)
+    }
     val hasExplicitAirtimeBreakdown = remember(transaction) {
         isAirtime && (transaction.tokenOrDetails?.contains("[SERVER_RECEIPT:") == true || transaction.discountOrCashback > 0.0)
     }
@@ -151,18 +154,19 @@ fun TransactionReceiptDialog(
         if (hasExplicitAirtimeBreakdown) parseAirtimeReceiptBreakdown(transaction) else null
     }
 
-    val cleanService = remember(transaction.serviceType) {
-        transaction.serviceType.replace('_', ' ').trim()
+    val cleanService = remember(transaction.serviceType, isWalletFunding) {
+        if (isWalletFunding) "" else transaction.serviceType.replace('_', ' ').trim()
     }
-    val cleanProvider = remember(transaction.provider) {
-        transaction.provider.trim()
+    val cleanProvider = remember(transaction.provider, isWalletFunding) {
+        if (isWalletFunding) "" else transaction.provider.trim()
     }
-    val cleanRecipient = remember(transaction.recipient) {
-        transaction.recipient.trim()
+    val cleanRecipient = remember(transaction.recipient, isWalletFunding) {
+        if (isWalletFunding) "" else transaction.recipient.trim()
     }
-    val cleanCustomer = remember(transaction.customerName) {
-        transaction.customerName?.trim().orEmpty()
+    val cleanCustomer = remember(transaction.customerName, isWalletFunding) {
+        if (isWalletFunding) "" else transaction.customerName?.trim().orEmpty()
     }
+    val paymentMethodLabel = "Daniel VTU Wallet"
     val cleanStatus = remember(transaction.status, isFailedOrRefunded, isTxSuccessful, isTxPending) {
         when {
             isFailedOrRefunded -> "FAILED"
@@ -171,28 +175,32 @@ fun TransactionReceiptDialog(
             else -> transaction.status.trim().ifEmpty { "FAILED" }
         }
     }
-    val cleanReference = remember(transaction.reference) {
-        transaction.reference.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-").trim()
+    val cleanReference = remember(transaction.reference, isWalletFunding) {
+        if (isWalletFunding) "" else transaction.reference.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-").trim()
     }
-    val cleanDetails = remember(transaction.tokenOrDetails, isTxSuccessful, isTxPending) {
-        val raw = transaction.tokenOrDetails
-            ?.replace(Regex("\\s*\\[SERVER_RECEIPT:[^\\]]*\\]"), "")
-            ?.trim()
-            .orEmpty()
-        if (raw.isBlank()) {
+    val cleanDetails = remember(transaction.tokenOrDetails, isTxSuccessful, isTxPending, isWalletFunding) {
+        if (isWalletFunding) {
             null
-        } else if (isTxPending) {
-            "Purchase is being confirmed"
-        } else if (isTxSuccessful) {
-            val stripped = raw
-                .replace(Regex("\\(\\s*Gsubz\\s*Live\\s*\\)", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("via\\s+Gsubz-VTU-Services", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("\\s+•\\s*$"), "")
-                .trim()
-            stripped.ifBlank { null }
         } else {
-            null
+            val raw = transaction.tokenOrDetails
+                ?.replace(Regex("\\s*\\[SERVER_RECEIPT:[^\\]]*\\]"), "")
+                ?.trim()
+                .orEmpty()
+            if (raw.isBlank()) {
+                null
+            } else if (isTxPending) {
+                "Purchase is being confirmed"
+            } else if (isTxSuccessful) {
+                val stripped = raw
+                    .replace(Regex("\\(\\s*Gsubz\\s*Live\\s*\\)", RegexOption.IGNORE_CASE), "")
+                    .replace(Regex("via\\s+Gsubz-VTU-Services", RegexOption.IGNORE_CASE), "")
+                    .replace(Regex("Gsubz-VTU-Services|Gsubz|Supabase|Edge\\s*Function", RegexOption.IGNORE_CASE), "")
+                    .replace(Regex("\\s+•\\s*$"), "")
+                    .trim()
+                stripped.ifBlank { null }
+            } else {
+                null
+            }
         }
     }
 
@@ -240,7 +248,7 @@ fun TransactionReceiptDialog(
             if (formattedDate.isNotEmpty()) {
                 append("Date: $formattedDate\n")
             }
-            append("Payment Method: Daniel VTU Wallet\n")
+            append("Payment Method: $paymentMethodLabel\n")
             if (cleanStatus.isNotEmpty()) {
                 append("Status: $cleanStatus\n")
             }
@@ -662,7 +670,7 @@ fun TransactionReceiptDialog(
                     if (formattedDate.isNotEmpty()) {
                         ReceiptRow(label = "Date & Time", value = formattedDate)
                     }
-                    ReceiptRow(label = "Payment Method", value = "Daniel VTU Wallet")
+                    ReceiptRow(label = "Payment Method", value = paymentMethodLabel)
                     if (cleanStatus.isNotEmpty()) {
                         ReceiptRow(
                             label = "Status",

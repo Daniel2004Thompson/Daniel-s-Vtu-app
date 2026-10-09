@@ -605,28 +605,29 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logoutFromSupabase(onComplete: () -> Unit = {}) {
+        _authLoading.value = true
+        val tokenToRevoke = repository.currentAccessToken
+        repository.clearSession()
+        resetTransientUserStates()
+        _signInStep.value = 1
+        _signUpStep.value = 1
+        _passwordResetStep.value = 1
+        _pendingSignInEmail.value = ""
+        _pendingSignUpEmail.value = ""
+        _pendingSignUpFullName.value = ""
+        _pendingSignUpPhone.value = null
+        _pendingSignUpPassword.value = ""
+        _pendingPasswordResetEmail.value = ""
+        _authError.value = null
+        _authSuccessMessage.value = null
+        _isAppUnlocked.value = true
+        _authLoading.value = false
+        _uiMessage.value = "Logged out successfully"
+        onComplete()
         viewModelScope.launch {
-            _authLoading.value = true
             try {
-                repository.logout()
+                repository.logout(tokenToRevoke)
             } catch (_: Throwable) {}
-            repository.refreshMyTransactions()
-            resetTransientUserStates()
-            _signInStep.value = 1
-            _signUpStep.value = 1
-            _passwordResetStep.value = 1
-            _pendingSignInEmail.value = ""
-            _pendingSignUpEmail.value = ""
-            _pendingSignUpFullName.value = ""
-            _pendingSignUpPhone.value = null
-            _pendingSignUpPassword.value = ""
-            _pendingPasswordResetEmail.value = ""
-            _authError.value = null
-            _authSuccessMessage.value = null
-            _isAppUnlocked.value = true
-            _authLoading.value = false
-            _uiMessage.value = "Logged out successfully"
-            onComplete()
         }
     }
 

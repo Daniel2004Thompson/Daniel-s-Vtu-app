@@ -81,10 +81,6 @@ All Edge Function requests are sent via Ktor `POST` to `https://yjymxdzdhvbdjram
 │       │   ├── java/com/vtu/app/wallet/ # Realtime wallet observer, PermanentAccountFeature, & WalletNetworking
 │       │   └── res/                     # Custom vector logos (MTN, Airtel, Glo, 9mobile, DStv, GOtv, StarTimes) & resources
 │       └── test/                        # Robolectric & JVM unit tests
-└── supabase/
-    ├── README.md                        # Supabase Edge Function & SQL setup guide
-    ├── functions/                       # Edge Function TypeScript sources
-    └── realtime_wallet_setup.sql        # SQL setup for Realtime wallet balance & atomic debit RPC
 ```
 
 ---

@@ -72,7 +72,11 @@ fun TransactionsScreen(
     )
 
     val filteredList = transactions.filter { tx ->
-        val matchesFilter = selectedFilter == "ALL" || tx.serviceType.equals(selectedFilter, ignoreCase = true)
+        val matchesFilter = when (selectedFilter) {
+            "ALL" -> true
+            "WALLET_FUNDING" -> com.example.data.repository.VtuRepository.isWalletFundingEntity(tx)
+            else -> tx.serviceType.equals(selectedFilter, ignoreCase = true)
+        }
         val matchesSearch = searchQuery.isBlank() ||
                 tx.title.contains(searchQuery, ignoreCase = true) ||
                 tx.recipient.contains(searchQuery, ignoreCase = true) ||
