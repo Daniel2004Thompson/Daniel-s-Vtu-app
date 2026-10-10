@@ -213,8 +213,9 @@ class VtuManager(
 ) {
 
     companion object {
-        // Your project's base URL
-        const val BASE_URL = "https://yjymxdzdhvbdjramlipg.supabase.co/"
+        // Your project's base URL resolved via SecurityVault
+        val BASE_URL: String
+            get() = "${com.example.util.SecurityVault.supabaseUrl().trimEnd('/')}/"
     }
 
     val moshi: Moshi = Moshi.Builder()

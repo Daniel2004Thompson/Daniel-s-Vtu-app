@@ -200,18 +200,38 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
 
         scope.launch {
             try {
+                val activeEmail = (currentUser?.email ?: authUser?.email)?.trim().orEmpty()
                 val authMetaName = try {
-                    authUser?.userMetadata?.get("full_name")?.let {
+                    (authUser?.userMetadata?.get("fullname") ?: authUser?.userMetadata?.get("full_name"))?.let {
                         (it as? kotlinx.serialization.json.JsonPrimitive)?.content ?: it.toString().trim('"')
                     }?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
                 } catch (_: Throwable) { null }
 
-                val data = try {
-                    supabase.from("users").select(Columns.list("id", "wallet_balance", "phone")) {
+                var data = try {
+                    supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone")) {
                         filter { eq("id", currentUserId) }
                         limit(1)
                     }.decodeSingleOrNull<JsonObject>()
-                } catch (_: Throwable) { null }
+                } catch (_: Throwable) {
+                    try {
+                        supabase.from("users").select(Columns.list("id", "wallet_balance", "phone")) {
+                            filter { eq("id", currentUserId) }
+                            limit(1)
+                        }.decodeSingleOrNull<JsonObject>()
+                    } catch (_: Throwable) { null }
+                }
+
+                if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
+                    try {
+                        val byEmail = supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone")) {
+                            filter { eq("email", activeEmail) }
+                            limit(1)
+                        }.decodeSingleOrNull<JsonObject>()
+                        if (byEmail != null) {
+                            data = byEmail
+                        }
+                    } catch (_: Throwable) {}
+                }
 
                 if (data != null) {
                     val initialBal = data["wallet_balance"]?.jsonPrimitive?.doubleOrNull
@@ -222,10 +242,11 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                     }
                     val remotePhone = data["phone"]?.jsonPrimitive?.contentOrNull
                         ?: data["phone"]?.toString()?.trim('"')
-                    val resolvedName = authMetaName ?: currentUser?.fullName
+                    val dbFullName = com.example.data.repository.VtuRepository.extractUsersTableFullName(data)
+                    val resolvedName = dbFullName ?: currentUser?.fullName?.takeIf { it.isNotBlank() } ?: authMetaName
                     viewModel.updateRemoteUserProfile(remotePhone, resolvedName)
                 } else if (!authMetaName.isNullOrBlank()) {
-                    viewModel.updateRemoteUserProfile(null, authMetaName)
+                    viewModel.updateRemoteUserProfile(null, currentUser?.fullName?.takeIf { it.isNotBlank() } ?: authMetaName)
                 }
             } catch (_: Throwable) {}
         }

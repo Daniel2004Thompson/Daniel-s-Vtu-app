@@ -161,7 +161,7 @@ fun LogoutScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // User Avatar Box
-            val resolvedFullName = com.example.data.repository.VtuRepository.sanitizeFullName(currentUser?.fullName)
+            val resolvedFullName = com.example.data.repository.VtuRepository.sanitizeFullName(currentUser?.fullName, currentUser?.email)
             val logoutInitials = resolvedFullName.split(" ")
                 .filter { it.isNotBlank() }
                 .mapNotNull { it.firstOrNull()?.toString() }
@@ -178,7 +178,7 @@ fun LogoutScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = com.example.data.repository.VtuRepository.sanitizeFullName(currentUser?.fullName),
+                text = resolvedFullName,
                 style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurface
             )

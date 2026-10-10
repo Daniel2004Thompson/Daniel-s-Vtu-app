@@ -87,11 +87,7 @@ object SupabaseProvider {
     val ktorClient: HttpClient by lazy {
         HttpClient(OkHttp) {
             engine {
-                config {
-                    connectTimeout(25, TimeUnit.SECONDS)
-                    readTimeout(35, TimeUnit.SECONDS)
-                    writeTimeout(25, TimeUnit.SECONDS)
-                }
+                preconfigured = com.example.data.remote.ApiNetworkClient.okHttpClient
             }
         }
     }
@@ -109,7 +105,17 @@ object SupabaseProvider {
      */
     fun resolveSessionAccessToken(fallbackToken: String? = null): String {
         val cleanFallback = fallbackToken?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
+        val validFallback = cleanFallback?.takeIf {
+            it.isNotBlank() && it != rawKey && !it.startsWith("session_") && !it.startsWith("demo_") && !com.example.util.JwtUtils.isExpired(it)
+        }
+        if (validFallback != null) return validFallback
+
         val cleanActive = activeUserAccessToken?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
+        val validActive = cleanActive?.takeIf {
+            it.isNotBlank() && it != rawKey && !it.startsWith("session_") && !it.startsWith("demo_") && !com.example.util.JwtUtils.isExpired(it)
+        }
+        if (validActive != null) return validActive
+
         val sessionToken = try {
             client?.auth?.currentAccessTokenOrNull()?.takeIf { it.isNotBlank() }
                 ?: client?.auth?.currentSessionOrNull()?.accessToken?.takeIf { it.isNotBlank() }
@@ -117,19 +123,30 @@ object SupabaseProvider {
             null
         }
         val validSession = sessionToken?.takeIf { !com.example.util.JwtUtils.isExpired(it) }
-        val validFallback = cleanFallback?.takeIf {
-            it.isNotBlank() && it != rawKey && !it.startsWith("session_") && !it.startsWith("demo_") && !com.example.util.JwtUtils.isExpired(it)
-        }
-        val validActive = cleanActive?.takeIf {
-            it.isNotBlank() && it != rawKey && !it.startsWith("session_") && !it.startsWith("demo_") && !com.example.util.JwtUtils.isExpired(it)
-        }
         return validSession
-            ?: validFallback
-            ?: validActive
             ?: sessionToken
             ?: cleanFallback?.takeIf { it.isNotBlank() && !it.startsWith("session_") && !it.startsWith("demo_") }
             ?: cleanActive?.takeIf { it.isNotBlank() && !it.startsWith("session_") && !it.startsWith("demo_") }
             ?: rawKey
+    }
+
+    /**
+     * Pre-warms the HTTP/2 TLS connection and Supabase Edge Function worker (`Gsubz-VTU-Services`)
+     * when the user presses Purchase (while the fingerprint dialog is opening) so the subsequent POST
+     * after fingerprint scan executes with zero connection/cold-start overhead (~5.4s total).
+     */
+    fun prewarmEdgeConnection(functionName: String = "Gsubz-VTU-Services") {
+        val cleanFunction = functionName.trim().trimStart('/')
+        val url = "${safeUrl.trimEnd('/')}/functions/v1/$cleanFunction"
+        try {
+            val req = okhttp3.Request.Builder()
+                .url(url)
+                .addHeader("apikey", rawKey)
+                .addHeader("Authorization", "Bearer ${activeUserAccessToken ?: rawKey}")
+                .method("OPTIONS", null)
+                .build()
+            com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().close()
+        } catch (_: Throwable) {}
     }
 
     suspend fun resolveValidSessionAccessToken(fallbackToken: String? = null): String {
@@ -158,7 +175,17 @@ object SupabaseProvider {
     ): Pair<Int, String> {
         val cleanFunction = functionName.trim().trimStart('/')
         val url = "${safeUrl.trimEnd('/')}/functions/v1/$cleanFunction"
-        val accessToken = resolveValidSessionAccessToken(accessTokenOverride)
+        val cleanOverride = accessTokenOverride?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
+        val accessToken = if (!cleanOverride.isNullOrBlank() &&
+            cleanOverride != rawKey &&
+            !cleanOverride.startsWith("session_") &&
+            !cleanOverride.startsWith("demo_") &&
+            !com.example.util.JwtUtils.isExpired(cleanOverride)
+        ) {
+            cleanOverride
+        } else {
+            resolveValidSessionAccessToken(accessTokenOverride)
+        }
         val bearer = if (accessToken.startsWith("Bearer ", ignoreCase = true)) accessToken else "Bearer $accessToken"
 
         val firstAttempt = try {
@@ -276,6 +303,7 @@ class AuthRepository(
             this.password = password
             data = kotlinx.serialization.json.buildJsonObject {
                 if (cleanName.isNotBlank()) {
+                    put("fullname", kotlinx.serialization.json.JsonPrimitive(cleanName))
                     put("full_name", kotlinx.serialization.json.JsonPrimitive(cleanName))
                     put("name", kotlinx.serialization.json.JsonPrimitive(cleanName))
                 }

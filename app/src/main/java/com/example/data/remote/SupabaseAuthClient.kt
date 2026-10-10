@@ -48,6 +48,7 @@ class SupabaseAuthClient(
                     put("email", email.trim())
                     put("password", password)
                     val metadata = JSONObject().apply {
+                        put("fullname", fullName.trim())
                         put("full_name", fullName.trim())
                         if (!phone.isNullOrBlank()) {
                             put("phone", phone.trim())
@@ -148,15 +149,44 @@ class SupabaseAuthClient(
                     val userId = userObj?.optString("id") ?: ""
                     val userEmail = userObj?.optString("email") ?: email
                     val metadata = userObj?.optJSONObject("user_metadata")
-                    val parsedName = metadata?.optString("full_name", "")?.trim()?.takeIf {
-                        it.isNotBlank() && !it.equals("null", ignoreCase = true)
-                    } ?: ""
+                    val metaName = metadata?.optString("fullname", "")
+                        ?.ifBlank { metadata.optString("full_name", "") }
+                        ?.trim()?.takeIf {
+                            it.isNotBlank() && !it.equals("null", ignoreCase = true)
+                        } ?: ""
+
+                    var dbFullName: String? = null
+                    var dbPhone: String? = null
+                    try {
+                        val filter = if (userId.isNotBlank()) "id=eq.$userId" else "email=eq.${userEmail.trim()}"
+                        val userRowReq = Request.Builder()
+                            .url("$cleanUrl/rest/v1/users?select=id,email,fullname,phone&$filter&limit=1")
+                            .addHeader("apikey", supabaseAnonKey)
+                            .addHeader("Authorization", "Bearer ${accessToken.ifBlank { supabaseAnonKey }}")
+                            .get()
+                            .build()
+                        client.newCall(userRowReq).execute().use { rowRes ->
+                            if (rowRes.isSuccessful) {
+                                val arr = org.json.JSONArray(rowRes.body?.string().orEmpty().ifBlank { "[]" })
+                                if (arr.length() > 0) {
+                                    val rowObj = arr.getJSONObject(0)
+                                    dbFullName = com.example.data.repository.VtuRepository.extractUsersTableFullName(rowObj)
+                                    dbPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(rowObj.optString("phone", ""))
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {}
+
+                    val resolvedName = com.example.data.repository.VtuRepository.sanitizeFullName(
+                        dbFullName ?: metaName,
+                        userEmail
+                    )
 
                     val user = SupabaseUser(
                         id = userId,
                         email = userEmail,
-                        fullName = parsedName,
-                        phone = null
+                        fullName = resolvedName,
+                        phone = dbPhone
                     )
                     val session = SupabaseSession(
                         accessToken = accessToken,

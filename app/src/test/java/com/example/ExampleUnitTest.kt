@@ -70,21 +70,54 @@ class ExampleUnitTest {
             )
         )
 
-        // Verify user's account always resolves to "Thompson Daniel/ Daniel Kalada Thompson" even if rawAccountName was "Thompson Daniel"
+        // Verify user's NIN-created permanent account always resolves to "Thompson Daniel/ Daniel Kalada Thompson"
+        // even when profile fullname is "Daniel Thompson" from public.users.fullname
         assertEquals(
             "Thompson Daniel/ Daniel Kalada Thompson",
             VtuRepository.resolveAccountHolderName(
                 rawAccountName = "Thompson Daniel",
-                fullName = "Daniel Kalada Thompson",
+                fullName = "Daniel Thompson",
                 email = "danielkaladathompson@gmail.com"
             )
         )
 
-        // Verify every other permanent account created resolves to "Thompson Daniel/ <Customer Name>"
+        // Verify profile name is "Daniel Thompson" from public.users.fullname (not "Daniel Kalada Thompson")
+        assertTrue("fullname" in VtuRepository.USERS_SAFE_COLUMNS_FULL)
+        val userRowObj = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"id":"u1","email":"danielkaladathompson@gmail.com","fullname":"Daniel Thompson"}"""
+        ) as kotlinx.serialization.json.JsonObject
+        assertEquals("Daniel Thompson", VtuRepository.extractUsersTableFullName(userRowObj))
         assertEquals(
-            "Thompson Daniel/ Adebayo Johnson",
+            "Daniel Thompson",
+            VtuRepository.sanitizeFullName(
+                VtuRepository.extractUsersTableFullName(userRowObj),
+                "danielkaladathompson@gmail.com"
+            )
+        )
+        assertEquals(
+            "Daniel Thompson",
+            VtuRepository.sanitizeFullName(
+                "Daniel Kalada Thompson",
+                "danielkaladathompson@gmail.com"
+            )
+        )
+
+        // Verify every other registered user's profile name is from their public.users.fullname
+        // while their NIN-created account name is "Thompson Daniel/ <NIN Name>"
+        val otherUserRow = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"id":"u2","email":"adebayo@example.com","fullname":"Adebayo Johnson"}"""
+        ) as kotlinx.serialization.json.JsonObject
+        assertEquals(
+            "Adebayo Johnson",
+            VtuRepository.sanitizeFullName(
+                VtuRepository.extractUsersTableFullName(otherUserRow),
+                "adebayo@example.com"
+            )
+        )
+        assertEquals(
+            "Thompson Daniel/ Adebayo Okin Johnson",
             VtuRepository.resolveAccountHolderName(
-                rawAccountName = "Adebayo Johnson",
+                rawAccountName = "Adebayo Okin Johnson",
                 fullName = "Adebayo Johnson",
                 email = "adebayo@example.com"
             )

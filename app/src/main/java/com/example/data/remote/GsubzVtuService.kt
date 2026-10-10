@@ -118,15 +118,21 @@ object GsubzVtuService {
         encodeDefaults = true
     }
 
-    private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .build()
-    }
+    private val httpClient: OkHttpClient
+        get() = com.example.data.remote.ApiNetworkClient.okHttpClient
 
-    private val _airtimePrices = MutableStateFlow<Map<NetworkProvider, AirtimeNetworkPricing>>(emptyMap())
+    private val defaultAirtimePrices = mapOf(
+        NetworkProvider.MTN to AirtimeNetworkPricing(NetworkProvider.MTN, "mtn", 2.5),
+        NetworkProvider.AIRTEL to AirtimeNetworkPricing(NetworkProvider.AIRTEL, "airtel", 2.0),
+        NetworkProvider.GLO to AirtimeNetworkPricing(NetworkProvider.GLO, "glo", 3.0),
+        NetworkProvider.NINEMOBILE to AirtimeNetworkPricing(NetworkProvider.NINEMOBILE, "9mobile", 3.0)
+    )
+
+    private val _airtimePrices = MutableStateFlow<Map<NetworkProvider, AirtimeNetworkPricing>>(defaultAirtimePrices)
     val airtimePrices: StateFlow<Map<NetworkProvider, AirtimeNetworkPricing>> = _airtimePrices.asStateFlow()
+
+    @Volatile
+    private var lastVtuPricesFetchedAtMs: Long = 0L
 
     private val _liveServicePlans = MutableStateFlow<Map<String, List<GsubzPlanItem>>>(emptyMap())
     val liveServicePlans: StateFlow<Map<String, List<GsubzPlanItem>>> = _liveServicePlans.asStateFlow()
@@ -148,68 +154,15 @@ object GsubzVtuService {
         val cleanId = serviceId.trim().lowercase()
         if (cleanId.isBlank()) return@withContext emptyList()
 
+        val cachedPlans = _liveServicePlans.value[cleanId]
+        if (!cachedPlans.isNullOrEmpty()) return@withContext cachedPlans
+
         val baseUrl = SUPABASE_URL.trimEnd('/')
         val anonKey = SupabaseProvider.rawKey
-        val activeToken = SupabaseProvider.resolveValidSessionAccessToken(null)
+        val activeToken = SupabaseProvider.resolveSessionAccessToken(null)
         val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
 
-        // 1. Call Gsubz-VTU-Services Edge Function (https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Gsubz-VTU-Services) via POST
-        try {
-            val sessionUser = try { SupabaseProvider.client?.auth?.currentUserOrNull() } catch (_: Throwable) { null }
-            val uid = sessionUser?.id?.takeIf { it.isNotBlank() }
-                ?: com.example.util.JwtUtils.getUserIdFromJwt(activeToken)
-                ?: List(5) { idx -> "0".repeat(intArrayOf(8, 4, 4, 4, 12)[idx]) }.joinToString("-")
-            val email = sessionUser?.email?.takeIf { it.isNotBlank() }
-                ?: com.example.util.JwtUtils.getEmailFromJwt(activeToken)
-                ?: "user@danielvtu.app"
-            val rawCategory = inferEdgeServiceCategory(cleanId)
-            val resolvedCategory = if (rawCategory == "education") "data" else rawCategory
-            val edgePlanPayload = buildJsonObject {
-                put("action", JsonPrimitive("get_plans"))
-                put("user_id", JsonPrimitive(uid))
-                put("email", JsonPrimitive(email))
-                put("service_type", JsonPrimitive(resolvedCategory))
-                put("service", JsonPrimitive(cleanId))
-                put("service_id", JsonPrimitive(cleanId))
-                put("serviceID", JsonPrimitive(cleanId))
-            }.toString()
-            val (edgeCode, edgeBody) = SupabaseProvider.postEdgeFunction(
-                functionName = FUNCTION_NAME,
-                bodyJson = edgePlanPayload,
-                accessTokenOverride = activeToken
-            )
-            if (edgeCode in 200..299 && edgeBody.isNotBlank()) {
-                val parsedEdgePlans = parseGsubzPlansJson(edgeBody)
-                if (parsedEdgePlans.isNotEmpty()) {
-                    _liveServicePlans.value = _liveServicePlans.value + (cleanId to parsedEdgePlans)
-                    return@withContext parsedEdgePlans
-                }
-            }
-        } catch (_: Throwable) {}
-
-        // 1b. Call Gsubz-VTU-Services Edge Function via GET query (?service=<cleanId>&service_id=<cleanId>&serviceID=<cleanId>)
-        try {
-            val edgeGetUrl = "$baseUrl/functions/v1/$FUNCTION_NAME?service=$cleanId&service_id=$cleanId&serviceID=$cleanId&action=get_plans"
-            val edgeGetReq = Request.Builder()
-                .url(edgeGetUrl)
-                .addHeader("apikey", anonKey)
-                .addHeader("Authorization", bearer)
-                .addHeader("x-client-info", "vtu-android-client/1.0")
-                .get()
-                .build()
-            httpClient.newCall(edgeGetReq).execute().use { res ->
-                if (res.isSuccessful) {
-                    val edgeBody = res.body?.string().orEmpty()
-                    val parsedEdgePlans = parseGsubzPlansJson(edgeBody)
-                    if (parsedEdgePlans.isNotEmpty()) {
-                        _liveServicePlans.value = _liveServicePlans.value + (cleanId to parsedEdgePlans)
-                        return@withContext parsedEdgePlans
-                    }
-                }
-            }
-        } catch (_: Throwable) {}
-
-        // 2. Query Supabase vtu_prices table for active plans belonging to this service_id
+        // 1. Query Supabase vtu_prices table first so plan lookups never contend with Gsubz-VTU-Services purchases
         try {
             val url = "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price,cashback_percent,active&service_id=eq.$cleanId"
             val req = Request.Builder()
@@ -254,7 +207,7 @@ object GsubzVtuService {
             Log.w(TAG, "Error querying Supabase vtu_prices for $cleanId: ${e.message}")
         }
 
-        // 3. Fallback to catalog plans configured for this Gsubz service ID
+        // 2. Fallback to catalog plans configured for this Gsubz service ID
         val catalogItems = com.example.data.model.VtuCatalog.dataPlans
             .filter { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
             .map { plan ->
@@ -382,17 +335,22 @@ object GsubzVtuService {
      */
     suspend fun fetchAirtimePricesFromVtuPrices(
         accessToken: String? = null,
-        supabaseAnonKey: String = SupabaseProvider.rawKey
+        supabaseAnonKey: String = SupabaseProvider.rawKey,
+        forceRefresh: Boolean = false
     ): Map<NetworkProvider, AirtimeNetworkPricing> = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (!forceRefresh && _airtimePrices.value.isNotEmpty() && (now - lastVtuPricesFetchedAtMs) < 15_000L) {
+            return@withContext _airtimePrices.value
+        }
+
         val baseUrl = SUPABASE_URL.trimEnd('/')
         val anonKey = supabaseAnonKey.ifBlank { SupabaseProvider.rawKey }
-        val activeToken = SupabaseProvider.resolveValidSessionAccessToken(accessToken)
+        val activeToken = SupabaseProvider.resolveSessionAccessToken(accessToken)
         val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
 
         val candidateUrls = listOf(
             "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,cashback_percent,active&plan=eq.",
-            "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,cashback_percent&plan=eq.",
-            "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,cashback_percent"
+            "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,cashback_percent&plan=eq."
         )
 
         for (url in candidateUrls) {
@@ -409,6 +367,7 @@ object GsubzVtuService {
                         val parsed = parseAirtimePricesJson(body)
                         if (parsed.isNotEmpty()) {
                             _airtimePrices.value = _airtimePrices.value + parsed
+                            lastVtuPricesFetchedAtMs = System.currentTimeMillis()
                             return@withContext _airtimePrices.value
                         }
                     }
@@ -542,12 +501,7 @@ object GsubzVtuService {
         if (network != null) {
             val cached = _airtimePrices.value[network]?.serviceId?.takeIf { it.isNotBlank() }
             if (cached != null) return cached
-
-            val fetched = fetchAirtimePricesFromVtuPrices(accessToken)
-            val fromTable = fetched[network]?.serviceId?.takeIf { it.isNotBlank() }
-            if (fromTable != null) return fromTable
-
-            return network.id
+            return if (network == NetworkProvider.NINEMOBILE) "9mobile" else network.id
         }
 
         return providerOrNetwork.trim().lowercase()
@@ -613,18 +567,13 @@ object GsubzVtuService {
             serviceID.trim().lowercase()
         }
 
-        val sessionUser = try {
-            SupabaseProvider.client?.auth?.currentUserOrNull()
-        } catch (_: Throwable) {
-            null
-        }
-        val resolvedUserId = sessionUser?.id?.takeIf { it.isNotBlank() }
+        val resolvedUserId = userId?.trim()?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getUserIdFromJwt(userToken)
-            ?: userId?.trim()?.takeIf { it.isNotBlank() }
+            ?: try { SupabaseProvider.client?.auth?.currentUserOrNull()?.id?.takeIf { it.isNotBlank() } } catch (_: Throwable) { null }
             ?: List(5) { idx -> "0".repeat(intArrayOf(8, 4, 4, 4, 12)[idx]) }.joinToString("-")
-        val resolvedEmail = sessionUser?.email?.takeIf { it.isNotBlank() }
+        val resolvedEmail = userEmail?.trim()?.takeIf { it.isNotBlank() }
             ?: com.example.util.JwtUtils.getEmailFromJwt(userToken)
-            ?: userEmail?.trim()?.takeIf { it.isNotBlank() }
+            ?: try { SupabaseProvider.client?.auth?.currentUserOrNull()?.email?.takeIf { it.isNotBlank() } } catch (_: Throwable) { null }
             ?: "user@danielvtu.app"
 
         val resolvedServiceId = serviceID.trim().lowercase().ifBlank { resolvedNetwork }

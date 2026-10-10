@@ -1270,6 +1270,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
     fun prepareTransaction(pending: PendingTransaction) {
         _pinDialogError.value = null
         _pendingTransactionForAuth.value = pending
+        repository.prewarmPurchaseRequirements(pending.serviceType)
     }
 
     fun authorizePendingWithBiometric(onComplete: () -> Unit = {}) {
@@ -1342,7 +1343,6 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 )
             } finally {
                 _authLoading.value = false
-                repository.syncRemoteProfileBalance()
             }
 
             if (!gsubzResult.isSuccess && !gsubzResult.isPending) {
@@ -1365,9 +1365,11 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     customerName = pending.customerName,
                     title = pending.title.ifBlank { "${pending.provider} ${pending.serviceType.replace('_', ' ')}".trim() }
                 )
-                repository.recordTransaction(failedEntity)
                 _activeReceipt.value = failedEntity
                 onComplete()
+                viewModelScope.launch {
+                    repository.recordTransaction(failedEntity)
+                }
                 return@launch
             }
 
@@ -1437,32 +1439,6 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 title = pending.title.ifBlank { "${pending.provider} ${pending.serviceType.replace('_', ' ')}".trim() }
             )
 
-            repository.recordTransaction(entity)
-            repository.refreshMyTransactions(20)
-
-            repository.saveBeneficiary(
-                BeneficiaryEntity(
-                    userId = activeUid,
-                    name = pending.customerName ?: "${pending.provider} - ${pending.recipient}",
-                    recipient = pending.recipient,
-                    serviceType = pending.serviceType,
-                    provider = pending.provider
-                )
-            )
-
-            if (gsubzResult.isPending) {
-                _uiMessage.value = "Purchase is being confirmed"
-            } else if (notificationsEnabled.value) {
-                NotificationHelper.showTransactionNotification(
-                    context = getApplication(),
-                    title = "Transaction Successful!",
-                    message = "${pending.title} to ${pending.recipient} completed.",
-                    reference = reference,
-                    amount = entity.amount,
-                    token = if (pending.serviceType == "ELECTRICITY" || pending.serviceType == "EDUCATION") tokenOrDetails else null
-                )
-            }
-
             val alert = InAppNotification(
                 id = reference,
                 title = if (gsubzResult.isPending) {
@@ -1478,7 +1454,32 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
             )
             _inAppAlertBanner.value = alert
             _activeReceipt.value = entity
+            if (gsubzResult.isPending) {
+                _uiMessage.value = "Purchase is being confirmed"
+            } else if (notificationsEnabled.value) {
+                NotificationHelper.showTransactionNotification(
+                    context = getApplication(),
+                    title = "Transaction Successful!",
+                    message = "${pending.title} to ${pending.recipient} completed.",
+                    reference = reference,
+                    amount = entity.amount,
+                    token = if (pending.serviceType == "ELECTRICITY" || pending.serviceType == "EDUCATION") tokenOrDetails else null
+                )
+            }
             onComplete()
+
+            viewModelScope.launch {
+                repository.recordTransaction(entity)
+                repository.saveBeneficiary(
+                    BeneficiaryEntity(
+                        userId = activeUid,
+                        name = pending.customerName ?: "${pending.provider} - ${pending.recipient}",
+                        recipient = pending.recipient,
+                        serviceType = pending.serviceType,
+                        provider = pending.provider
+                    )
+                )
+            }
 
             delay(6000)
             if (_inAppAlertBanner.value?.id == reference) {

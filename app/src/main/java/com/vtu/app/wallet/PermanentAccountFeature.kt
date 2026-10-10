@@ -166,6 +166,7 @@ class PermanentAccountViewModel : ViewModel() {
 
             try {
                 val userSelectCandidates = listOf(
+                    com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_FULL.joinToString(","),
                     "id,email,phone,permanent_account_number,permanent_account_bank",
                     com.example.data.repository.VtuRepository.USERS_SAFE_COLUMNS_STANDARD.joinToString(","),
                     "id,permanent_account_number,permanent_account_bank"

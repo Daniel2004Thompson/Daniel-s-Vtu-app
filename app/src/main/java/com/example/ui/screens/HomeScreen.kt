@@ -170,18 +170,19 @@ fun HomeScreen(
             com.example.data.repository.VtuRepository.sanitizeRealPhone(currentUser?.phone)
         )
     }
-    var liveUserFullName by remember(currentUser?.id, currentUser?.fullName) {
+    var liveUserFullName by remember(currentUser?.id, currentUser?.fullName, currentUser?.email) {
         mutableStateOf(
-            com.example.data.repository.VtuRepository.sanitizeFullName(currentUser?.fullName)
+            com.example.data.repository.VtuRepository.sanitizeFullName(currentUser?.fullName, currentUser?.email)
         )
     }
 
-    LaunchedEffect(currentUser?.id) {
+    LaunchedEffect(currentUser?.id, currentUser?.email) {
         onRefreshRemoteProfile?.invoke()
         val supabase = SupabaseInstance.client
         val authUser = try { supabase?.auth?.currentUserOrNull() } catch (_: Throwable) { null }
         val userId = authUser?.id
             ?: currentUser?.id?.takeIf { it.isNotBlank() && it != "usr_guest" && it != "usr_default" }
+        val activeEmail = (currentUser?.email ?: authUser?.email)?.trim().orEmpty()
         val isValidUuid = !userId.isNullOrBlank() && userId.length == 36 && userId.count { it == '-' } == 4
 
         if (!userId.isNullOrBlank() && isValidUuid) {
@@ -200,14 +201,14 @@ fun HomeScreen(
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
                     val authMetaName = try {
-                        authUser?.userMetadata?.get("full_name")?.let {
+                        (authUser?.userMetadata?.get("fullname") ?: authUser?.userMetadata?.get("full_name"))?.let {
                             (it as? kotlinx.serialization.json.JsonPrimitive)?.content ?: it.toString().trim('"')
                         }?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
                     } catch (_: Throwable) { null }
 
-                    val data = try {
+                    var data = try {
                         supabase.postgrest.from("users").select(
-                            io.github.jan.supabase.postgrest.query.Columns.list("id", "phone", "full_name")
+                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone")
                         ) {
                             filter { eq("id", userId) }
                             limit(1)
@@ -223,19 +224,31 @@ fun HomeScreen(
                         } catch (_: Throwable) { null }
                     }
 
+                    if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
+                        try {
+                            val byEmail = supabase.postgrest.from("users").select(
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone")
+                            ) {
+                                filter { eq("email", activeEmail) }
+                                limit(1)
+                            }.decodeSingleOrNull<kotlinx.serialization.json.JsonObject>()
+                            if (byEmail != null) {
+                                data = byEmail
+                            }
+                        } catch (_: Throwable) {}
+                    }
+
                     val dbPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(
                         data?.get("phone")?.let {
                             (it as? kotlinx.serialization.json.JsonPrimitive)?.content ?: it.toString().trim('"')
                         }
                     )
-                    val dbFullName = data?.get("full_name")?.let {
-                        (it as? kotlinx.serialization.json.JsonPrimitive)?.content ?: it.toString().trim('"')
-                    }?.takeIf { !it.equals("null", ignoreCase = true) && it.isNotBlank() }
+                    val dbFullName = com.example.data.repository.VtuRepository.extractUsersTableFullName(data)
 
                     val resolvedPhone = dbPhone
                     val resolvedName = com.example.data.repository.VtuRepository.sanitizeFullName(
-                        authMetaName ?: dbFullName ?: currentUser?.fullName,
-                        currentUser?.email ?: authUser?.email
+                        dbFullName ?: currentUser?.fullName?.takeIf { it.isNotBlank() } ?: authMetaName,
+                        activeEmail
                     )
                     liveUserPhone = resolvedPhone
                     liveUserFullName = resolvedName
