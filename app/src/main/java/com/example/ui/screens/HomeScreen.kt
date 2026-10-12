@@ -208,7 +208,7 @@ fun HomeScreen(
 
                     var data = try {
                         supabase.postgrest.from("users").select(
-                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone")
+                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "transaction_history")
                         ) {
                             filter { eq("id", userId) }
                             limit(1)
@@ -216,7 +216,7 @@ fun HomeScreen(
                     } catch (_: Throwable) {
                         try {
                             supabase.postgrest.from("users").select(
-                                io.github.jan.supabase.postgrest.query.Columns.list("id", "phone")
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "phone", "transaction_history")
                             ) {
                                 filter { eq("id", userId) }
                                 limit(1)
@@ -227,7 +227,7 @@ fun HomeScreen(
                     if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
                         try {
                             val byEmail = supabase.postgrest.from("users").select(
-                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone")
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "transaction_history")
                             ) {
                                 filter { eq("email", activeEmail) }
                                 limit(1)
@@ -236,6 +236,15 @@ fun HomeScreen(
                                 data = byEmail
                             }
                         } catch (_: Throwable) {}
+                    }
+
+                    data?.get("transaction_history")?.let { rawHist ->
+                        val histStr = try {
+                            (rawHist as? kotlinx.serialization.json.JsonPrimitive)?.content ?: rawHist.toString()
+                        } catch (_: Throwable) {
+                            rawHist.toString()
+                        }
+                        com.vtu.app.wallet.SharedWalletObserver.updateTransactionHistory(histStr)
                     }
 
                     val dbPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(
@@ -1126,7 +1135,7 @@ fun HomeScreen(
                 }
             } else {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    recentTransactions.forEach { tx ->
+                    recentTransactions.take(20).forEach { tx ->
                         TransactionRowItem(
                             transaction = tx,
                             onClick = {

@@ -68,7 +68,8 @@ class GsubzEdgeServiceClient(
         userToken: String? = null,
         userId: String? = null,
         userEmail: String? = null,
-        userApiKey: String? = null
+        userApiKey: String? = null,
+        userHasEnoughDashboardBalance: Boolean = true
     ): GsubzOrderResult = withContext(Dispatchers.IO) {
         val effectiveToken = userToken ?: resolvedAuthToken
         val rawMappedServiceId = if (serviceType.equals("AIRTIME", ignoreCase = true)) {
@@ -118,7 +119,8 @@ class GsubzEdgeServiceClient(
             userId = userId,
             userEmail = userEmail,
             userToken = effectiveToken,
-            supabaseAnonKey = supabaseAnonKey
+            supabaseAnonKey = supabaseAnonKey,
+            userHasEnoughDashboardBalance = userHasEnoughDashboardBalance
         )
     }
 

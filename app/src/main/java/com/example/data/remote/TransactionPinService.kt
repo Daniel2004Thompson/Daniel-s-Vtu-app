@@ -135,12 +135,11 @@ class TransactionPinClient(
 ) {
     // Dedicated OkHttpClient with NO logging interceptor so PIN payloads are never logged or printed.
     private val okHttpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
+        SecurityVault.createGatewayOkHttpClient(
+            connectTimeoutSec = 20,
+            readTimeoutSec = 20,
+            writeTimeoutSec = 20
+        )
     }
 
     val service: TransactionPinRetrofitService by lazy {

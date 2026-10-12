@@ -208,13 +208,13 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                 } catch (_: Throwable) { null }
 
                 var data = try {
-                    supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone")) {
+                    supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history")) {
                         filter { eq("id", currentUserId) }
                         limit(1)
                     }.decodeSingleOrNull<JsonObject>()
                 } catch (_: Throwable) {
                     try {
-                        supabase.from("users").select(Columns.list("id", "wallet_balance", "phone")) {
+                        supabase.from("users").select(Columns.list("id", "wallet_balance", "phone", "transaction_history")) {
                             filter { eq("id", currentUserId) }
                             limit(1)
                         }.decodeSingleOrNull<JsonObject>()
@@ -223,7 +223,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
 
                 if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
                     try {
-                        val byEmail = supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone")) {
+                        val byEmail = supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history")) {
                             filter { eq("email", activeEmail) }
                             limit(1)
                         }.decodeSingleOrNull<JsonObject>()
@@ -234,6 +234,14 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                 }
 
                 if (data != null) {
+                    data["transaction_history"]?.let { rawHist ->
+                        val histStr = try {
+                            rawHist.jsonPrimitive.contentOrNull ?: rawHist.toString()
+                        } catch (_: Throwable) {
+                            rawHist.toString()
+                        }
+                        com.vtu.app.wallet.SharedWalletObserver.updateTransactionHistory(histStr)
+                    }
                     val initialBal = data["wallet_balance"]?.jsonPrimitive?.doubleOrNull
                         ?: data["wallet_balance"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
                         ?: data["wallet_balance"]?.toString()?.trim('"')?.toDoubleOrNull()

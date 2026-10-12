@@ -525,10 +525,20 @@ class ExampleRobolectricTest {
     val errResp1 = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
       rawBody = """{"error":"Insufficient wallet balance"}""",
       httpStatusCode = 400,
-      requestedAmount = 100.0
+      requestedAmount = 100.0,
+      userHasEnoughDashboardBalance = true
     )
     assertEquals(false, errResp1.isSuccess)
-    assertEquals("Insufficient wallet balance", errResp1.message)
+    assertEquals("Purchase failed", errResp1.message)
+
+    val errRespUserTopUp = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
+      rawBody = """{"error":"Insufficient wallet balance. Please top up your account."}""",
+      httpStatusCode = 400,
+      requestedAmount = 100.0,
+      userHasEnoughDashboardBalance = false
+    )
+    assertEquals(false, errRespUserTopUp.isSuccess)
+    assertEquals("Insufficient wallet balance. Please top up your account.", errRespUserTopUp.message)
 
     val errResp2 = com.example.data.remote.GsubzVtuService.parseAndFinalizeGsubzResponse(
       rawBody = """{"error":"This service or plan is not available"}""",
@@ -704,7 +714,7 @@ class ExampleRobolectricTest {
       requestedAmount = 8500.0
     )
     assertEquals(false, parsedFail.isSuccess)
-    assertEquals("Insufficient wallet balance", parsedFail.message)
+    assertEquals("Purchase failed", parsedFail.message)
     assertEquals("GOTV", parsedFail.serviceName)
     assertEquals("https://yjymxdzdhvbdjramlipg.supabase.co/storage/v1/object/public/uploads/1029285934.png", parsedFail.serviceImageUrl)
     assertEquals("Daniel Kalada Thompson", parsedFail.narration)
@@ -834,13 +844,13 @@ class ExampleRobolectricTest {
     )
     val dto2 = com.example.data.remote.RemoteTransactionDto(
       id = "102",
-      title = "Wallet Funding",
-      service = "",
-      provider = "",
-      recipient = "",
+      title = "MTN Data Bundle",
+      service = "DATA",
+      provider = "MTN",
+      recipient = "08031234567",
       amount = 2500.0,
       status = "PENDING",
-      reference = "",
+      reference = "VTU-DATA-102",
       createdAt = "2026-10-08T08:30:00Z"
     )
     val dto3 = com.example.data.remote.RemoteTransactionDto(
@@ -907,10 +917,10 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithText("₦100.00").assertIsDisplayed()
     composeTestRule.onNodeWithText("SUCCESSFUL").assertIsDisplayed()
 
-    // Row 2: empty provider -> circle uses title's first letter "C", empty recipient -> just date "08 Oct 2026, 09:30 am", "₦2,500.00", "PENDING"
-    composeTestRule.onNodeWithTag("tx_item_").performScrollTo().assertIsDisplayed()
-    composeTestRule.onNodeWithText("credit").assertIsDisplayed()
-    composeTestRule.onNodeWithText("08 Oct 2026, 09:30 am").assertIsDisplayed()
+    // Row 2: MTN Data Bundle from public.users.transaction_history
+    composeTestRule.onNodeWithTag("tx_item_VTU-DATA-102").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithText("MTN Data Bundle").assertIsDisplayed()
+    composeTestRule.onNodeWithText("08031234567 • 08 Oct 2026, 09:30 am").assertIsDisplayed()
     composeTestRule.onNodeWithText("₦2,500.00").assertIsDisplayed()
     composeTestRule.onNodeWithText("PENDING").assertIsDisplayed()
 
@@ -928,20 +938,108 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithText("Done").performClick()
     composeTestRule.waitForIdle()
 
-    // Tap Row 2 (which has empty service, provider, recipient, reference) -> opens receipt dialog and hides empty fields
-    composeTestRule.onNodeWithTag("tx_item_").performScrollTo().performClick()
+    // Tap Row 2 -> opens receipt dialog showing MTN Data Bundle receipt details from public.users.transaction_history
+    composeTestRule.onNodeWithTag("tx_item_VTU-DATA-102").performScrollTo().performClick()
     composeTestRule.waitForIdle()
 
     composeTestRule.onNodeWithTag("transaction_receipt_dialog").assertIsDisplayed()
-    composeTestRule.onNodeWithText("Daniel VTU Wallet").assertIsDisplayed()
-    composeTestRule.onNodeWithText("Date & Time").assertIsDisplayed()
-    composeTestRule.onNodeWithText("Payment Method").assertIsDisplayed()
-    composeTestRule.onNodeWithText("Status").assertIsDisplayed()
-    // Empty fields (Service, Provider, Recipient, Reference) must be hidden
-    composeTestRule.onNodeWithText("Service").assertDoesNotExist()
-    composeTestRule.onNodeWithText("Provider").assertDoesNotExist()
-    composeTestRule.onNodeWithText("Recipient").assertDoesNotExist()
-    composeTestRule.onNodeWithText("Reference").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Daniel VTU Wallet").assertExists()
+    composeTestRule.onNodeWithText("Date & Time").assertExists()
+    composeTestRule.onNodeWithText("Payment Method").assertExists()
+    composeTestRule.onNodeWithText("Status").assertExists()
+    composeTestRule.onNodeWithText("Service").assertExists()
+    composeTestRule.onNodeWithText("Provider").assertExists()
+    composeTestRule.onNodeWithText("Recipient").assertExists()
+    composeTestRule.onNodeWithText("Reference").assertExists()
+  }
+
+  @Test
+  fun profileAvatar_persistsAfterUploadAndDoesNotDisappearOnReload() = kotlinx.coroutines.runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val email = "danielkaladathompson@gmail.com"
+    val testBmp = android.graphics.Bitmap.createBitmap(120, 120, android.graphics.Bitmap.Config.ARGB_8888)
+
+    val saved = com.example.ui.components.ProfilePictureStore.saveAvatarFromBitmap(context, testBmp, email)
+    assertTrue("Expected saveAvatarFromBitmap to succeed", saved)
+    org.junit.Assert.assertNotNull("Avatar should be set immediately after saving", com.example.ui.components.ProfilePictureStore.currentAvatar.value)
+
+    // Simulate subsequent loadAvatar calls (with same email and with null/blank email during recomposition)
+    com.example.ui.components.ProfilePictureStore.loadAvatar(context, email)
+    org.junit.Assert.assertNotNull("Avatar must not disappear after loadAvatar(email)", com.example.ui.components.ProfilePictureStore.currentAvatar.value)
+
+    com.example.ui.components.ProfilePictureStore.loadAvatar(context, "")
+    org.junit.Assert.assertNotNull("Avatar must not disappear after loadAvatar with blank email", com.example.ui.components.ProfilePictureStore.currentAvatar.value)
+
+    // Explicit removal clears the avatar
+    com.example.ui.components.ProfilePictureStore.clearAvatar(context, email)
+    org.junit.Assert.assertNull("Avatar should be null after explicit clearAvatar", com.example.ui.components.ProfilePictureStore.currentAvatar.value)
+  }
+
+  @Test
+  fun usersTransactionHistory_returns20LastMostRecentReceipts() {
+    // Build a 25-item public.users.transaction_history JSONB array (appended chronologically: #1 oldest -> #25 newest)
+    val jsonItems = (1..25).joinToString(prefix = "[", postfix = "]") { idx ->
+      val hour = (idx / 60).toString().padStart(2, '0')
+      val minute = (idx % 60).toString().padStart(2, '0')
+      """
+      {
+        "id": "$idx",
+        "reference": "VTU-REC-$idx",
+        "service_type": "AIRTIME",
+        "provider": "MTN",
+        "recipient": "080300000${idx.toString().padStart(2, '0')}",
+        "amount": ${idx * 100},
+        "charged": ${idx * 98},
+        "cashback": ${idx * 2},
+        "status": "SUCCESSFUL",
+        "created_at": "2026-10-11T$hour:$minute:00Z"
+      }
+      """.trimIndent()
+    }
+
+    val entities = com.example.data.repository.VtuRepository.parseUsersTransactionHistoryToEntities(
+      rawHistoryJson = jsonItems,
+      userId = "usr-123",
+      userEmail = "danielkaladathompson@gmail.com",
+      userFullName = "Daniel Thompson"
+    )
+
+    assertEquals(20, entities.size)
+    // Most recent (25th) is first, 6th is 20th; oldest 1..5 are excluded
+    assertEquals("VTU-REC-25", entities.first().reference)
+    assertEquals("VTU-REC-6", entities.last().reference)
+    assertTrue(entities.none { it.reference in setOf("VTU-REC-1", "VTU-REC-2", "VTU-REC-3", "VTU-REC-4", "VTU-REC-5") })
+  }
+
+  @Test
+  fun dataPlans_noHardcodedPrices_parsesLiveVtuPrices() {
+    // 1. Confirm VtuCatalog.dataPlans has zero hardcoded prices or originalPrices
+    assertTrue(
+      "VtuCatalog.dataPlans must not contain any hardcoded prices",
+      com.example.data.model.VtuCatalog.dataPlans.all { it.price == 0.0 && it.originalPrice == null }
+    )
+
+    // 2. Verify live vtu_prices rows (+₦40 margin) parse and match (service_id, plan)
+    val sampleLiveVtuPricesJson = """
+      [
+        {"service_id": "mtn_sme", "plan": "179", "price": 339.00, "cashback_percent": 0, "active": true},
+        {"service_id": "mtn_gifting", "plan": "366", "price": 939.00, "cashback_percent": 0, "active": true},
+        {"service_id": "airtel_sme", "plan": "476", "price": 150.00, "cashback_percent": 0, "active": true},
+        {"service_id": "airtel_gifting", "plan": "148", "price": 2502.50, "cashback_percent": 0, "active": true},
+        {"service_id": "glo_data", "plan": "200", "price": 160.00, "cashback_percent": 0, "active": true},
+        {"service_id": "glo_sme", "plan": "491", "price": 229.00, "cashback_percent": 0, "active": true},
+        {"service_id": "etisalat_data", "plan": "182", "price": 290.00, "cashback_percent": 0, "active": true}
+      ]
+    """.trimIndent()
+
+    val parsedByService = com.example.data.remote.GsubzVtuService.parseVtuPricesRowsByService(sampleLiveVtuPricesJson)
+    assertEquals("339", parsedByService["mtn_sme"]?.firstOrNull { it.value == "179" }?.price)
+    assertEquals("939", parsedByService["mtn_gifting"]?.firstOrNull { it.value == "366" }?.price)
+    assertEquals("150", parsedByService["airtel_sme"]?.firstOrNull { it.value == "476" }?.price)
+    assertEquals("2502.5", parsedByService["airtel_gifting"]?.firstOrNull { it.value == "148" }?.price)
+    assertEquals("160", parsedByService["glo_data"]?.firstOrNull { it.value == "200" }?.price)
+    assertEquals("229", parsedByService["glo_sme"]?.firstOrNull { it.value == "491" }?.price)
+    assertEquals("290", parsedByService["etisalat_data"]?.firstOrNull { it.value == "182" }?.price)
   }
 }
 

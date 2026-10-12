@@ -82,18 +82,22 @@ fun DataScreen(
     var phoneNumber by remember { mutableStateOf("") }
     var selectedPlan by remember { mutableStateOf<DataPlan?>(null) }
     var showNetworkPicker by remember { mutableStateOf(false) }
+    var isLoadingPrices by remember { mutableStateOf(true) }
+    var refreshTrigger by remember { mutableStateOf(0) }
     val livePlansByService by GsubzVtuService.liveServicePlans.collectAsState()
 
-    LaunchedEffect(selectedNetwork) {
+    LaunchedEffect(selectedNetwork, refreshTrigger) {
+        isLoadingPrices = true
         val serviceIdsToSync = when (selectedNetwork) {
             NetworkProvider.MTN -> listOf("mtn_sme", "mtn_gifting")
             NetworkProvider.AIRTEL -> listOf("airtel_sme", "airtel_gifting")
             NetworkProvider.GLO -> listOf("glo_data", "glo_sme")
             NetworkProvider.NINEMOBILE -> listOf("etisalat_data")
         }
-        for (sId in serviceIdsToSync) {
-            GsubzVtuService.fetchLivePlansForService(sId)
-        }
+        GsubzVtuService.fetchLiveDataPlansFromVtuPrices(
+            (serviceIdsToSync + GsubzVtuService.DATA_SERVICE_IDS).distinct()
+        )
+        isLoadingPrices = false
     }
 
     val filteredPlans = remember(selectedNetwork, selectedCategory, livePlansByService) {
@@ -101,14 +105,14 @@ fun DataScreen(
             .filter {
                 it.network == selectedNetwork && (selectedCategory == null || it.category == selectedCategory)
             }
-            .map { catalogPlan ->
+            .mapNotNull { catalogPlan ->
                 val liveMatch = livePlansByService[catalogPlan.gsubzServiceId.lowercase()]
                     ?.firstOrNull { it.value.equals(catalogPlan.planCode, ignoreCase = true) }
                 val livePrice = liveMatch?.price?.toDoubleOrNull()
                 if (livePrice != null && livePrice > 0.0) {
-                    catalogPlan.copy(price = livePrice)
+                    catalogPlan.copy(price = livePrice, originalPrice = null)
                 } else {
-                    catalogPlan
+                    null
                 }
             }
         val knownPlanKeys = VtuCatalog.dataPlans
@@ -135,7 +139,7 @@ fun DataScreen(
                         dataAmount = parts.firstOrNull()?.takeIf { it.isNotBlank() } ?: item.displayName,
                         validity = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: "30 Days",
                         price = priceVal,
-                        originalPrice = priceVal,
+                        originalPrice = null,
                         planCode = item.value,
                         gsubzServiceId = sId
                     )
@@ -143,6 +147,13 @@ fun DataScreen(
             }
         }
         basePlans + extraDynamicPlans
+    }
+
+    LaunchedEffect(filteredPlans) {
+        val current = selectedPlan
+        if (current != null) {
+            selectedPlan = filteredPlans.firstOrNull { it.id == current.id }
+        }
     }
 
     if (showNetworkPicker) {
@@ -297,8 +308,53 @@ fun DataScreen(
             }
 
             // Data Bundles List
+            if (filteredPlans.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = if (isLoadingPrices) {
+                                    "Fetching live ${selectedNetwork.displayName} data prices..."
+                                } else {
+                                    "Unable to load live ${selectedNetwork.displayName} data prices right now."
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!isLoadingPrices) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Button(
+                                    onClick = { refreshTrigger++ },
+                                    colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("Refresh Live Prices", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             items(filteredPlans) { plan ->
                 val isSelected = selectedPlan?.id == plan.id
+                val formattedPrice = if (plan.price % 1.0 == 0.0) {
+                    "₦%,.0f".format(plan.price)
+                } else {
+                    "₦%,.2f".format(plan.price)
+                }
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -361,19 +417,11 @@ fun DataScreen(
 
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                text = "₦%,.0f".format(plan.price),
+                                text = formattedPrice,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = VtuGreenPrimary
                             )
-                            if (plan.originalPrice != null) {
-                                Text(
-                                    text = "₦%,.0f".format(plan.originalPrice),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textDecoration = TextDecoration.LineThrough
-                                )
-                            }
                         }
                     }
                 }
@@ -382,10 +430,12 @@ fun DataScreen(
             // Checkout Button
             item {
                 Spacer(modifier = Modifier.height(8.dp))
-                val isValid = phoneNumber.length >= 10 && selectedPlan != null
+                val activePlan = selectedPlan
+                val isValid = phoneNumber.length >= 10 && activePlan != null && activePlan.price > 0.0
                 Button(
                     onClick = {
                         val plan = selectedPlan ?: return@Button
+                        if (plan.price <= 0.0) return@Button
                         val pending = PendingTransaction(
                             title = "${plan.network.displayName} Data ${plan.dataAmount}",
                             serviceType = "DATA",
@@ -406,9 +456,18 @@ fun DataScreen(
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary)
                 ) {
+                    val payLabel = if (activePlan != null && activePlan.price > 0.0) {
+                        val priceText = if (activePlan.price % 1.0 == 0.0) {
+                            "₦%,.0f".format(activePlan.price)
+                        } else {
+                            "₦%,.2f".format(activePlan.price)
+                        }
+                        "Authorize & Pay $priceText"
+                    } else {
+                        "Select a Bundle"
+                    }
                     Text(
-                        text = if (selectedPlan != null) "Authorize & Pay ₦%,.0f".format(selectedPlan?.price ?: 0.0)
-                        else "Select a Bundle",
+                        text = payLabel,
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )

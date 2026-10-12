@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
@@ -56,6 +57,8 @@ import io.github.jan.supabase.postgrest.query.Columns
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.rpc
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -122,7 +125,9 @@ class VtuRepository(
             "phone",
             "wallet_balance",
             "permanent_account_number",
-            "permanent_account_bank"
+            "permanent_account_bank",
+            "transaction_history",
+            "avatar_url"
         )
         val USERS_SAFE_COLUMNS_STANDARD = listOf(
             "id",
@@ -130,13 +135,16 @@ class VtuRepository(
             "phone",
             "wallet_balance",
             "permanent_account_number",
-            "permanent_account_bank"
+            "permanent_account_bank",
+            "transaction_history",
+            "avatar_url"
         )
         val USERS_SAFE_COLUMNS_MINIMAL = listOf(
             "id",
             "email",
             "phone",
-            "wallet_balance"
+            "wallet_balance",
+            "transaction_history"
         )
 
         // Supabase Auth keys
@@ -334,31 +342,143 @@ class VtuRepository(
             provider: String? = null,
             details: String? = null
         ): Boolean {
-            val s = service?.trim().orEmpty()
-            val t = title?.trim().orEmpty()
-            val p = provider?.trim().orEmpty()
-            val d = details?.trim().orEmpty()
-            return (s.isBlank() && t.isBlank()) ||
-                s.equals("WALLET_FUNDING", ignoreCase = true) ||
-                s.equals("FUNDING", ignoreCase = true) ||
-                s.equals("DEPOSIT", ignoreCase = true) ||
-                s.equals("CREDIT", ignoreCase = true) ||
-                t.equals("credit", ignoreCase = true) ||
-                t.equals("Wallet Funding", ignoreCase = true) ||
-                t.contains("Wallet Funding", ignoreCase = true) ||
-                t.contains("Wallet Top", ignoreCase = true) ||
-                t.contains("Flutterwave", ignoreCase = true) ||
-                p.equals("Flutterwave", ignoreCase = true) ||
-                d.contains("Flutterwave", ignoreCase = true)
+            return false
         }
 
         fun isWalletFundingEntity(tx: TransactionEntity): Boolean {
-            return isWalletFundingTransaction(
-                service = tx.serviceType,
-                title = tx.title,
-                provider = tx.provider,
-                details = tx.tokenOrDetails
-            )
+            return false
+        }
+
+        private fun isLegacyHardcodedFundingStub(
+            reference: String?,
+            title: String?,
+            service: String?,
+            provider: String?,
+            recipient: String?
+        ): Boolean {
+            val ref = reference?.trim().orEmpty()
+            val t = title?.trim().orEmpty()
+            val s = service?.trim().orEmpty()
+            val p = provider?.trim().orEmpty()
+            val r = recipient?.trim().orEmpty()
+            if (ref.startsWith("FLW-WEBHOOK", ignoreCase = true) ||
+                ref.startsWith("DEP-", ignoreCase = true) ||
+                ref.startsWith("TX-TRANSFER-", ignoreCase = true)
+            ) {
+                return true
+            }
+            if ((t.equals("credit", ignoreCase = true) || t.equals("Wallet Funding", ignoreCase = true)) &&
+                (s.isBlank() || s.equals("WALLET_FUNDING", ignoreCase = true)) &&
+                (p.isBlank() || p.equals("Flutterwave", ignoreCase = true)) &&
+                (r.isBlank() || r.contains("@"))
+            ) {
+                return true
+            }
+            return false
+        }
+
+        fun inferVtuServiceAndProvider(
+            rawServiceType: String?,
+            rawServiceId: String?,
+            rawProvider: String?,
+            rawTitle: String?,
+            rawPlan: String? = null
+        ): Triple<String, String, String> {
+            val st = rawServiceType?.trim().orEmpty()
+            val sid = rawServiceId?.trim().orEmpty()
+            val prov = rawProvider?.trim().orEmpty()
+            val title = rawTitle?.trim().orEmpty()
+            val plan = rawPlan?.trim().orEmpty()
+            val combined = "$st $sid $prov $title $plan".lowercase(Locale.US)
+
+            val resolvedProvider = when {
+                prov.isNotBlank() && !prov.equals("vtu", ignoreCase = true) && !prov.equals("gsubz", ignoreCase = true) -> {
+                    when {
+                        prov.equals("mtn", ignoreCase = true) -> "MTN"
+                        prov.equals("airtel", ignoreCase = true) -> "Airtel"
+                        prov.equals("glo", ignoreCase = true) -> "Glo"
+                        prov.equals("9mobile", ignoreCase = true) || prov.equals("etisalat", ignoreCase = true) -> "9mobile"
+                        prov.equals("dstv", ignoreCase = true) -> "DSTV"
+                        prov.equals("gotv", ignoreCase = true) -> "GOTV"
+                        prov.equals("startimes", ignoreCase = true) -> "Startimes"
+                        prov.equals("waec", ignoreCase = true) -> "WAEC"
+                        prov.equals("neco", ignoreCase = true) -> "NECO"
+                        prov.equals("nabteb", ignoreCase = true) -> "NABTEB"
+                        prov.equals("jamb", ignoreCase = true) -> "JAMB"
+                        else -> prov
+                    }
+                }
+                combined.contains("mtn") -> "MTN"
+                combined.contains("airtel") -> "Airtel"
+                combined.contains("glo") -> "Glo"
+                combined.contains("9mobile") || combined.contains("etisalat") -> "9mobile"
+                combined.contains("dstv") -> "DSTV"
+                combined.contains("gotv") -> "GOTV"
+                combined.contains("startimes") -> "Startimes"
+                combined.contains("showmax") -> "Showmax"
+                combined.contains("ikeja") || combined.contains("ikedc") -> "IKEDC"
+                combined.contains("eko") || combined.contains("ekedc") -> "EKEDC"
+                combined.contains("abuja") || combined.contains("aedc") -> "AEDC"
+                combined.contains("kano") || combined.contains("kedco") -> "KEDCO"
+                combined.contains("port") || combined.contains("phed") -> "PHED"
+                combined.contains("jos") || combined.contains("jed") -> "JED"
+                combined.contains("kaduna") || combined.contains("kaedco") -> "KAEDCO"
+                combined.contains("enugu") || combined.contains("eedc") -> "EEDC"
+                combined.contains("ibadan") || combined.contains("ibedc") -> "IBEDC"
+                combined.contains("benin") || combined.contains("bedc") -> "BEDC"
+                combined.contains("yola") || combined.contains("yedc") -> "YEDC"
+                combined.contains("aba") -> "ABA"
+                combined.contains("waec") -> "WAEC"
+                combined.contains("neco") -> "NECO"
+                combined.contains("nabteb") -> "NABTEB"
+                combined.contains("jamb") -> "JAMB"
+                else -> prov
+            }
+
+            val upperSt = st.uppercase(Locale.US)
+            val resolvedServiceType = when {
+                upperSt in setOf("AIRTIME", "DATA", "ELECTRICITY", "CABLE_TV", "EDUCATION") -> upperSt
+                combined.contains("data") || combined.contains("_sme") || combined.contains("_cg") ||
+                    combined.contains("gifting") || combined.contains("bundle") || combined.contains("corporate") ||
+                    (plan.isNotBlank() && !plan.equals("airtime", ignoreCase = true)) -> "DATA"
+                combined.contains("electric") || combined.contains("disco") || combined.contains("prepaid") ||
+                    combined.contains("postpaid") || combined.contains("ikedc") || combined.contains("ekedc") ||
+                    combined.contains("aedc") || combined.contains("kedco") || combined.contains("phed") ||
+                    combined.contains("jed") || combined.contains("kaedco") || combined.contains("eedc") ||
+                    combined.contains("ibedc") || combined.contains("bedc") -> "ELECTRICITY"
+                combined.contains("cable") || combined.contains("dstv") || combined.contains("gotv") ||
+                    combined.contains("startimes") || combined.contains("showmax") || combined.contains("tv") -> "CABLE_TV"
+                combined.contains("waec") || combined.contains("neco") || combined.contains("nabteb") ||
+                    combined.contains("jamb") || combined.contains("education") || combined.contains("exam") ||
+                    combined.contains("result") -> "EDUCATION"
+                combined.contains("airtime") || combined.contains("vtu") ||
+                    sid.lowercase(Locale.US) in setOf("mtn", "airtel", "glo", "9mobile", "etisalat") -> "AIRTIME"
+                upperSt.isNotBlank() -> upperSt
+                sid.isNotBlank() -> sid.uppercase(Locale.US)
+                else -> "AIRTIME"
+            }
+
+            val cleanServiceLabel = when (resolvedServiceType) {
+                "AIRTIME" -> "Airtime"
+                "DATA" -> "Data"
+                "ELECTRICITY" -> "Electricity"
+                "CABLE_TV" -> "Cable TV"
+                "EDUCATION" -> "Education"
+                else -> resolvedServiceType.replace('_', ' ').lowercase(Locale.US)
+                    .replaceFirstChar { it.titlecase(Locale.US) }
+            }
+
+            val resolvedTitle = when {
+                title.isNotBlank() &&
+                    !title.equals("debit", ignoreCase = true) &&
+                    !title.equals("vtu", ignoreCase = true) &&
+                    !title.equals("purchase", ignoreCase = true) &&
+                    title.lowercase(Locale.US) !in setOf("mtn", "airtel", "glo", "9mobile", "etisalat") -> title
+                resolvedProvider.isNotBlank() -> "$resolvedProvider $cleanServiceLabel".trim()
+                else -> cleanServiceLabel
+            }
+
+            return Triple(resolvedServiceType, resolvedProvider, resolvedTitle)
         }
 
         fun normalizeTransactionEntity(tx: TransactionEntity): TransactionEntity {
@@ -368,38 +488,39 @@ class VtuRepository(
                 service = tx.serviceType,
                 details = tx.tokenOrDetails
             )
-            val isFunding = isWalletFundingEntity(tx)
             val rawStatus = tx.status.trim().uppercase(Locale.US)
             val normalizedStatus = when {
                 isFailed -> "FAILED"
-                rawStatus in setOf("SUCCESS", "SUCCESSFUL", "COMPLETED", "OK", "CREDITED", "SETTLED", "APPROVED") -> "SUCCESSFUL"
-                rawStatus in setOf("PENDING", "PROCESSING", "QUEUED") -> "PENDING"
-                isFunding && rawStatus.isBlank() -> "SUCCESSFUL"
+                rawStatus in setOf("SUCCESS", "SUCCESSFUL", "COMPLETED", "OK", "DELIVERED", "CREDITED", "SETTLED", "APPROVED", "200") -> "SUCCESSFUL"
+                rawStatus in setOf("PENDING", "PROCESSING", "QUEUED", "INITIATED", "SUBMITTED") -> "PENDING"
                 rawStatus.isNotEmpty() -> rawStatus
-                else -> "PENDING"
+                else -> "SUCCESSFUL"
             }
             val parsedEpoch = if (tx.timestamp > 0L) {
                 tx.timestamp
             } else {
                 com.example.util.TransactionDateFormatter.parseUtcToEpochMillis(tx.createdAt) ?: 0L
             }
-            return if (isFunding) {
-                tx.copy(
-                    title = "credit",
-                    serviceType = "",
-                    provider = "",
-                    recipient = "",
-                    reference = "",
-                    tokenOrDetails = null,
-                    customerName = null,
-                    status = normalizedStatus,
-                    timestamp = parsedEpoch
-                )
-            } else if (normalizedStatus != tx.status || parsedEpoch != tx.timestamp) {
-                tx.copy(status = normalizedStatus, timestamp = parsedEpoch)
-            } else {
-                tx
-            }
+            val (serviceType, provider, title) = inferVtuServiceAndProvider(
+                rawServiceType = tx.serviceType,
+                rawServiceId = tx.serviceType,
+                rawProvider = tx.provider,
+                rawTitle = tx.title
+            )
+            val cleanRef = tx.reference
+                .replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
+                .trim()
+                .ifBlank {
+                    if (tx.id > 0L) "VTU-${tx.id}" else if (parsedEpoch > 0L) "VTU-${parsedEpoch / 1000L}" else "VTU-TX"
+                }
+            return tx.copy(
+                reference = cleanRef,
+                serviceType = serviceType,
+                provider = provider,
+                title = title,
+                status = normalizedStatus,
+                timestamp = parsedEpoch
+            )
         }
 
         fun mergeTransactionLists(
@@ -407,27 +528,23 @@ class VtuRepository(
             mainDbList: List<TransactionEntity>,
             dedicatedDbList: List<TransactionEntity> = emptyList()
         ): List<TransactionEntity> {
-            if (primaryList.isEmpty() && mainDbList.isEmpty() && dedicatedDbList.isEmpty()) {
+            val allItems = (primaryList + mainDbList + dedicatedDbList).filterNot {
+                isLegacyHardcodedFundingStub(
+                    reference = it.reference,
+                    title = it.title,
+                    service = it.serviceType,
+                    provider = it.provider,
+                    recipient = it.recipient
+                )
+            }
+            if (allItems.isEmpty()) {
                 return emptyList()
             }
             val mergedByKey = LinkedHashMap<String, TransactionEntity>()
-            val allItems = primaryList + mainDbList + dedicatedDbList
             for ((idx, rawTx) in allItems.withIndex()) {
                 val tx = normalizeTransactionEntity(rawTx)
-                val isFunding = isWalletFundingEntity(tx)
-                val matchingFundingKey = if (isFunding) {
-                    mergedByKey.entries.firstOrNull { (_, existing) ->
-                        isWalletFundingEntity(existing) &&
-                            kotlin.math.abs(existing.amount - tx.amount) < 0.01 &&
-                            (
-                                (existing.timestamp > 0L && tx.timestamp > 0L && kotlin.math.abs(existing.timestamp - tx.timestamp) <= 30 * 60 * 1000L) ||
-                                    (existing.createdAt.length >= 16 && tx.createdAt.length >= 16 && existing.createdAt.take(16) == tx.createdAt.take(16))
-                                )
-                    }?.key
-                } else null
-
-                val key = matchingFundingKey ?: when {
-                    tx.reference.isNotBlank() -> "ref:${tx.reference.trim().lowercase(Locale.US)}"
+                val key = when {
+                    tx.reference.isNotBlank() && tx.reference != "VTU-TX" -> "ref:${tx.reference.trim().lowercase(Locale.US)}"
                     tx.timestamp > 0L -> "ts:${tx.timestamp / 1000L}|${tx.title.trim().lowercase(Locale.US)}|${tx.amount}|${tx.recipient.trim()}"
                     tx.createdAt.isNotBlank() -> "time:${tx.createdAt.trim()}|${tx.title.trim().lowercase(Locale.US)}|${tx.amount}|${tx.recipient.trim()}"
                     else -> "id:${tx.id}|${tx.title.trim().lowercase(Locale.US)}|${tx.amount}|$idx"
@@ -452,53 +569,35 @@ class VtuRepository(
                     } else {
                         existing.status.ifBlank { tx.status }
                     }
-                    mergedByKey[key] = if (isFunding) {
-                        existing.copy(
-                            id = if (existing.id > 0L) existing.id else tx.id,
-                            userId = existing.userId.ifBlank { tx.userId },
-                            reference = "",
-                            serviceType = "",
-                            provider = "",
-                            recipient = "",
-                            amount = if (existing.amount > 0.0) existing.amount else tx.amount,
-                            discountOrCashback = if (existing.discountOrCashback > 0.0) existing.discountOrCashback else tx.discountOrCashback,
-                            status = mergedStatus,
-                            timestamp = if (existing.timestamp > 0L) existing.timestamp else tx.timestamp,
-                            tokenOrDetails = null,
-                            customerName = null,
-                            title = "credit",
-                            createdAt = existing.createdAt.ifBlank { tx.createdAt }
-                        )
-                    } else {
-                        existing.copy(
-                            id = if (existing.id > 0L) existing.id else tx.id,
-                            userId = existing.userId.ifBlank { tx.userId },
-                            reference = existing.reference.ifBlank { tx.reference },
-                            serviceType = existing.serviceType.ifBlank { tx.serviceType },
-                            provider = existing.provider.ifBlank { tx.provider },
-                            recipient = existing.recipient.ifBlank { tx.recipient },
-                            amount = if (existing.amount > 0.0) existing.amount else tx.amount,
-                            discountOrCashback = if (existing.discountOrCashback > 0.0) existing.discountOrCashback else tx.discountOrCashback,
-                            status = mergedStatus,
-                            timestamp = if (existing.timestamp > 0L) existing.timestamp else tx.timestamp,
-                            tokenOrDetails = existing.tokenOrDetails?.takeIf { it.isNotBlank() } ?: tx.tokenOrDetails,
-                            customerName = existing.customerName?.takeIf { it.isNotBlank() } ?: tx.customerName,
-                            title = existing.title.ifBlank { tx.title },
-                            createdAt = existing.createdAt.ifBlank { tx.createdAt }
-                        )
-                    }
+                    mergedByKey[key] = existing.copy(
+                        id = if (existing.id > 0L) existing.id else tx.id,
+                        userId = existing.userId.ifBlank { tx.userId },
+                        reference = existing.reference.ifBlank { tx.reference },
+                        serviceType = existing.serviceType.ifBlank { tx.serviceType },
+                        provider = existing.provider.ifBlank { tx.provider },
+                        recipient = existing.recipient.ifBlank { tx.recipient },
+                        amount = if (existing.amount > 0.0) existing.amount else tx.amount,
+                        discountOrCashback = if (existing.discountOrCashback > 0.0) existing.discountOrCashback else tx.discountOrCashback,
+                        status = mergedStatus,
+                        timestamp = if (existing.timestamp > 0L) existing.timestamp else tx.timestamp,
+                        tokenOrDetails = existing.tokenOrDetails?.takeIf { it.isNotBlank() } ?: tx.tokenOrDetails,
+                        customerName = existing.customerName?.takeIf { it.isNotBlank() } ?: tx.customerName,
+                        title = existing.title.ifBlank { tx.title },
+                        createdAt = existing.createdAt.ifBlank { tx.createdAt }
+                    )
                 }
             }
             val result = mergedByKey.values.toList()
             return if (result.any { it.timestamp > 0L }) {
                 result.sortedWith(
                     compareByDescending<TransactionEntity> { it.timestamp }
-                        .thenBy { it.id }
                 )
             } else {
                 result
             }
         }
+
+        const val MAX_TRANSACTION_HISTORY_RECEIPTS = 20
 
         private fun JsonObject.optJsonCleanString(vararg keys: String): String {
             for (k in keys) {
@@ -528,6 +627,45 @@ class VtuRepository(
             return 0.0
         }
 
+        private fun extractNestedJsonObject(obj: JsonObject, vararg keys: String): JsonObject? {
+            for (k in keys) {
+                val el = obj[k] ?: continue
+                try {
+                    return el.jsonObject
+                } catch (_: Throwable) {}
+            }
+            return null
+        }
+
+        private fun extractJsonArrayFromElement(element: JsonElement?): JsonArray? {
+            if (element == null) return null
+            try {
+                return element.jsonArray
+            } catch (_: Throwable) {}
+            try {
+                val str = element.jsonPrimitive.contentOrNull?.trim()
+                if (!str.isNullOrBlank()) {
+                    val parsed = Json.parseToJsonElement(str)
+                    return extractJsonArrayFromElement(parsed)
+                }
+            } catch (_: Throwable) {}
+            try {
+                val obj = element.jsonObject
+                val arrayKeys = listOf("transactions", "transaction_history", "history", "data", "items", "records", "results")
+                for (key in arrayKeys) {
+                    val child = obj[key] ?: continue
+                    val childArr = extractJsonArrayFromElement(child)
+                    if (childArr != null) return childArr
+                }
+                return JsonArray(listOf(obj))
+            } catch (_: Throwable) {}
+            return null
+        }
+
+        /**
+         * Parses `public.users.transaction_history` (updated by the `Gsubz-VTU-Services` Supabase Edge Function)
+         * into `RemoteTransactionDto` items.
+         */
         fun parseJsonArrayToRemoteTransactionDtos(
             rawJson: String?,
             defaultService: String? = null,
@@ -538,59 +676,188 @@ class VtuRepository(
             targetEmail: String? = null
         ): List<com.example.data.remote.RemoteTransactionDto> {
             val clean = rawJson?.trim().orEmpty()
-            if (clean.isBlank() || !clean.startsWith("[")) return emptyList()
+            if (clean.isBlank() || clean.equals("null", ignoreCase = true) || clean == "[]") return emptyList()
             return try {
-                val arr = Json.parseToJsonElement(clean).jsonArray
+                val rootElement = Json.parseToJsonElement(clean)
+                val arr = extractJsonArrayFromElement(rootElement) ?: return emptyList()
                 val list = ArrayList<com.example.data.remote.RemoteTransactionDto>(arr.size)
-                for (element in arr) {
+                for ((idx, element) in arr.withIndex()) {
                     val obj = try { element.jsonObject } catch (_: Throwable) { continue }
-                    val rowUserId = obj.optJsonCleanString("user_id", "uid")
+                    val nested = extractNestedJsonObject(obj, "gsubz_data", "data", "content", "response", "receipt", "transaction")
+                    val nestedTx = if (nested != null) extractNestedJsonObject(nested, "transactions", "transaction", "data") else null
+
+                    fun pickStr(vararg keys: String): String {
+                        val top = obj.optJsonCleanString(*keys)
+                        if (top.isNotBlank()) return top
+                        val n1 = nested?.optJsonCleanString(*keys).orEmpty()
+                        if (n1.isNotBlank()) return n1
+                        return nestedTx?.optJsonCleanString(*keys).orEmpty()
+                    }
+
+                    fun pickDouble(vararg keys: String): Double {
+                        val top = obj.optJsonDouble(*keys)
+                        if (top > 0.0) return top
+                        val n1 = nested?.optJsonDouble(*keys) ?: 0.0
+                        if (n1 > 0.0) return n1
+                        return nestedTx?.optJsonDouble(*keys) ?: 0.0
+                    }
+
+                    val rowUserId = pickStr("user_id", "userId", "uid")
                     if (!targetUserId.isNullOrBlank() && rowUserId.isNotBlank() && !rowUserId.equals(targetUserId.trim(), ignoreCase = true)) {
                         continue
                     }
-                    val rowEmail = obj.optJsonCleanString("email", "customer_email", "user_email")
+                    val rowEmail = pickStr("email", "customer_email", "user_email")
                     if (!targetEmail.isNullOrBlank() && rowUserId.isBlank() && rowEmail.isNotBlank() && !rowEmail.equals(targetEmail.trim(), ignoreCase = true)) {
                         continue
                     }
-                    val id = obj.optJsonCleanString("id", "tx_id", "transaction_id")
-                    val rawTitle = obj.optJsonCleanString("title", "description", "narration", "reason", "remark", "transaction_type", "type")
-                    val rawService = obj.optJsonCleanString("service", "service_type", "category", "type", "transaction_type")
-                    val rawProvider = obj.optJsonCleanString("provider", "network")
-                    val rawRecipient = obj.optJsonCleanString("recipient", "phone", "beneficiary", "account_number", "meter_number", "email", "customer_email", "user_email")
-                    val amount = obj.optJsonDouble("amount")
-                    val status = obj.optJsonCleanString("status", "state")
-                    val rawReference = obj.optJsonCleanString("reference", "tx_ref", "ref", "transaction_ref", "flw_ref", "order_ref")
-                    val createdAt = obj.optJsonCleanString("created_at", "timestamp", "date", "updated_at")
-                    val rawDetails = obj.optJsonCleanString("details", "token", "reason")
-                    val rawCustomerName = obj.optJsonCleanString("customer_name", "full_name", "name")
-                    val discount = obj.optJsonDouble("discount", "cashback")
 
-                    val isWebhookOrFundingRow = defaultService.equals("WALLET_FUNDING", ignoreCase = true) ||
-                        isWalletFundingTransaction(rawService, rawTitle, rawProvider, rawDetails) ||
-                        obj.containsKey("tx_ref")
+                    val id = pickStr("id", "tx_id", "transaction_id", "transactionID", "order_id", "orderId")
+                    val rawServiceType = pickStr("service_type", "serviceType", "category", "type", "transaction_type")
+                    val rawServiceId = pickStr("service_id", "serviceID", "service")
+                    val rawProvider = pickStr("provider", "network", "disco", "biller", "operator")
+                    val rawPlan = pickStr("plan_name", "planName", "plan", "package", "bouquet", "variation", "product_name")
+                    val rawTitle = pickStr("title", "product_name", "plan_name", "planName", "narration", "description")
+                    val rawRecipient = pickStr(
+                        "recipient",
+                        "phone",
+                        "phone_number",
+                        "phoneNumber",
+                        "beneficiary",
+                        "meter_number",
+                        "meterNumber",
+                        "smartcard_number",
+                        "smartcardNumber",
+                        "iuc",
+                        "iuc_number",
+                        "account_number",
+                        "customer_id",
+                        "unique_element"
+                    )
+                    val rawReference = pickStr(
+                        "reference",
+                        "tx_ref",
+                        "ref",
+                        "transaction_ref",
+                        "order_ref",
+                        "api_reference",
+                        "transactionID",
+                        "transaction_id",
+                        "request_id",
+                        "id"
+                    )
 
-                    val service = if (isWebhookOrFundingRow) "" else rawService
-                    val title = if (isWebhookOrFundingRow) "credit" else rawTitle
-                    val provider = if (isWebhookOrFundingRow) "" else rawProvider
-                    val recipient = if (isWebhookOrFundingRow) "" else rawRecipient
-                    val customerName = if (isWebhookOrFundingRow) "" else rawCustomerName
-                    val reference = if (isWebhookOrFundingRow) "" else rawReference
-                    val details = if (isWebhookOrFundingRow) "" else rawDetails
+                    if (isLegacyHardcodedFundingStub(
+                            reference = rawReference,
+                            title = rawTitle,
+                            service = rawServiceType.ifBlank { rawServiceId },
+                            provider = rawProvider,
+                            recipient = rawRecipient
+                        )
+                    ) {
+                        continue
+                    }
+
+                    val (resolvedServiceType, resolvedProvider, resolvedTitle) = inferVtuServiceAndProvider(
+                        rawServiceType = rawServiceType.ifBlank { defaultService.orEmpty() },
+                        rawServiceId = rawServiceId,
+                        rawProvider = rawProvider.ifBlank { defaultProvider.orEmpty() },
+                        rawTitle = rawTitle,
+                        rawPlan = rawPlan
+                    )
+
+                    val rawAmount = pickDouble("amount", "airtime_value", "airtimeValue", "face_value", "value", "plan_amount", "price")
+                    val rawCharged = pickDouble("charged", "amount_paid", "amountPaid", "total_charged", "debited", "cost", "final_amount")
+                    val rawCashback = pickDouble("cashback", "discount", "cashback_amount", "discount_amount", "commission")
+
+                    val effectiveAmount = if (rawAmount > 0.0) rawAmount else rawCharged
+                    val effectiveCashback = when {
+                        rawCashback > 0.0 -> rawCashback
+                        rawAmount > 0.0 && rawCharged > 0.0 && rawAmount > rawCharged -> {
+                            java.math.BigDecimal.valueOf(rawAmount)
+                                .subtract(java.math.BigDecimal.valueOf(rawCharged))
+                                .setScale(2, java.math.RoundingMode.HALF_UP)
+                                .toDouble()
+                        }
+                        else -> 0.0
+                    }
+                    val effectiveCharged = if (rawCharged > 0.0) {
+                        rawCharged
+                    } else {
+                        java.math.BigDecimal.valueOf(effectiveAmount)
+                            .subtract(java.math.BigDecimal.valueOf(effectiveCashback))
+                            .setScale(2, java.math.RoundingMode.HALF_UP)
+                            .toDouble()
+                            .coerceAtLeast(0.0)
+                    }
+
+                    val status = pickStr("status", "state", "transaction_status", "order_status")
+                    val createdAt = pickStr(
+                        "created_at",
+                        "createdAt",
+                        "timestamp",
+                        "date",
+                        "transaction_date",
+                        "time",
+                        "updated_at",
+                        "paid_at",
+                        "completed_at",
+                        "initiated_at",
+                        "datetime",
+                        "date_time",
+                        "tx_date",
+                        "logged_at"
+                    )
+                    val rawTokenOrPin = pickStr("token", "pin", "pins", "purchased_code", "meter_token", "electricity_token", "exam_pin")
+                    val rawDetailsText = pickStr("details", "token", "pin", "plan_name", "plan", "message", "response_description", "reason")
+                    val rawCustomerName = pickStr("customer_name", "customerName", "full_name", "fullname", "name", "verified_name")
+                        .ifBlank { defaultCustomerName.orEmpty() }
+
+                    val cleanRef = rawReference
+                        .replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
+                        .trim()
+                        .ifBlank {
+                            if (id.isNotBlank()) "VTU-$id" else "VTU-${idx + 1}"
+                        }
+
+                    val resolvedDetails = buildString {
+                        val baseDetail = when {
+                            rawTokenOrPin.isNotBlank() -> {
+                                if (resolvedServiceType == "ELECTRICITY" && !rawTokenOrPin.startsWith("Token", ignoreCase = true)) {
+                                    "Token: $rawTokenOrPin"
+                                } else {
+                                    rawTokenOrPin
+                                }
+                            }
+                            rawDetailsText.isNotBlank() -> rawDetailsText
+                            rawPlan.isNotBlank() -> rawPlan
+                            else -> ""
+                        }
+                        if (baseDetail.isNotBlank()) {
+                            append(baseDetail)
+                        }
+                        if (resolvedServiceType == "AIRTIME" &&
+                            !baseDetail.contains("[SERVER_RECEIPT:") &&
+                            (effectiveCashback > 0.0 || rawCharged > 0.0)
+                        ) {
+                            if (isNotEmpty()) append(" ")
+                            append("[SERVER_RECEIPT:airtime=$effectiveAmount,cashback=$effectiveCashback,charged=$effectiveCharged]")
+                        }
+                    }.trim()
 
                     list.add(
                         com.example.data.remote.RemoteTransactionDto(
-                            id = id.ifBlank { null },
-                            title = title.ifBlank { null },
-                            service = service.ifBlank { null },
-                            provider = provider.ifBlank { null },
-                            recipient = recipient.ifBlank { null },
-                            amount = amount,
-                            status = status.ifBlank { null },
-                            reference = reference.ifBlank { null },
+                            id = id.ifBlank { cleanRef },
+                            title = resolvedTitle.ifBlank { null },
+                            service = resolvedServiceType.ifBlank { null },
+                            provider = resolvedProvider.ifBlank { null },
+                            recipient = rawRecipient.ifBlank { defaultRecipient?.takeIf { !it.contains("@") } },
+                            amount = effectiveAmount,
+                            status = status.ifBlank { "SUCCESSFUL" },
+                            reference = cleanRef,
                             createdAt = createdAt.ifBlank { null },
-                            details = details.ifBlank { null },
-                            customerName = customerName.ifBlank { null },
-                            discount = discount
+                            details = resolvedDetails.ifBlank { null },
+                            customerName = rawCustomerName.ifBlank { null },
+                            discount = effectiveCashback
                         )
                     )
                 }
@@ -616,36 +883,47 @@ class VtuRepository(
             val rawCustomerName = dto.customerName?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
             val cleanDiscount = dto.discount ?: 0.0
 
-            val isWalletFunding = isWalletFundingTransaction(
-                service = rawService,
-                title = rawTitle,
-                provider = rawProvider,
-                details = rawDetails
+            val (cleanService, cleanProvider, cleanTitle) = inferVtuServiceAndProvider(
+                rawServiceType = rawService,
+                rawServiceId = rawService,
+                rawProvider = rawProvider,
+                rawTitle = rawTitle
             )
-
-            val cleanService = if (isWalletFunding) "" else rawService
-            val cleanTitle = if (isWalletFunding) "credit" else rawTitle
-            val cleanProvider = if (isWalletFunding) "" else rawProvider
-            val cleanRecipient = if (isWalletFunding) "" else rawRecipient
-            val cleanCustomerName = if (isWalletFunding) null else rawCustomerName
-            val cleanDetails = if (isWalletFunding) null else rawDetails
 
             val rawStatus = dto.status?.trim()?.uppercase(Locale.US).orEmpty()
             val cleanStatus = when {
-                isFailedOrRefundedTransaction(rawStatus, cleanTitle, cleanService, cleanDetails) -> "FAILED"
-                rawStatus in setOf("SUCCESS", "SUCCESSFUL", "COMPLETED", "OK", "CREDITED", "SETTLED", "APPROVED") -> "SUCCESSFUL"
-                rawStatus in setOf("PENDING", "PROCESSING", "QUEUED") -> "PENDING"
-                isWalletFunding && rawStatus.isBlank() -> "SUCCESSFUL"
+                isFailedOrRefundedTransaction(rawStatus, cleanTitle, cleanService, rawDetails) -> "FAILED"
+                rawStatus in setOf("SUCCESS", "SUCCESSFUL", "COMPLETED", "OK", "DELIVERED", "CREDITED", "SETTLED", "APPROVED", "200") -> "SUCCESSFUL"
+                rawStatus in setOf("PENDING", "PROCESSING", "QUEUED", "INITIATED", "SUBMITTED") -> "PENDING"
                 rawStatus.isNotEmpty() -> rawStatus
-                else -> "PENDING"
+                else -> "SUCCESSFUL"
             }
-            val rawRef = dto.reference?.trim().orEmpty()
-            val cleanRef = if (isWalletFunding) "" else rawRef
+
             val cleanCreatedAt = dto.createdAt?.trim().orEmpty()
-            val parsedEpochMillis = com.example.util.TransactionDateFormatter.parseUtcToEpochMillis(cleanCreatedAt)
-                ?: 0L
+            val numericCreatedAt = cleanCreatedAt.toLongOrNull()
+            val parsedEpochMillis = when {
+                numericCreatedAt != null && numericCreatedAt > 1_000_000_000_000L -> numericCreatedAt
+                numericCreatedAt != null && numericCreatedAt > 1_000_000_000L -> numericCreatedAt * 1000L
+                else -> com.example.util.TransactionDateFormatter.parseUtcToEpochMillis(cleanCreatedAt) ?: 0L
+            }
+            val resolvedCreatedAt = if (numericCreatedAt != null && parsedEpochMillis > 0L) {
+                java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                    timeZone = java.util.TimeZone.getTimeZone("UTC")
+                }.format(java.util.Date(parsedEpochMillis))
+            } else {
+                cleanCreatedAt
+            }
+
+            val rawRef = dto.reference?.trim().orEmpty()
+            val cleanRef = rawRef
+                .replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
+                .trim()
+                .ifBlank {
+                    dto.id?.trim()?.takeIf { it.isNotBlank() } ?: "VTU-${index + 1}"
+                }
+
             val stableId = dto.id?.toLongOrNull()
-                ?: dto.id?.takeIf { it.isNotBlank() }?.hashCode()?.toLong()?.let { kotlin.math.abs(it) + index + 1L }
+                ?: cleanRef.takeIf { it.isNotBlank() }?.hashCode()?.toLong()?.let { kotlin.math.abs(it) + index + 1L }
                 ?: (index + 1L)
 
             return TransactionEntity(
@@ -654,47 +932,56 @@ class VtuRepository(
                 reference = cleanRef,
                 serviceType = cleanService,
                 provider = cleanProvider,
-                recipient = cleanRecipient,
+                recipient = rawRecipient,
                 amount = cleanAmount,
                 discountOrCashback = cleanDiscount,
                 status = cleanStatus,
                 timestamp = parsedEpochMillis,
-                tokenOrDetails = cleanDetails,
-                customerName = cleanCustomerName,
+                tokenOrDetails = rawDetails,
+                customerName = rawCustomerName,
                 title = cleanTitle,
-                createdAt = cleanCreatedAt
+                createdAt = resolvedCreatedAt
             )
         }
 
-        fun buildWebhookFundingReceiptEntity(
+        fun parseUsersTransactionHistoryToEntities(
+            rawHistoryJson: String?,
             userId: String,
             userEmail: String = "",
             userFullName: String = "",
-            amount: Double,
-            reference: String = "",
-            timestampMillis: Long = System.currentTimeMillis()
-        ): TransactionEntity {
-            val cleanUid = userId.trim()
-            val createdIso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                timeZone = java.util.TimeZone.getTimeZone("UTC")
-            }.format(java.util.Date(timestampMillis))
-            val seed = reference.ifBlank { "WALLET_FUNDING_${cleanUid}_${amount}_${timestampMillis / 60000L}" }
-            return TransactionEntity(
-                id = kotlin.math.abs(seed.hashCode().toLong()) + (amount.toLong().coerceAtLeast(1L)),
-                userId = cleanUid,
-                reference = "",
-                serviceType = "",
-                provider = "",
-                recipient = "",
-                amount = amount,
-                discountOrCashback = 0.0,
-                status = "SUCCESSFUL",
-                timestamp = timestampMillis,
-                tokenOrDetails = null,
-                customerName = null,
-                title = "credit",
-                createdAt = createdIso
+            maxReceipts: Int = 20
+        ): List<TransactionEntity> {
+            val dtos = parseJsonArrayToRemoteTransactionDtos(
+                rawJson = rawHistoryJson,
+                defaultCustomerName = userFullName,
+                targetUserId = userId,
+                targetEmail = userEmail
             )
+            if (dtos.isEmpty()) return emptyList()
+            val mapped = dtos.mapIndexed { index, dto ->
+                mapRemoteTransactionDtoToEntity(
+                    dto = dto,
+                    userId = userId,
+                    index = index,
+                    userEmail = userEmail,
+                    userFullName = userFullName
+                )
+            }
+            // Determine if public.users.transaction_history was appended chronologically (oldest -> newest)
+            val nonZeroTimestamps = mapped.filter { it.timestamp > 0L }
+            val isAppendedChronologically = if (nonZeroTimestamps.size >= 2) {
+                nonZeroTimestamps.last().timestamp >= nonZeroTimestamps.first().timestamp
+            } else {
+                // PostgreSQL jsonb || jsonb appends new transactions at the end of the array
+                true
+            }
+            val orderedNewestFirst = if (isAppendedChronologically) {
+                mapped.asReversed()
+            } else {
+                mapped
+            }
+            val merged = mergeTransactionLists(orderedNewestFirst, emptyList(), emptyList())
+            return if (maxReceipts > 0) merged.take(maxReceipts) else merged
         }
     }
 
@@ -976,7 +1263,7 @@ class VtuRepository(
             )
         }
 
-        // Bridge live wallet updates from SharedWalletObserver (public.users.wallet_balance Realtime subscription)
+        // Bridge live wallet & transaction_history updates from SharedWalletObserver (public.users Realtime subscription)
         SharedWalletObserver.addListener { freshBalance ->
             val previousBalance = _walletBalance.value
             val balanceChanged = kotlin.math.abs(previousBalance - freshBalance) >= 0.005
@@ -985,55 +1272,49 @@ class VtuRepository(
             }
             val uid = _currentUser.value?.id?.trim()
             if (!uid.isNullOrBlank()) {
-                val hasReconciled = prefs.contains("key_reconciled_wallet_balance_$uid")
-                val lastReconciled = if (hasReconciled) {
-                    prefs.getFloat("key_reconciled_wallet_balance_$uid", freshBalance.toFloat()).toDouble()
-                } else {
-                    0.0
-                }
                 prefs.edit()
                     .putFloat("key_wallet_balance_$uid", freshBalance.toFloat())
                     .putBoolean("key_has_server_balance_$uid", true)
                     .apply()
-                val needsReconcile = !hasReconciled || kotlin.math.abs(freshBalance - lastReconciled) >= 0.5 || balanceChanged
                 repoScope.launch {
                     try {
                         userProfileDao.updateWalletBalance(uid, freshBalance)
                         userDedicatedDb(uid).userProfileDao().updateWalletBalance(uid, freshBalance)
                     } catch (_: Throwable) {}
-                    if (needsReconcile && !isPurchaseInFlight.get()) {
-                        refreshMyTransactions(20)
+                    if (balanceChanged && !isPurchaseInFlight.get()) {
+                        refreshMyTransactions(50)
                     }
                 }
             }
+        }
+
+        SharedWalletObserver.addHistoryListener { rawHistoryJson ->
+            val currentUser = _currentUser.value ?: return@addHistoryListener
+            val uid = currentUser.id.trim()
+            if (uid.isBlank() || uid == "usr_guest" || uid == "usr_default") return@addHistoryListener
+            applyUsersTransactionHistoryJson(
+                uid = uid,
+                userEmail = currentUser.email,
+                userFullName = currentUser.fullName,
+                rawHistoryJson = rawHistoryJson
+            )
         }
 
         initForumTopics()
         secureApiKeyStorage.removeLegacySharedEntries()
     }
 
-    private val reconcileMutex = kotlinx.coroutines.sync.Mutex()
     private val isPurchaseInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    // Per-user transaction streams backed by Supabase RPC get_my_transactions ({"p_limit": 20}) and local persistence
+    // Per-user transaction streams backed strictly by the 20 last receipts in public.users.transaction_history
     @OptIn(ExperimentalCoroutinesApi::class)
     val allTransactions: Flow<List<TransactionEntity>> = _currentUser.flatMapLatest { user ->
         val uid = user?.id?.trim().orEmpty()
         if (uid.isBlank() || uid == "usr_guest" || uid == "usr_default") {
             kotlinx.coroutines.flow.flowOf(emptyList())
         } else {
-            val dedicatedFlow = try {
-                userDedicatedDb(uid).transactionDao().getAllTransactionsForUser(uid)
-            } catch (_: Throwable) {
-                kotlinx.coroutines.flow.flowOf(emptyList())
-            }
-            kotlinx.coroutines.flow.combine(
-                _myTransactions,
-                transactionDao.getAllTransactionsForUser(uid),
-                dedicatedFlow
-            ) { memoryList, mainDbList, dedicatedDbList ->
-                val scopedMemory = memoryList.filter { it.userId.isBlank() || it.userId == uid }
-                mergeTransactionLists(scopedMemory, mainDbList, dedicatedDbList)
+            _myTransactions.map { memoryList ->
+                memoryList.filter { it.userId.isBlank() || it.userId == uid }.take(20)
             }
         }
     }
@@ -1044,18 +1325,8 @@ class VtuRepository(
         if (uid.isBlank() || uid == "usr_guest" || uid == "usr_default") {
             kotlinx.coroutines.flow.flowOf(emptyList())
         } else {
-            val dedicatedFlow = try {
-                userDedicatedDb(uid).transactionDao().getAllTransactionsForUser(uid)
-            } catch (_: Throwable) {
-                kotlinx.coroutines.flow.flowOf(emptyList())
-            }
-            kotlinx.coroutines.flow.combine(
-                _myTransactions,
-                transactionDao.getAllTransactionsForUser(uid),
-                dedicatedFlow
-            ) { memoryList, mainDbList, dedicatedDbList ->
-                val scopedMemory = memoryList.filter { it.userId.isBlank() || it.userId == uid }
-                mergeTransactionLists(scopedMemory, mainDbList, dedicatedDbList).take(20)
+            _myTransactions.map { memoryList ->
+                memoryList.filter { it.userId.isBlank() || it.userId == uid }.take(20)
             }
         }
     }
@@ -1066,322 +1337,79 @@ class VtuRepository(
         beneficiaryDao.getAllBeneficiariesForUser(uid)
     }
 
-    private suspend fun loadLocalTransactionsForUser(uid: String): List<TransactionEntity> {
-        if (uid.isBlank() || uid == "usr_guest" || uid == "usr_default") return emptyList()
-        val mainList = try {
-            transactionDao.getTransactionsListForUser(uid)
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val dedicatedList = try {
-            userDedicatedDb(uid).transactionDao().getTransactionsListForUser(uid)
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        val merged = mergeTransactionLists(emptyList(), mainList, dedicatedList)
-        val keptIds = merged.map { it.id }.toSet()
-        // Heal any legacy status or legacy Wallet Funding metadata and prune duplicate local rows
-        for (old in mainList) {
-            if (old.id !in keptIds) {
-                try { transactionDao.deleteTransactionById(old.id) } catch (_: Throwable) {}
-            }
-        }
-        for (old in dedicatedList) {
-            if (old.id !in keptIds) {
-                try { userDedicatedDb(uid).transactionDao().deleteTransactionById(old.id) } catch (_: Throwable) {}
-            }
-        }
-        for (item in merged) {
-            val origMain = mainList.firstOrNull { it.id == item.id }
-            if (origMain != null && origMain != item) {
-                try { transactionDao.insertTransaction(item) } catch (_: Throwable) {}
-            }
-            val origDed = dedicatedList.firstOrNull { it.id == item.id }
-            if (origDed != null && origDed != item) {
-                try { userDedicatedDb(uid).transactionDao().insertTransaction(item) } catch (_: Throwable) {}
-            }
-        }
-        return merged
-    }
-
-    private suspend fun fetchMyTransactionsViaSupabaseClient(
-        uid: String,
-        accessToken: String,
-        limit: Int
-    ): List<com.example.data.remote.RemoteTransactionDto> {
-        val collected = mutableListOf<com.example.data.remote.RemoteTransactionDto>()
-        val currentEmail = _currentUser.value?.email?.trim().orEmpty()
-        val currentFullName = _currentUser.value?.fullName?.trim().orEmpty()
-        val client = SupabaseInstance.client
-        if (client != null) {
+    private suspend fun purgeLegacyLocalTransactions(uid: String) {
+        try {
+            transactionDao.clearAll()
+        } catch (_: Throwable) {}
+        if (uid.isNotBlank() && uid != "usr_guest" && uid != "usr_default") {
             try {
-                val params = buildJsonObject {
-                    put("p_limit", JsonPrimitive(limit))
-                }
-                val rawRpc = client.postgrest.rpc("get_my_transactions", params).data
-                val parsedRpc = parseJsonArrayToRemoteTransactionDtos(
-                    rawJson = rawRpc,
-                    defaultRecipient = currentEmail,
-                    defaultCustomerName = currentFullName,
-                    targetUserId = uid,
-                    targetEmail = currentEmail
-                )
-                if (parsedRpc.isNotEmpty()) {
-                    collected.addAll(parsedRpc)
-                }
-            } catch (_: Throwable) {}
-
-            try {
-                val rawTx = client.from("transactions").select {
-                    filter { eq("user_id", uid) }
-                    limit(limit.toLong())
-                }.data
-                val parsedTx = parseJsonArrayToRemoteTransactionDtos(
-                    rawJson = rawTx,
-                    defaultService = "WALLET_FUNDING",
-                    defaultProvider = "Flutterwave",
-                    defaultRecipient = currentEmail,
-                    defaultCustomerName = currentFullName,
-                    targetUserId = uid,
-                    targetEmail = currentEmail
-                )
-                if (parsedTx.isNotEmpty()) {
-                    collected.addAll(parsedTx)
-                }
+                userDedicatedDb(uid).transactionDao().clearAllForUser(uid)
             } catch (_: Throwable) {}
         }
-
-        // Query REST endpoint with the authenticated user Bearer token if not already collected above
-        if (accessToken.isNotBlank() && collected.isEmpty()) {
-            val baseUrl = authClient.supabaseUrl.trimEnd('/')
-            val anonKey = authClient.supabaseAnonKey
-            if (baseUrl.isNotBlank() && anonKey.isNotBlank() && !baseUrl.contains("your-project")) {
-                val bearer = if (accessToken.startsWith("Bearer ", ignoreCase = true)) accessToken else "Bearer $accessToken"
-                val http = OkHttpClient.Builder()
-                    .connectTimeout(7, TimeUnit.SECONDS)
-                    .readTimeout(7, TimeUnit.SECONDS)
-                    .build()
-                val txEndpoints = listOf(
-                    "$baseUrl/rest/v1/transactions?user_id=eq.$uid&order=created_at.desc&limit=$limit" to true,
-                    "$baseUrl/rest/v1/transactions?user_id=eq.$uid&limit=$limit" to true
-                )
-                for ((url, isFlutterwaveWebhookTable) in txEndpoints) {
-                    try {
-                        val req = Request.Builder()
-                            .url(url)
-                            .addHeader("apikey", anonKey)
-                            .addHeader("Authorization", bearer)
-                            .get()
-                            .build()
-                        val succeeded = http.newCall(req).execute().use { res ->
-                            if (res.isSuccessful) {
-                                val body = res.body?.string().orEmpty()
-                                val parsed = parseJsonArrayToRemoteTransactionDtos(
-                                    rawJson = body,
-                                    defaultService = if (isFlutterwaveWebhookTable) "WALLET_FUNDING" else null,
-                                    defaultProvider = if (isFlutterwaveWebhookTable) "Flutterwave" else null,
-                                    defaultRecipient = currentEmail,
-                                    defaultCustomerName = currentFullName,
-                                    targetUserId = uid,
-                                    targetEmail = currentEmail
-                                )
-                                if (parsed.isNotEmpty()) {
-                                    collected.addAll(parsed)
-                                }
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        if (succeeded) break
-                    } catch (_: Throwable) {}
-                }
-            }
-        }
-        return collected
     }
 
-    private suspend fun reconcileFlutterwaveWebhookTransactions(
-        uid: String,
-        userEmail: String,
-        userFullName: String,
-        currentMerged: List<TransactionEntity>,
-        rpcWalletDtos: List<com.example.data.remote.RemoteTransactionDto>
-    ): List<TransactionEntity> = reconcileMutex.withLock {
-        var updatedList = currentMerged
-        val cleanEmail = userEmail.trim().ifBlank {
-            prefs.getString("key_user_email_$uid", null) ?: prefs.getString(KEY_USER_EMAIL, null) ?: ""
+    private fun isTransactionDeletedByUser(uid: String, tx: TransactionEntity): Boolean {
+        if (uid.isBlank()) return false
+        val deletedIds = prefs.getStringSet("key_deleted_tx_ids_$uid", emptySet()) ?: emptySet()
+        if (tx.id.toString() in deletedIds) return true
+        val ref = tx.reference.trim()
+        if (ref.isNotBlank()) {
+            if (prefs.getBoolean("key_deleted_ref_${uid}_$ref", false)) return true
+            val deletedRefs = prefs.getStringSet("key_deleted_tx_refs_$uid", emptySet()) ?: emptySet()
+            if (ref.lowercase(Locale.US) in deletedRefs) return true
         }
-        val cleanFullName = userFullName.trim().ifBlank {
-            prefs.getString("key_user_name_$uid", null) ?: ""
-        }
+        val clearedBeforeTs = prefs.getLong("key_cleared_tx_before_ts_$uid", 0L)
+        if (clearedBeforeTs > 0L && tx.timestamp in 1..clearedBeforeTs) return true
+        return false
+    }
 
-        // 1. Ensure the ₦102 Flutterwave funding for danielkaladathompson@gmail.com is always present and synced
-        val isTargetFlutterwaveAccount = cleanEmail.equals("danielkaladathompson@gmail.com", ignoreCase = true)
-        val has102Funding = updatedList.any { tx ->
-            isWalletFundingEntity(tx) &&
-                kotlin.math.abs(tx.amount - 102.0) < 0.01
-        }
-        val wasDeletedByUser = prefs.getBoolean("key_deleted_flw_102_$uid", false)
-        if (isTargetFlutterwaveAccount && !has102Funding && !wasDeletedByUser) {
-            val flw102Ref = "FLW-WEBHOOK-102-${uid.take(8).uppercase(Locale.US)}"
-            val savedTs = prefs.getLong("key_flw_102_ts_$uid", 0L).let { existingTs ->
-                if (existingTs > 0L) existingTs else {
-                    val now = System.currentTimeMillis()
-                    prefs.edit().putLong("key_flw_102_ts_$uid", now).apply()
-                    now
-                }
-            }
-            val flw102Tx = buildWebhookFundingReceiptEntity(
+    private fun applyUsersTransactionHistoryJson(
+        uid: String,
+        rawHistoryJson: String?,
+        userEmail: String = _currentUser.value?.email?.trim().orEmpty(),
+        userFullName: String = _currentUser.value?.fullName?.trim().orEmpty(),
+        limit: Int = 20
+    ): List<TransactionEntity> {
+        val normalizedRaw = rawHistoryJson?.trim().orEmpty()
+        val parsed = if (normalizedRaw.isBlank() || normalizedRaw.equals("null", ignoreCase = true) || normalizedRaw == "[]") {
+            emptyList()
+        } else {
+            parseUsersTransactionHistoryToEntities(
+                rawHistoryJson = normalizedRaw,
                 userId = uid,
-                userEmail = cleanEmail,
-                userFullName = cleanFullName,
-                amount = 102.0,
-                reference = flw102Ref,
-                timestampMillis = savedTs
+                userEmail = userEmail,
+                userFullName = userFullName,
+                maxReceipts = 20
             )
-            updatedList = mergeTransactionLists(listOf(flw102Tx), updatedList, emptyList())
         }
+        val filtered = parsed
+            .filterNot { isTransactionDeletedByUser(uid, it) }
+            .take(limit.coerceIn(1, 20))
 
-        // 2. Universal Flutterwave webhook funding reconciliation for ALL users (danielkaladathompson@gmail.com & all other users):
-        // Whenever a user funds their wallet via Flutterwave (Dynamic Account, Permanent Account, or Checkout),
-        // flutterwave-webhook updates public.users.wallet_balance. Even if RLS on public.transactions hides the webhook row,
-        // any new funding increase or unrecorded initial funding is automatically converted into a Wallet Funding receipt.
-        val hasConfirmedServerBalance = SharedWalletObserver.liveBalance.value != null ||
-            prefs.getBoolean("key_has_server_balance_$uid", false) ||
-            prefs.contains("key_wallet_balance_$uid")
-        val liveServerBalance = SharedWalletObserver.liveBalance.value
-            ?: if (prefs.contains("key_wallet_balance_$uid")) {
-                prefs.getFloat("key_wallet_balance_$uid", _walletBalance.value.toFloat()).toDouble()
-            } else {
-                _walletBalance.value
-            }
+        prefs.edit()
+            .putString("key_users_tx_history_json_$uid", normalizedRaw.ifBlank { "[]" })
+            .apply()
 
-        if (hasConfirmedServerBalance && !isPurchaseInFlight.get()) {
-            val hasReconciledBefore = prefs.contains("key_reconciled_wallet_balance_$uid")
-            if (hasReconciledBefore) {
-                val lastReconciled = prefs.getFloat("key_reconciled_wallet_balance_$uid", liveServerBalance.toFloat()).toDouble()
-                if (liveServerBalance < lastReconciled - 0.005) {
-                    // User spent balance on a VTU purchase; update reconciled baseline
-                    prefs.edit().putFloat("key_reconciled_wallet_balance_$uid", liveServerBalance.toFloat()).apply()
-                } else if (liveServerBalance - lastReconciled >= 1.0) {
-                    val creditDelta = java.math.BigDecimal.valueOf(liveServerBalance)
-                        .subtract(java.math.BigDecimal.valueOf(lastReconciled))
-                        .setScale(2, java.math.RoundingMode.HALF_UP)
-                        .toDouble()
-                    val now = System.currentTimeMillis()
-                    val matchingExisting = updatedList.firstOrNull { tx ->
-                        isWalletFundingEntity(tx) &&
-                            tx.status.equals("SUCCESSFUL", ignoreCase = true) &&
-                            kotlin.math.abs(tx.amount - creditDelta) < 0.01 &&
-                            !prefs.getBoolean("key_reconciled_funding_${uid}_${tx.amount}_${tx.timestamp / 60000L}", false)
-                    }
-                    val isRecentFailedRefund = updatedList.any { tx ->
-                        !isWalletFundingEntity(tx) &&
-                            tx.status.equals("FAILED", ignoreCase = true) &&
-                            kotlin.math.abs(tx.amount - creditDelta) < 0.01 &&
-                            tx.timestamp > 0L && kotlin.math.abs(now - tx.timestamp) <= 2 * 60 * 1000L
-                    }
-                    if (matchingExisting != null) {
-                        prefs.edit()
-                            .putBoolean("key_reconciled_funding_${uid}_${matchingExisting.amount}_${matchingExisting.timestamp / 60000L}", true)
-                            .putFloat("key_reconciled_wallet_balance_$uid", liveServerBalance.toFloat())
-                            .apply()
-                    } else if (!isRecentFailedRefund) {
-                        val txSeq = prefs.getInt("key_flw_webhook_seq_$uid", 0) + 1
-                        val ref = "FLW-WEBHOOK-${creditDelta.toLong()}-${now / 1000L}-$txSeq"
-                        val webhookTx = buildWebhookFundingReceiptEntity(
-                            userId = uid,
-                            userEmail = cleanEmail,
-                            userFullName = cleanFullName,
-                            amount = creditDelta,
-                            reference = ref,
-                            timestampMillis = now
-                        )
-                        updatedList = mergeTransactionLists(listOf(webhookTx), updatedList, emptyList())
-                        prefs.edit()
-                            .putInt("key_flw_webhook_seq_$uid", txSeq)
-                            .putBoolean("key_reconciled_funding_${uid}_${webhookTx.amount}_${webhookTx.timestamp / 60000L}", true)
-                            .putFloat("key_reconciled_wallet_balance_$uid", liveServerBalance.toFloat())
-                            .apply()
-                    } else {
-                        prefs.edit().putFloat("key_reconciled_wallet_balance_$uid", liveServerBalance.toFloat()).apply()
-                    }
-                }
-            } else {
-                // First reconciliation for this user on this device
-                val existingFundingTxs = updatedList.filter {
-                    isWalletFundingEntity(it) &&
-                        it.status.equals("SUCCESSFUL", ignoreCase = true)
-                }
-                val totalRecordedPurchases = updatedList.filter {
-                    !isWalletFundingEntity(it) &&
-                        (it.status.equals("SUCCESSFUL", ignoreCase = true) || it.status.equals("PENDING", ignoreCase = true))
-                }.sumOf { it.amount }
-
-                val unrecordedAmount = if (existingFundingTxs.isEmpty() && liveServerBalance >= 1.0) {
-                    java.math.BigDecimal.valueOf(liveServerBalance + totalRecordedPurchases)
-                        .setScale(2, java.math.RoundingMode.HALF_UP)
-                        .toDouble()
-                } else {
-                    0.0
-                }
-
-                val ed = prefs.edit()
-                for (tx in existingFundingTxs) {
-                    ed.putBoolean("key_reconciled_funding_${uid}_${tx.amount}_${tx.timestamp / 60000L}", true)
-                }
-                if (unrecordedAmount >= 1.0) {
-                    val initRef = "FLW-WEBHOOK-INIT-${unrecordedAmount.toLong()}-${uid.take(8).uppercase(Locale.US)}"
-                    val wasDeletedInit = prefs.getBoolean("key_deleted_ref_${uid}_$initRef", false)
-                    if (!wasDeletedInit) {
-                        val savedInitTs = prefs.getLong("key_flw_init_ts_${uid}_$initRef", 0L).let { existingTs ->
-                            if (existingTs > 0L) existingTs else {
-                                val now = System.currentTimeMillis()
-                                ed.putLong("key_flw_init_ts_${uid}_$initRef", now)
-                                now
-                            }
-                        }
-                        val initWebhookTx = buildWebhookFundingReceiptEntity(
-                            userId = uid,
-                            userEmail = cleanEmail,
-                            userFullName = cleanFullName,
-                            amount = unrecordedAmount,
-                            reference = initRef,
-                            timestampMillis = savedInitTs
-                        )
-                        updatedList = mergeTransactionLists(listOf(initWebhookTx), updatedList, emptyList())
-                        ed.putBoolean("key_reconciled_funding_${uid}_${initWebhookTx.amount}_${initWebhookTx.timestamp / 60000L}", true)
-                    }
-                }
-                ed.putFloat("key_reconciled_wallet_balance_$uid", liveServerBalance.toFloat()).apply()
-            }
+        if (_currentUser.value?.id?.trim() == uid && _isLoggedIn.value) {
+            _myTransactions.value = filtered
         }
-
-        // 3. Mirror any Wallet Funding rows (from public.transactions or webhook reconciliation) into public.wallet_transactions
-        // in the clean Screenshot 2 format so that get_my_transactions RPC returns them on all sessions and devices for every user.
-        for (tx in updatedList) {
-            if (isWalletFundingEntity(tx)) {
-                val alreadyInRpcClean = rpcWalletDtos.any { dto ->
-                    isWalletFundingTransaction(dto.service, dto.title, dto.provider, dto.details) &&
-                        kotlin.math.abs((dto.amount ?: 0.0) - tx.amount) < 0.01 &&
-                        dto.title == "credit" &&
-                        dto.service.isNullOrBlank() &&
-                        dto.provider.isNullOrBlank() &&
-                        dto.recipient.isNullOrBlank() &&
-                        dto.reference.isNullOrBlank() &&
-                        dto.details.isNullOrBlank()
-                }
-                if (!alreadyInRpcClean) {
-                    repoScope.launch {
-                        syncTransactionToSupabase(tx)
-                    }
-                }
-            }
-        }
-        return@withLock updatedList
+        return filtered
     }
 
+    private fun extractRawHistoryStringFromJsonObject(row: JsonObject?): String? {
+        if (row == null || !row.containsKey("transaction_history")) return null
+        val element = row["transaction_history"] ?: return "[]"
+        return try {
+            element.jsonPrimitive.contentOrNull ?: element.toString()
+        } catch (_: Throwable) {
+            element.toString()
+        }
+    }
+
+    /**
+     * Fetches the 20 last receipts from `public.users.transaction_history` (updated by the `Gsubz-VTU-Services`
+     * Edge Function URL whenever a user purchases any VTU service) directly from `public.users`.
+     */
     suspend fun refreshMyTransactions(limit: Int = 20): Result<List<TransactionEntity>> = withContext(Dispatchers.IO) {
         val currentUser = _currentUser.value
         val uid = currentUser?.id?.trim().orEmpty()
@@ -1392,145 +1420,158 @@ class VtuRepository(
         val userEmail = currentUser?.email?.trim().orEmpty()
         val userFullName = currentUser?.fullName?.trim().orEmpty()
 
-        // Preload local transactions immediately so UI never loses history while syncing
-        val existingLocal = loadLocalTransactionsForUser(uid)
-        if (_myTransactions.value.isEmpty() && existingLocal.isNotEmpty()) {
-            _myTransactions.value = existingLocal.take(limit.coerceAtLeast(20))
-        }
+        // Ensure no hardcoded or local Room DB transactions ever pollute the user's history
+        purgeLegacyLocalTransactions(uid)
+        com.example.ui.components.ProfilePictureStore.ensureSupabaseAuthHydrated(context)
 
-        var token = resolveValidAccessToken()
-        var remoteDtos: List<com.example.data.remote.RemoteTransactionDto>? = null
+        var rawHistoryFromServer: String? = null
+        var serverResponded = false
         var lastError: Throwable? = null
 
-        if (token.isNotBlank()) {
-            val firstAttempt = transactionPinClient.getMyTransactions(accessToken = token, limit = limit)
-            if (firstAttempt.isSuccess) {
-                remoteDtos = firstAttempt.getOrNull()
-            } else {
-                lastError = firstAttempt.exceptionOrNull()
-                val refreshedToken = resolveValidAccessToken(forceRefresh = true)
-                if (refreshedToken.isNotBlank() && refreshedToken != token) {
-                    token = refreshedToken
-                    val retryAttempt = transactionPinClient.getMyTransactions(accessToken = token, limit = limit)
-                    if (retryAttempt.isSuccess) {
-                        remoteDtos = retryAttempt.getOrNull()
-                        lastError = null
-                    } else {
-                        lastError = retryAttempt.exceptionOrNull()
+        // 1. Query public.users.transaction_history via Supabase Postgrest client
+        val client = SupabaseInstance.client
+        if (client != null) {
+            try {
+                var data = client.from("users").select(Columns.list("transaction_history", "wallet_balance")) {
+                    filter { eq("id", uid) }
+                    limit(1)
+                }.decodeSingleOrNull<JsonObject>()
+                if (data == null && userEmail.isNotBlank()) {
+                    data = try {
+                        client.from("users").select(Columns.list("transaction_history", "wallet_balance")) {
+                            filter { eq("email", userEmail) }
+                            limit(1)
+                        }.decodeSingleOrNull<JsonObject>()
+                    } catch (_: Throwable) { null }
+                }
+                if (data != null) {
+                    serverResponded = true
+                    rawHistoryFromServer = extractRawHistoryStringFromJsonObject(data) ?: "[]"
+                    val bal = data["wallet_balance"]?.jsonPrimitive?.doubleOrNull
+                        ?: data["wallet_balance"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
+                        ?: data["wallet_balance"]?.toString()?.trim('"')?.toDoubleOrNull()
+                    if (bal != null && bal >= 0.0) {
+                        setWalletBalance(bal)
                     }
                 }
+            } catch (e: Throwable) {
+                lastError = e
             }
-        } else {
-            lastError = IllegalStateException("Missing user access token")
         }
 
-        val supplementalDtos = fetchMyTransactionsViaSupabaseClient(uid, token, limit)
-        val combinedRemoteDtos = when {
-            !remoteDtos.isNullOrEmpty() && supplementalDtos.isNotEmpty() -> remoteDtos + supplementalDtos
-            !remoteDtos.isNullOrEmpty() -> remoteDtos
-            supplementalDtos.isNotEmpty() -> supplementalDtos
-            else -> remoteDtos
-        }
-
-        if (combinedRemoteDtos != null) {
-            val mappedRemote = combinedRemoteDtos.mapIndexed { index, dto ->
-                mapRemoteTransactionDtoToEntity(
-                    dto = dto,
-                    userId = uid,
-                    index = index,
-                    userEmail = userEmail,
-                    userFullName = userFullName
+        // 2. Direct HTTP GET to /rest/v1/users?select=transaction_history,wallet_balance&id=eq.<uid>
+        if (!serverResponded) {
+            var token = resolveValidAccessToken()
+            val baseUrl = authClient.supabaseUrl.trimEnd('/')
+            val anonKey = authClient.supabaseAnonKey
+            if (baseUrl.isNotBlank() && anonKey.isNotBlank() && !baseUrl.contains("your-project")) {
+                val http = com.example.util.SecurityVault.createGatewayOkHttpClient(
+                    connectTimeoutSec = 8,
+                    readTimeoutSec = 8,
+                    writeTimeoutSec = 8
                 )
+
+                suspend fun queryRestWithFilter(filterParam: String, activeToken: String): Boolean {
+                    val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) {
+                        activeToken
+                    } else if (activeToken.isNotBlank()) {
+                        "Bearer $activeToken"
+                    } else {
+                        "Bearer $anonKey"
+                    }
+                    val req = Request.Builder()
+                        .url("$baseUrl/rest/v1/users?select=transaction_history,wallet_balance&$filterParam&limit=1")
+                        .addHeader("apikey", anonKey)
+                        .addHeader("Authorization", bearer)
+                        .get()
+                        .build()
+                    return http.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            val bodyStr = res.body?.string().orEmpty()
+                            val arr = JSONArray(bodyStr.ifBlank { "[]" })
+                            if (arr.length() > 0) {
+                                serverResponded = true
+                                val obj = arr.getJSONObject(0)
+                                if (obj.has("wallet_balance") && !obj.isNull("wallet_balance")) {
+                                    val bal = obj.optDouble("wallet_balance", -1.0)
+                                    if (bal >= 0.0) {
+                                        setWalletBalance(bal)
+                                    }
+                                }
+                                rawHistoryFromServer = if (obj.has("transaction_history") && !obj.isNull("transaction_history")) {
+                                    obj.opt("transaction_history")?.toString() ?: "[]"
+                                } else {
+                                    "[]"
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                }
+
+                try {
+                    var ok = queryRestWithFilter("id=eq.$uid", token)
+                    if (!ok) {
+                        val refreshed = resolveValidAccessToken(forceRefresh = true)
+                        if (refreshed.isNotBlank() && refreshed != token) {
+                            token = refreshed
+                            ok = queryRestWithFilter("id=eq.$uid", token)
+                        }
+                    }
+                    if (!ok && userEmail.isNotBlank()) {
+                        val encodedEmail = java.net.URLEncoder.encode(userEmail, "UTF-8")
+                        queryRestWithFilter("email=eq.$encodedEmail", token)
+                    }
+                } catch (e: Throwable) {
+                    lastError = e
+                }
             }
-            val initialMerged = mergeTransactionLists(mappedRemote, existingLocal, emptyList())
-            val reconciled = reconcileFlutterwaveWebhookTransactions(
+        }
+
+        if (serverResponded) {
+            val historyJson = rawHistoryFromServer ?: "[]"
+            SharedWalletObserver.updateTransactionHistory(historyJson)
+            val resultEntities = applyUsersTransactionHistoryJson(
                 uid = uid,
                 userEmail = userEmail,
                 userFullName = userFullName,
-                currentMerged = initialMerged,
-                rpcWalletDtos = remoteDtos.orEmpty()
-            ).take(limit.coerceAtLeast(20))
-
-            if (_currentUser.value?.id?.trim() == uid && _isLoggedIn.value) {
-                _myTransactions.value = reconciled
-                if (reconciled.isNotEmpty()) {
-                    try {
-                        for (item in reconciled) {
-                            transactionDao.insertTransaction(item)
-                            userDedicatedDb(uid).transactionDao().insertTransaction(item)
-                        }
-                    } catch (_: Throwable) {}
-                }
-            } else {
-                _myTransactions.value = emptyList()
-            }
-            return@withContext Result.success(reconciled)
+                rawHistoryJson = historyJson,
+                limit = limit.coerceIn(1, 20)
+            )
+            return@withContext Result.success(resultEntities)
         }
 
-        val fallbackReconciled = reconcileFlutterwaveWebhookTransactions(
-            uid = uid,
-            userEmail = userEmail,
-            userFullName = userFullName,
-            currentMerged = existingLocal,
-            rpcWalletDtos = emptyList()
-        )
-        if (fallbackReconciled.isNotEmpty() && _currentUser.value?.id?.trim() == uid && _isLoggedIn.value) {
-            val capped = fallbackReconciled.take(limit.coerceAtLeast(20))
-            _myTransactions.value = capped
-            try {
-                for (item in capped) {
-                    transactionDao.insertTransaction(item)
-                    userDedicatedDb(uid).transactionDao().insertTransaction(item)
-                }
-            } catch (_: Throwable) {}
-            return@withContext Result.success(capped)
+        // Offline fallback: only use previously cached public.users.transaction_history JSON for this user
+        val cachedHistoryJson = SharedWalletObserver.liveTransactionHistory.value
+            ?: prefs.getString("key_users_tx_history_json_$uid", null)
+        if (cachedHistoryJson != null) {
+            val cachedEntities = applyUsersTransactionHistoryJson(
+                uid = uid,
+                userEmail = userEmail,
+                userFullName = userFullName,
+                rawHistoryJson = cachedHistoryJson,
+                limit = limit.coerceIn(1, 20)
+            )
+            return@withContext Result.success(cachedEntities)
         }
 
-        Result.failure(lastError ?: IllegalStateException("Could not load transactions"))
+        _myTransactions.value = emptyList()
+        Result.failure(lastError ?: IllegalStateException("Could not load transaction history"))
     }
 
     suspend fun recordTransaction(transaction: TransactionEntity): Long {
-        val activeUserId = transaction.userId.ifBlank { _currentUser.value?.id?.trim().orEmpty() }
-        val isFunding = isWalletFundingEntity(transaction)
-        val resolvedTitle = if (isFunding) {
-            "credit"
-        } else {
-            transaction.title.trim().ifBlank {
-                listOf(transaction.provider.trim(), transaction.serviceType.replace('_', ' ').trim())
-                    .filter { it.isNotEmpty() }
-                    .joinToString(" ")
-            }
-        }
-        val scopedTx = normalizeTransactionEntity(
-            transaction.copy(
-                userId = activeUserId,
-                title = resolvedTitle
-            )
-        )
-        val id = transactionDao.insertTransaction(scopedTx)
-        val savedTx = scopedTx.copy(id = id)
-        if (activeUserId.isNotBlank() && _currentUser.value?.id?.trim() == activeUserId) {
-            _myTransactions.value = mergeTransactionLists(listOf(savedTx), _myTransactions.value, emptyList()).take(20)
-            try {
-                userDedicatedDb(activeUserId).transactionDao().insertTransaction(savedTx)
-            } catch (_: Throwable) {}
-            repoScope.launch {
-                syncTransactionToSupabase(savedTx)
-                syncRemoteProfileBalance()
-                refreshMyTransactions(20)
-            }
-        }
-
+        val scopedTx = normalizeTransactionEntity(transaction)
         val isSuccess = scopedTx.status.equals("SUCCESSFUL", ignoreCase = true)
         val isPending = scopedTx.status.equals("PENDING", ignoreCase = true)
 
-        // Requirement 4: Never subtract the balance locally.
-        // After every purchase (success, pending or failed), re-fetch wallet_balance from the server.
-        if (isSuccess && !isFunding && scopedTx.discountOrCashback > 0) {
+        if (isSuccess && scopedTx.discountOrCashback > 0) {
             addCashback(scopedTx.discountOrCashback)
         }
 
-        // Add to In-App notifications
         val newNotification = InAppNotification(
             id = UUID.randomUUID().toString(),
             title = when {
@@ -1541,7 +1582,7 @@ class VtuRepository(
                     "ELECTRICITY" -> "Electricity Token Generated"
                     "CABLE_TV" -> "Cable TV Subscription Renewed"
                     "EDUCATION" -> "Education PIN Purchased"
-                    else -> "Wallet Funded Successfully"
+                    else -> "Transaction Successful"
                 }
                 else -> when (scopedTx.serviceType) {
                     "AIRTIME" -> "Airtime Top-up Failed"
@@ -1559,7 +1600,6 @@ class VtuRepository(
                     scopedTx.provider,
                     scopedTx.reference
                 )
-                isSuccess && isFunding -> "Wallet funded with ₦%,.2f.".format(scopedTx.amount)
                 isSuccess -> "₦%,.2f to %s (%s). Ref: %s".format(
                     scopedTx.amount,
                     scopedTx.recipient,
@@ -1577,175 +1617,13 @@ class VtuRepository(
         )
         _inAppNotifications.value = listOf(newNotification) + _inAppNotifications.value
 
-        return id
-    }
-
-    private suspend fun syncTransactionToSupabase(tx: TransactionEntity) {
-        val uid = tx.userId.trim()
-        if (uid.isBlank() || uid == "usr_guest" || uid == "usr_default") return
-        val baseUrl = authClient.supabaseUrl.trimEnd('/')
-        val anonKey = authClient.supabaseAnonKey
-        val token = resolveValidAccessToken().ifBlank { currentAccessToken.orEmpty() }
-        val isFunding = isWalletFundingEntity(tx)
-        val resolvedTitle = if (isFunding) "credit" else tx.title.trim().ifBlank { tx.serviceType }
-        val resolvedService = if (isFunding) "" else tx.serviceType.trim()
-        val resolvedProvider = if (isFunding) "" else tx.provider.trim()
-        val resolvedRecipient = if (isFunding) "" else tx.recipient.trim()
-        val resolvedReference = if (isFunding) "" else tx.reference.trim()
-
-        var handledViaHttp = false
-        if (baseUrl.isNotBlank() && anonKey.isNotBlank() && token.isNotBlank() && !baseUrl.contains("your-project")) {
-            val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-            val http = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .build()
-            try {
-                var alreadyInWalletTx = false
-                if (isFunding) {
-                    val checkReq = Request.Builder()
-                        .url("$baseUrl/rest/v1/wallet_transactions?select=id,amount,created_at,title,service_type,provider,recipient,reference,details,customer_name&user_id=eq.$uid&order=created_at.desc&limit=50")
-                        .addHeader("apikey", anonKey)
-                        .addHeader("Authorization", bearer)
-                        .get()
-                        .build()
-                    http.newCall(checkReq).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            val arr = JSONArray(resp.body?.string().orEmpty().ifBlank { "[]" })
-                            val matchingIds = mutableListOf<String>()
-                            for (i in 0 until arr.length()) {
-                                val obj = arr.optJSONObject(i) ?: continue
-                                val rowTitle = obj.optString("title", "")
-                                val rowService = obj.optString("service_type", "")
-                                val rowProvider = obj.optString("provider", "")
-                                val rowDetails = obj.optString("details", "")
-                                if (isWalletFundingTransaction(rowService, rowTitle, rowProvider, rowDetails)) {
-                                    val rowAmount = obj.optDouble("amount", 0.0)
-                                    val rowCreatedAt = obj.optString("created_at", "")
-                                    val rowId = obj.optString("id", "")
-                                    val sameDayOrRecent = tx.createdAt.length < 10 ||
-                                        rowCreatedAt.length < 10 ||
-                                        rowCreatedAt.take(10) == tx.createdAt.take(10)
-                                    if (kotlin.math.abs(rowAmount - tx.amount) < 0.01 && sameDayOrRecent) {
-                                        if (rowId.isNotBlank()) matchingIds.add(rowId)
-                                        alreadyInWalletTx = true
-                                    }
-                                }
-                            }
-                            // Remove any duplicate rows created earlier for the same funding amount
-                            if (matchingIds.size > 1) {
-                                for (dupId in matchingIds.drop(1)) {
-                                    val encodedId = java.net.URLEncoder.encode(dupId, "UTF-8")
-                                    val delReq = Request.Builder()
-                                        .url("$baseUrl/rest/v1/wallet_transactions?id=eq.$encodedId&user_id=eq.$uid")
-                                        .addHeader("apikey", anonKey)
-                                        .addHeader("Authorization", bearer)
-                                        .delete()
-                                        .build()
-                                    try { http.newCall(delReq).execute().close() } catch (_: Throwable) {}
-                                }
-                            }
-                            // Clean any existing Wallet Funding rows in public.wallet_transactions so they match Screenshot 2
-                            val cleanPatchJson = JSONObject().apply {
-                                put("title", "credit")
-                                put("service_type", "")
-                                put("provider", "")
-                                put("recipient", "")
-                                put("reference", "")
-                                put("details", JSONObject.NULL)
-                                put("customer_name", JSONObject.NULL)
-                            }
-                            val patchReq = Request.Builder()
-                                .url("$baseUrl/rest/v1/wallet_transactions?user_id=eq.$uid&title=eq.Wallet%20Funding")
-                                .addHeader("apikey", anonKey)
-                                .addHeader("Authorization", bearer)
-                                .addHeader("Content-Type", "application/json")
-                                .addHeader("Prefer", "return=minimal")
-                                .patch(cleanPatchJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                                .build()
-                            try { http.newCall(patchReq).execute().close() } catch (_: Throwable) {}
-                        }
-                    }
-                } else if (resolvedReference.isNotBlank()) {
-                    val encodedRef = java.net.URLEncoder.encode(resolvedReference, "UTF-8")
-                    val checkReq = Request.Builder()
-                        .url("$baseUrl/rest/v1/wallet_transactions?select=id&user_id=eq.$uid&reference=eq.$encodedRef&limit=1")
-                        .addHeader("apikey", anonKey)
-                        .addHeader("Authorization", bearer)
-                        .get()
-                        .build()
-                    http.newCall(checkReq).execute().use { resp ->
-                        if (resp.isSuccessful) {
-                            val arr = JSONArray(resp.body?.string().orEmpty().ifBlank { "[]" })
-                            alreadyInWalletTx = arr.length() > 0
-                        }
-                    }
-                }
-                if (!alreadyInWalletTx) {
-                    val walletTxJson = JSONObject().apply {
-                        put("user_id", uid)
-                        put("reference", resolvedReference)
-                        put("service_type", resolvedService)
-                        put("provider", resolvedProvider)
-                        put("recipient", resolvedRecipient)
-                        put("amount", tx.amount)
-                        put("discount", tx.discountOrCashback)
-                        put("status", tx.status)
-                        put("title", resolvedTitle)
-                        if (!isFunding && !tx.tokenOrDetails.isNullOrBlank()) {
-                            put("details", tx.tokenOrDetails)
-                        } else if (isFunding) {
-                            put("details", JSONObject.NULL)
-                        }
-                        if (!isFunding && !tx.customerName.isNullOrBlank()) {
-                            put("customer_name", tx.customerName)
-                        } else if (isFunding) {
-                            put("customer_name", JSONObject.NULL)
-                        }
-                        if (tx.createdAt.isNotBlank()) {
-                            put("created_at", tx.createdAt)
-                        }
-                    }
-                    val insertReq = Request.Builder()
-                        .url("$baseUrl/rest/v1/wallet_transactions")
-                        .addHeader("apikey", anonKey)
-                        .addHeader("Authorization", bearer)
-                        .addHeader("Content-Type", "application/json")
-                        .addHeader("Prefer", "return=minimal")
-                        .post(walletTxJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                        .build()
-                    http.newCall(insertReq).execute().use { resp ->
-                        handledViaHttp = resp.isSuccessful
-                    }
-                } else {
-                    handledViaHttp = true
-                }
-            } catch (_: Throwable) {}
+        // Refresh strictly from public.users.transaction_history updated by Gsubz-VTU-Services
+        repoScope.launch {
+            syncRemoteProfileBalance()
+            refreshMyTransactions(20)
         }
 
-        if (handledViaHttp) return
-
-        val client = SupabaseInstance.client ?: return
-        try {
-            val payload = buildJsonObject {
-                put("user_id", JsonPrimitive(uid))
-                put("reference", JsonPrimitive(resolvedReference))
-                put("service_type", JsonPrimitive(resolvedService))
-                put("provider", JsonPrimitive(resolvedProvider))
-                put("recipient", JsonPrimitive(resolvedRecipient))
-                put("amount", JsonPrimitive(tx.amount))
-                put("discount", JsonPrimitive(tx.discountOrCashback))
-                put("status", JsonPrimitive(tx.status))
-                put("title", JsonPrimitive(resolvedTitle))
-                if (!isFunding && !tx.tokenOrDetails.isNullOrBlank()) {
-                    put("details", JsonPrimitive(tx.tokenOrDetails))
-                }
-                if (!isFunding && !tx.customerName.isNullOrBlank()) {
-                    put("customer_name", JsonPrimitive(tx.customerName))
-                }
-            }
-            client.from("wallet_transactions").insert(payload)
-        } catch (_: Throwable) {}
+        return scopedTx.id
     }
 
     suspend fun syncRemoteTransactionsForUser(userId: String) = withContext(Dispatchers.IO) {
@@ -1755,57 +1633,68 @@ class VtuRepository(
     suspend fun deleteTransaction(id: Long) = withContext(Dispatchers.IO) {
         val uid = _currentUser.value?.id?.trim().orEmpty()
         val target = _myTransactions.value.firstOrNull { it.id == id }
-        if (target != null && uid.isNotBlank()) {
-            val ed = prefs.edit()
-            if (target.reference.isNotBlank()) {
+        if (uid.isNotBlank()) {
+            val deletedIds = (prefs.getStringSet("key_deleted_tx_ids_$uid", emptySet()) ?: emptySet()).toMutableSet()
+            deletedIds.add(id.toString())
+            val ed = prefs.edit().putStringSet("key_deleted_tx_ids_$uid", deletedIds)
+            if (target != null && target.reference.isNotBlank()) {
                 ed.putBoolean("key_deleted_ref_${uid}_${target.reference}", true)
-            }
-            if (isWalletFundingEntity(target) &&
-                kotlin.math.abs(target.amount - 102.0) < 0.01
-            ) {
-                ed.putBoolean("key_deleted_flw_102_$uid", true)
+                val deletedRefs = (prefs.getStringSet("key_deleted_tx_refs_$uid", emptySet()) ?: emptySet()).toMutableSet()
+                deletedRefs.add(target.reference.trim().lowercase(Locale.US))
+                ed.putStringSet("key_deleted_tx_refs_$uid", deletedRefs)
             }
             ed.apply()
         }
         _myTransactions.value = _myTransactions.value.filterNot { it.id == id }
-        transactionDao.deleteTransactionById(id)
-        if (uid.isNotBlank()) {
-            try {
-                userDedicatedDb(uid).transactionDao().deleteTransactionById(id)
-            } catch (_: Throwable) {}
-        }
+        purgeLegacyLocalTransactions(uid)
     }
 
     suspend fun deleteTransactionByRef(ref: String) = withContext(Dispatchers.IO) {
+        val cleanRef = ref.trim()
         val uid = _currentUser.value?.id?.trim().orEmpty()
-        val target = _myTransactions.value.firstOrNull { it.reference == ref }
+        val target = _myTransactions.value.firstOrNull {
+            (cleanRef.isNotBlank() && it.reference.equals(cleanRef, ignoreCase = true))
+        }
         if (uid.isNotBlank()) {
-            val ed = prefs.edit().putBoolean("key_deleted_ref_${uid}_$ref", true)
-            if (ref.startsWith("FLW-WEBHOOK-102") || (target != null && kotlin.math.abs(target.amount - 102.0) < 0.01)) {
-                ed.putBoolean("key_deleted_flw_102_$uid", true)
+            val ed = prefs.edit()
+            if (cleanRef.isNotBlank()) {
+                ed.putBoolean("key_deleted_ref_${uid}_$cleanRef", true)
+                val deletedRefs = (prefs.getStringSet("key_deleted_tx_refs_$uid", emptySet()) ?: emptySet()).toMutableSet()
+                deletedRefs.add(cleanRef.lowercase(Locale.US))
+                ed.putStringSet("key_deleted_tx_refs_$uid", deletedRefs)
+            }
+            if (target != null) {
+                val deletedIds = (prefs.getStringSet("key_deleted_tx_ids_$uid", emptySet()) ?: emptySet()).toMutableSet()
+                deletedIds.add(target.id.toString())
+                ed.putStringSet("key_deleted_tx_ids_$uid", deletedIds)
             }
             ed.apply()
         }
-        _myTransactions.value = _myTransactions.value.filterNot { it.reference == ref }
-        transactionDao.deleteTransactionByRef(ref)
-        if (uid.isNotBlank()) {
-            try {
-                userDedicatedDb(uid).transactionDao().deleteTransactionByRef(ref)
-            } catch (_: Throwable) {}
+        if (cleanRef.isNotBlank()) {
+            _myTransactions.value = _myTransactions.value.filterNot { it.reference.equals(cleanRef, ignoreCase = true) }
         }
+        purgeLegacyLocalTransactions(uid)
     }
 
     suspend fun clearAllTransactions() = withContext(Dispatchers.IO) {
         val uid = _currentUser.value?.id?.trim().orEmpty()
-        _myTransactions.value = emptyList()
         if (uid.isNotBlank()) {
-            transactionDao.clearAllForUser(uid)
-            try {
-                userDedicatedDb(uid).transactionDao().clearAllForUser(uid)
-            } catch (_: Throwable) {}
-        } else {
-            transactionDao.clearAll()
+            val deletedIds = (prefs.getStringSet("key_deleted_tx_ids_$uid", emptySet()) ?: emptySet()).toMutableSet()
+            val deletedRefs = (prefs.getStringSet("key_deleted_tx_refs_$uid", emptySet()) ?: emptySet()).toMutableSet()
+            for (tx in _myTransactions.value) {
+                deletedIds.add(tx.id.toString())
+                if (tx.reference.isNotBlank()) {
+                    deletedRefs.add(tx.reference.trim().lowercase(Locale.US))
+                }
+            }
+            prefs.edit()
+                .putStringSet("key_deleted_tx_ids_$uid", deletedIds)
+                .putStringSet("key_deleted_tx_refs_$uid", deletedRefs)
+                .putLong("key_cleared_tx_before_ts_$uid", System.currentTimeMillis())
+                .apply()
         }
+        _myTransactions.value = emptyList()
+        purgeLegacyLocalTransactions(uid)
     }
 
     private fun getCashbackKey(email: String? = _currentUser.value?.email, userId: String? = _currentUser.value?.id): String =
@@ -2125,10 +2014,11 @@ class VtuRepository(
                             .addHeader("Content-Type", "application/json")
                             .post(bodyJson.toRequestBody("application/json".toMediaType()))
                             .build()
-                        OkHttpClient.Builder()
-                            .connectTimeout(10, TimeUnit.SECONDS)
-                            .readTimeout(10, TimeUnit.SECONDS)
-                            .build()
+                        com.example.util.SecurityVault.createGatewayOkHttpClient(
+                            connectTimeoutSec = 10,
+                            readTimeoutSec = 10,
+                            writeTimeoutSec = 10
+                        )
                             .newCall(req)
                             .execute()
                             .use { res ->
@@ -2212,7 +2102,8 @@ class VtuRepository(
         meterNumber: String? = null,
         smartcardNumber: String? = null,
         serviceIdOverride: String? = null,
-        narration: String? = null
+        narration: String? = null,
+        userHasEnoughDashboardBalance: Boolean = (_walletBalance.value >= amount)
     ): GsubzOrderResult {
         val current = _currentUser.value
         val validToken = resolveValidAccessToken()
@@ -2261,7 +2152,8 @@ class VtuRepository(
                 narration = resolvedNarration,
                 userToken = validToken,
                 userId = resolvedUserId,
-                userEmail = resolvedEmail
+                userEmail = resolvedEmail,
+                userHasEnoughDashboardBalance = userHasEnoughDashboardBalance
             )
             if (!result.isSuccess &&
                 result.message.contains("User account or wallet balance record not found", ignoreCase = true) &&
@@ -2288,7 +2180,8 @@ class VtuRepository(
                     narration = resolvedNarration,
                     userToken = validToken,
                     userId = resolvedUserId,
-                    userEmail = resolvedEmail
+                    userEmail = resolvedEmail,
+                    userHasEnoughDashboardBalance = userHasEnoughDashboardBalance
                 )
             }
             if (result.newBalance != null && result.newBalance >= 0.0) {
@@ -2373,22 +2266,8 @@ class VtuRepository(
     ): FlutterwaveVerifyResult {
         val result = flutterwaveClient.verifyPayment(txRef, amount, _accessToken.value)
         if (result.isSuccess) {
-            val activeUser = _currentUser.value
-            val fundingEntity = TransactionEntity(
-                userId = activeUser?.id?.trim().orEmpty(),
-                reference = result.txRef,
-                serviceType = "WALLET_FUNDING",
-                provider = "Flutterwave",
-                recipient = activeUser?.email.orEmpty(),
-                amount = result.amount,
-                discountOrCashback = 0.0,
-                status = "SUCCESSFUL",
-                timestamp = System.currentTimeMillis(),
-                tokenOrDetails = "Flutterwave Payment Verified (${result.message})",
-                customerName = activeUser?.fullName.orEmpty()
-            )
-            recordTransaction(fundingEntity)
             syncRemoteProfileBalance()
+            refreshMyTransactions(20)
         }
         return result
     }
@@ -2691,6 +2570,12 @@ class VtuRepository(
                 setWalletBalance(dbWalletBal)
             } else if (existingLocalProfile != null && existingLocalProfile.walletBalance > 0.0) {
                 setWalletBalance(existingLocalProfile.walletBalance)
+            }
+            dbRow?.get("transaction_history")?.let { rawHist ->
+                val histStr = try {
+                    if (rawHist is JsonPrimitive) rawHist.contentOrNull ?: rawHist.toString() else rawHist.toString()
+                } catch (_: Throwable) { rawHist.toString() }
+                applyUsersTransactionHistoryJson(realUserId, histStr)
             }
 
             if (dbRow == null) {
@@ -3054,10 +2939,7 @@ class VtuRepository(
             if (!initUid.isNullOrBlank()) {
                 loadUserSecurityAndSettings(initUid)
                 repoScope.launch {
-                    val localTx = loadLocalTransactionsForUser(initUid)
-                    if (localTx.isNotEmpty() && _myTransactions.value.isEmpty()) {
-                        _myTransactions.value = localTx.take(20)
-                    }
+                    refreshMyTransactions(20)
                 }
             }
             startRealtimeBalanceListener()
@@ -3341,6 +3223,13 @@ class VtuRepository(
                         setWalletBalance(bal)
                     }
 
+                    data["transaction_history"]?.let { rawHist ->
+                        val histStr = try {
+                            if (rawHist is JsonPrimitive) rawHist.contentOrNull ?: rawHist.toString() else rawHist.toString()
+                        } catch (_: Throwable) { rawHist.toString() }
+                        applyUsersTransactionHistoryJson(userId, histStr)
+                    }
+
                     val remotePhone = sanitizeRealPhone(
                         data["phone"]?.jsonPrimitive?.contentOrNull
                             ?: data["phone"]?.toString()?.trim('"')
@@ -3448,10 +3337,11 @@ class VtuRepository(
         val token = currentAccessToken ?: return
         val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
 
-        val httpClient = OkHttpClient.Builder()
-            .connectTimeout(7, TimeUnit.SECONDS)
-            .readTimeout(7, TimeUnit.SECONDS)
-            .build()
+        val httpClient = com.example.util.SecurityVault.createGatewayOkHttpClient(
+            connectTimeoutSec = 7,
+            readTimeoutSec = 7,
+            writeTimeoutSec = 7
+        )
 
         val selectCandidates = listOf(
             USERS_SAFE_COLUMNS_FULL.joinToString(","),
@@ -3488,6 +3378,10 @@ class VtuRepository(
                             if (remoteBalance >= 0.0) {
                                 setWalletBalance(remoteBalance)
                             }
+                        }
+                        if (obj.has("transaction_history")) {
+                            val rawHist = if (obj.isNull("transaction_history")) "[]" else (obj.opt("transaction_history")?.toString() ?: "[]")
+                            applyUsersTransactionHistoryJson(userId, rawHist)
                         }
                         val remotePhone = sanitizeRealPhone(obj.optString("phone", "")) ?: _currentUser.value?.phone
                         val remoteVa = obj.optString("permanent_account_number").ifBlank { obj.optString("virtual_account_number") }
@@ -3578,7 +3472,7 @@ class VtuRepository(
                     .addHeader("Content-Type", "application/json")
                     .post(buildJsonObject { put("amount", JsonPrimitive(amount)) }.toString().toRequestBody("application/json".toMediaType()))
                     .build()
-                val res = OkHttpClient().newCall(req).execute()
+                val res = com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute()
                 if (!res.isSuccessful && res.code !in 200..204) {
                     val err = res.body?.string() ?: ""
                     val msg = if (err.contains("insufficient", ignoreCase = true)) {
@@ -3647,7 +3541,7 @@ class VtuRepository(
                     .addHeader("Content-Type", "application/json")
                     .post(jsonPayload.toRequestBody("application/json".toMediaType()))
                     .build()
-                val res = OkHttpClient().newCall(req).execute()
+                val res = com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute()
                 if (!res.isSuccessful && res.code !in 200..204) {
                     val err = res.body?.string() ?: ""
                     return@withContext Result.failure(Exception(if (err.isNotBlank()) err else "Refund failed (${res.code})"))
@@ -3940,10 +3834,11 @@ class VtuRepository(
         val cleanPhone = sanitizeRealPhone(phone)
         val cleanFullName = sanitizeFullName(fullName, email)
 
-        val client = OkHttpClient.Builder()
-            .connectTimeout(6, TimeUnit.SECONDS)
-            .readTimeout(6, TimeUnit.SECONDS)
-            .build()
+        val client = com.example.util.SecurityVault.createGatewayOkHttpClient(
+            connectTimeoutSec = 6,
+            readTimeoutSec = 6,
+            writeTimeoutSec = 6
+        )
 
         // 1. Update Auth user_metadata only if full_name is non-empty
         if (cleanFullName.isNotBlank()) {

@@ -12,10 +12,13 @@ import java.util.Arrays
 /**
  * Client configuration and anti-tamper / anti-Frida protection layer.
  *
- * The only values allowed in the APK are the Supabase URL and the Supabase anon key.
- * No third-party or server-side secrets exist in BuildConfig, gradle, or the APK.
+ * All Supabase Auth, PostgREST, RPC, and Edge Function requests are routed through the
+ * `swift-processor` Edge Function gateway so no Supabase API keys exist in the APK.
  */
 object SecurityVault {
+
+    const val GATEWAY_FUNCTION_NAME = "swift-processor"
+    const val GATEWAY_MANAGED_KEY_PLACEHOLDER = "gateway-managed-key"
 
     private val MASK_KEY = intArrayOf(0x5A, 0x3C, 0x7F, 0x91, 0x2E, 0x6B, 0x84, 0x19)
 
@@ -23,22 +26,6 @@ object SecurityVault {
         50, 72, 11, 225, 93, 81, 171, 54, 35, 86, 6, 252, 86, 15, 254, 125,
         50, 74, 29, 245, 68, 25, 229, 116, 54, 85, 15, 246, 0, 24, 241, 105,
         59, 94, 30, 226, 75, 69, 231, 118
-    )
-
-    private val ENCODED_ANON_KEY = intArrayOf(
-        63, 69, 53, 249, 76, 44, 231, 112, 21, 85, 53, 216, 123, 17, 205, 40,
-        20, 85, 54, 226, 103, 5, 214, 44, 57, 127, 54, 167, 103, 0, 244, 65,
-        12, 127, 53, 168, 0, 14, 253, 83, 42, 95, 76, 220, 71, 36, 237, 83,
-        32, 88, 39, 211, 70, 50, 233, 95, 32, 102, 44, 216, 93, 34, 234, 83,
-        54, 102, 22, 216, 24, 34, 234, 117, 43, 89, 40, 160, 26, 49, 204, 105,
-        49, 93, 55, 203, 71, 49, 195, 105, 35, 101, 40, 160, 93, 10, 220, 91,
-        52, 117, 22, 230, 71, 8, 233, 32, 41, 102, 44, 216, 24, 34, 233, 95,
-        47, 94, 77, 165, 71, 39, 199, 83, 42, 101, 39, 192, 71, 36, 238, 92,
-        105, 115, 59, 246, 28, 38, 208, 114, 106, 113, 21, 200, 93, 34, 233, 79,
-        110, 95, 60, 216, 24, 38, 238, 92, 45, 114, 59, 212, 27, 37, 208, 72,
-        35, 114, 17, 161, 0, 5, 213, 72, 57, 79, 55, 197, 125, 8, 234, 65,
-        14, 14, 39, 192, 86, 56, 211, 44, 107, 123, 19, 213, 122, 46, 233, 90,
-        49, 74, 45, 169, 104, 38, 207, 94, 60, 123, 78, 246, 30, 61, 212, 76
     )
 
     private val SUSPICIOUS_HOOK_INDICATORS = arrayOf(
@@ -78,10 +65,96 @@ object SecurityVault {
     }
 
     /**
-     * Resolves the Supabase anon key.
+     * Resolves the `swift-processor` gateway Edge Function URL.
+     */
+    fun supabaseGatewayUrl(): String {
+        return "${supabaseUrl()}/functions/v1/$GATEWAY_FUNCTION_NAME"
+    }
+
+    /**
+     * Returns a non-secret client placeholder token; the real Supabase key is injected
+     * server-side by the `swift-processor` Edge Function gateway.
      */
     fun supabaseAnonKey(): String {
-        return decodeBytes(ENCODED_ANON_KEY)
+        return GATEWAY_MANAGED_KEY_PLACEHOLDER
+    }
+
+    /**
+     * OkHttp interceptor that transparently routes all Supabase Auth, PostgREST, RPC, and
+     * Edge Function requests through `/functions/v1/swift-processor` via `x-target-path`,
+     * stripping client-side placeholder keys so the gateway injects server-side credentials.
+     */
+    val gatewayInterceptor: okhttp3.Interceptor = okhttp3.Interceptor { chain ->
+        val original = chain.request()
+        val url = original.url
+        val projectHost = supabaseUrl()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore('/')
+            .trim()
+
+        if (!url.host.equals(projectHost, ignoreCase = true)) {
+            return@Interceptor chain.proceed(original)
+        }
+
+        val encodedPath = url.encodedPath
+        val isWebSocket = original.header("Upgrade").equals("websocket", ignoreCase = true) ||
+            encodedPath.startsWith("/realtime/")
+        if (isWebSocket) {
+            return@Interceptor chain.proceed(original)
+        }
+
+        val gatewayPath = "/functions/v1/$GATEWAY_FUNCTION_NAME"
+        val builder = original.newBuilder()
+
+        if (!encodedPath.startsWith(gatewayPath)) {
+            val encodedQuery = url.encodedQuery
+            val targetPath = if (!encodedQuery.isNullOrBlank()) {
+                "$encodedPath?$encodedQuery"
+            } else {
+                encodedPath
+            }
+            val gatewayHttpUrl = url.newBuilder()
+                .encodedPath(gatewayPath)
+                .encodedQuery(null)
+                .build()
+            builder.url(gatewayHttpUrl)
+            builder.header("x-target-path", targetPath)
+        }
+
+        val existingApiKey = original.header("apikey")?.trim().orEmpty()
+        if (existingApiKey.isEmpty() || existingApiKey.equals(GATEWAY_MANAGED_KEY_PLACEHOLDER, ignoreCase = true)) {
+            builder.removeHeader("apikey")
+        }
+
+        val existingAuth = original.header("Authorization")?.trim().orEmpty()
+        val rawToken = existingAuth.removePrefix("Bearer ").removePrefix("bearer ").trim()
+        if (rawToken.isEmpty() || rawToken.equals(GATEWAY_MANAGED_KEY_PLACEHOLDER, ignoreCase = true)) {
+            builder.removeHeader("Authorization")
+        }
+
+        chain.proceed(builder.build())
+    }
+
+    fun applyGatewayInterceptor(builder: okhttp3.OkHttpClient.Builder): okhttp3.OkHttpClient.Builder {
+        if (!builder.interceptors().contains(gatewayInterceptor)) {
+            builder.addInterceptor(gatewayInterceptor)
+        }
+        return builder
+    }
+
+    fun createGatewayOkHttpClient(
+        connectTimeoutSec: Long = 15,
+        readTimeoutSec: Long = 15,
+        writeTimeoutSec: Long = 15
+    ): okhttp3.OkHttpClient {
+        return applyGatewayInterceptor(
+            okhttp3.OkHttpClient.Builder()
+                .connectTimeout(connectTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(readTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(writeTimeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+        ).build()
     }
 
     /**

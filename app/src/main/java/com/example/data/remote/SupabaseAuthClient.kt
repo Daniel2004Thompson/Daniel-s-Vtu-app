@@ -19,11 +19,11 @@ class SupabaseAuthClient(
     val supabaseUrl: String = GsubzEdgeServiceClient.defaultSupabaseUrl(),
     val supabaseAnonKey: String = GsubzEdgeServiceClient.defaultSupabaseAnonKey()
 ) {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
-        .build()
+    private val client = com.example.util.SecurityVault.createGatewayOkHttpClient(
+        connectTimeoutSec = 15,
+        readTimeoutSec = 15,
+        writeTimeoutSec = 15
+    )
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 

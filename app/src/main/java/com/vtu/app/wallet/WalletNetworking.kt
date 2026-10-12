@@ -260,6 +260,7 @@ object NetworkModule {
     val apiService: BackendApiService by lazy {
         Retrofit.Builder()
             .baseUrl(BASE_URL)
+            .client(com.example.data.remote.ApiNetworkClient.okHttpClient)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(BackendApiService::class.java)
@@ -271,10 +272,11 @@ object NetworkModule {
 // ==========================================
 
 class SettingsRepository(private val apiService: BackendApiService = NetworkModule.apiService) {
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
+    private val okHttpClient = com.example.util.SecurityVault.createGatewayOkHttpClient(
+        connectTimeoutSec = 15,
+        readTimeoutSec = 20,
+        writeTimeoutSec = 15
+    )
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -324,10 +326,11 @@ class SettingsRepository(private val apiService: BackendApiService = NetworkModu
 }
 
 class WalletRepository(private val apiService: BackendApiService = NetworkModule.apiService) {
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
+    private val okHttpClient = com.example.util.SecurityVault.createGatewayOkHttpClient(
+        connectTimeoutSec = 15,
+        readTimeoutSec = 20,
+        writeTimeoutSec = 15
+    )
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 

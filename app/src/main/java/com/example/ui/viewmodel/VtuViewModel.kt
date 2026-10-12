@@ -1189,26 +1189,10 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 val result = repository.withdrawFromWallet(amount)
                 if (result.isSuccess) {
                     val newBal = result.getOrNull() ?: walletBalance.value
-                    val dateStr = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
-                    val reference = "WDR-$dateStr-${(100000..999999).random()}"
-                    val activeUid = currentUser.value?.id?.trim().orEmpty()
-                    val entity = TransactionEntity(
-                        userId = activeUid,
-                        reference = reference,
-                        serviceType = "WITHDRAWAL",
-                        provider = pending.provider,
-                        recipient = pending.recipient,
-                        amount = amount,
-                        discountOrCashback = 0.0,
-                        status = "SUCCESSFUL",
-                        timestamp = System.currentTimeMillis(),
-                        tokenOrDetails = "Wallet Withdrawal • New Balance: ₦%,.2f".format(newBal),
-                        customerName = pending.customerName
-                    )
-                    repository.recordTransaction(entity)
+                    repository.syncRemoteProfileBalance()
+                    repository.refreshMyTransactions(20)
                     Toast.makeText(appContext, "₦%,.2f withdrawn successfully. New balance: ₦%,.2f".format(amount, newBal), Toast.LENGTH_LONG).show()
                     _uiMessage.value = "₦%,.2f withdrawn successfully".format(amount)
-                    _activeReceipt.value = entity
                     pendingWithdrawalSuccessCallback?.invoke()
                     pendingWithdrawalSuccessCallback = null
                     onComplete()
@@ -1329,6 +1313,8 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun executeTransactionInternal(pending: PendingTransaction, onComplete: () -> Unit) {
         viewModelScope.launch {
+            val requiredDashboardAmount = (pending.amount - pending.discount).coerceAtLeast(0.0)
+            val userHasEnoughDashboardBalance = walletBalance.value >= requiredDashboardAmount
             _authLoading.value = true
             val gsubzResult = try {
                 repository.executeGsubzVtu(
@@ -1339,37 +1325,49 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     planId = pending.planId,
                     meterNumber = pending.meterNumber,
                     smartcardNumber = pending.smartcardNumber,
-                    serviceIdOverride = pending.serviceId
+                    serviceIdOverride = pending.serviceId,
+                    userHasEnoughDashboardBalance = userHasEnoughDashboardBalance
                 )
             } finally {
                 _authLoading.value = false
             }
 
             if (!gsubzResult.isSuccess && !gsubzResult.isPending) {
-                val errMsg = gsubzResult.message.trim().ifBlank { "Transaction failed" }
+                val rawErrMsg = gsubzResult.message.trim().ifBlank { "Purchase failed" }
+                val hasTopUpPrompt = rawErrMsg.contains("top up", ignoreCase = true) ||
+                    rawErrMsg.contains("top-up", ignoreCase = true)
+                val isUserTopUpError = hasTopUpPrompt || (
+                    !userHasEnoughDashboardBalance && rawErrMsg.contains("insufficient", ignoreCase = true)
+                    )
+                val errMsg = when {
+                    isUserTopUpError -> {
+                        if (hasTopUpPrompt) {
+                            rawErrMsg
+                        } else {
+                            "Insufficient wallet balance. Please top up your account."
+                        }
+                    }
+                    userHasEnoughDashboardBalance && (
+                        rawErrMsg.contains("insufficient", ignoreCase = true) ||
+                            rawErrMsg.contains("wallet balance", ignoreCase = true)
+                        ) -> "Purchase failed"
+                    rawErrMsg.equals("Insufficient wallet balance", ignoreCase = true) ||
+                        rawErrMsg.equals("INSUFFICIENT_BALANCE", ignoreCase = true) -> "Purchase failed"
+                    else -> rawErrMsg
+                }
                 _uiMessage.value = errMsg
                 Toast.makeText(getApplication(), errMsg, Toast.LENGTH_LONG).show()
-                val activeUid = currentUser.value?.id?.trim().orEmpty()
                 val cleanRef = gsubzResult.transactionId.replace(Regex("GSUBZ-ERR-|GSUBZ-", RegexOption.IGNORE_CASE), "VTU-")
-                val failedEntity = TransactionEntity(
-                    userId = activeUid,
-                    reference = cleanRef,
-                    serviceType = pending.serviceType,
-                    provider = pending.provider,
-                    recipient = pending.recipient,
-                    amount = pending.amount,
-                    discountOrCashback = 0.0,
-                    status = "FAILED",
-                    timestamp = System.currentTimeMillis(),
-                    tokenOrDetails = null,
-                    customerName = pending.customerName,
-                    title = pending.title.ifBlank { "${pending.provider} ${pending.serviceType.replace('_', ' ')}".trim() }
-                )
-                _activeReceipt.value = failedEntity
-                onComplete()
-                viewModelScope.launch {
-                    repository.recordTransaction(failedEntity)
+                repository.syncRemoteProfileBalance()
+                repository.refreshMyTransactions(20)
+                val historyFailedTx = repository.myTransactions.value.firstOrNull {
+                    it.reference.equals(cleanRef, ignoreCase = true) ||
+                        it.reference.equals(gsubzResult.transactionId, ignoreCase = true)
                 }
+                if (historyFailedTx != null) {
+                    _activeReceipt.value = historyFailedTx
+                }
+                onComplete()
                 return@launch
             }
 
@@ -1430,7 +1428,7 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 serviceType = pending.serviceType,
                 provider = pending.provider,
                 recipient = pending.recipient,
-                amount = if (isAirtime) serverAirtimeValue else pending.amount,
+                amount = if (isAirtime) serverAirtimeValue else serverCharged,
                 discountOrCashback = serverCashback,
                 status = txStatus,
                 timestamp = System.currentTimeMillis(),
@@ -1439,8 +1437,21 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                 title = pending.title.ifBlank { "${pending.provider} ${pending.serviceType.replace('_', ' ')}".trim() }
             )
 
+            // Refresh public.users.transaction_history updated by the Gsubz-VTU-Services edge function
+            repository.syncRemoteProfileBalance()
+            repository.refreshMyTransactions(20)
+
+            val historyTx = repository.myTransactions.value.firstOrNull {
+                it.reference.equals(reference, ignoreCase = true) ||
+                    it.reference.equals(gsubzResult.transactionId, ignoreCase = true)
+            } ?: repository.myTransactions.value.firstOrNull {
+                it.recipient == pending.recipient &&
+                    kotlin.math.abs(System.currentTimeMillis() - it.timestamp) < 120_000L
+            }
+            val finalReceipt = historyTx ?: entity
+
             val alert = InAppNotification(
-                id = reference,
+                id = finalReceipt.reference,
                 title = if (gsubzResult.isPending) {
                     "Purchase is being confirmed"
                 } else {
@@ -1450,10 +1461,10 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     serverCharged,
                     pending.recipient
                 ),
-                transactionRef = reference
+                transactionRef = finalReceipt.reference
             )
             _inAppAlertBanner.value = alert
-            _activeReceipt.value = entity
+            _activeReceipt.value = finalReceipt
             if (gsubzResult.isPending) {
                 _uiMessage.value = "Purchase is being confirmed"
             } else if (notificationsEnabled.value) {
@@ -1461,15 +1472,14 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                     context = getApplication(),
                     title = "Transaction Successful!",
                     message = "${pending.title} to ${pending.recipient} completed.",
-                    reference = reference,
-                    amount = entity.amount,
+                    reference = finalReceipt.reference,
+                    amount = finalReceipt.amount,
                     token = if (pending.serviceType == "ELECTRICITY" || pending.serviceType == "EDUCATION") tokenOrDetails else null
                 )
             }
             onComplete()
 
             viewModelScope.launch {
-                repository.recordTransaction(entity)
                 repository.saveBeneficiary(
                     BeneficiaryEntity(
                         userId = activeUid,
@@ -1479,10 +1489,22 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
                         provider = pending.provider
                     )
                 )
+                delay(1200)
+                repository.refreshMyTransactions(20)
+                val updatedHistoryTx = repository.myTransactions.value.firstOrNull {
+                    it.reference.equals(reference, ignoreCase = true) ||
+                        it.reference.equals(gsubzResult.transactionId, ignoreCase = true)
+                } ?: repository.myTransactions.value.firstOrNull {
+                    it.recipient == pending.recipient &&
+                        kotlin.math.abs(System.currentTimeMillis() - it.timestamp) < 120_000L
+                }
+                if (updatedHistoryTx != null && _activeReceipt.value?.reference == finalReceipt.reference) {
+                    _activeReceipt.value = updatedHistoryTx
+                }
             }
 
             delay(6000)
-            if (_inAppAlertBanner.value?.id == reference) {
+            if (_inAppAlertBanner.value?.id == finalReceipt.reference) {
                 _inAppAlertBanner.value = null
             }
         }
@@ -1586,54 +1608,9 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun fundWalletInstant(amount: Double) {
         viewModelScope.launch {
-            val dateStr = SimpleDateFormat("yyyyMMdd", Locale.getDefault()).format(Date())
-            val randomDigits = (100000..999999).random()
-            val reference = "DEP-$dateStr-$randomDigits"
-            val user = currentUser.value
-            val bankDetails = listOfNotNull(user?.virtualBankName, user?.virtualAccountNumber)
-                .filter { it.isNotBlank() }
-                .joinToString(" / ")
-
-            val entity = TransactionEntity(
-                userId = user?.id?.trim().orEmpty(),
-                reference = reference,
-                serviceType = "WALLET_FUNDING",
-                provider = "Virtual Bank Transfer",
-                recipient = user?.email.orEmpty(),
-                amount = amount,
-                discountOrCashback = 0.0,
-                status = "SUCCESSFUL",
-                timestamp = System.currentTimeMillis(),
-                tokenOrDetails = bankDetails.ifBlank { null },
-                customerName = user?.fullName?.takeIf { it.isNotBlank() }
-            )
-
-            repository.recordTransaction(entity)
             _showFundWalletSheet.value = false
-
-            if (notificationsEnabled.value) {
-                NotificationHelper.showTransactionNotification(
-                    context = getApplication(),
-                    title = "Wallet Top-up Successful!",
-                    message = "₦%,.2f has been credited to your wallet.".format(amount),
-                    reference = reference,
-                    amount = amount
-                )
-            }
-
-            val alert = InAppNotification(
-                id = reference,
-                title = "Wallet Credited",
-                message = "₦%,.2f added via instant transfer. New Balance: ₦%,.2f".format(amount, walletBalance.value),
-                transactionRef = reference
-            )
-            _inAppAlertBanner.value = alert
-            _activeReceipt.value = entity
-
-            delay(6000)
-            if (_inAppAlertBanner.value?.id == reference) {
-                _inAppAlertBanner.value = null
-            }
+            repository.syncRemoteProfileBalance()
+            repository.refreshMyTransactions(20)
         }
     }
 
@@ -1665,34 +1642,9 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
         onSuccess: (TransactionEntity) -> Unit = {}
     ) {
         viewModelScope.launch {
-            val activeUser = currentUser.value
-            val reference = if (sessionRef.isNotBlank()) sessionRef.trim() else "TX-TRANSFER-${System.currentTimeMillis()}-${(1000..9999).random()}"
-            val entity = TransactionEntity(
-                userId = activeUser?.id?.trim().orEmpty(),
-                reference = reference,
-                serviceType = "WALLET_FUNDING",
-                provider = bankUsed.ifBlank { "Bank Transfer" },
-                recipient = activeUser?.email.orEmpty(),
-                amount = amount,
-                discountOrCashback = 0.0,
-                status = "PENDING",
-                timestamp = System.currentTimeMillis(),
-                tokenOrDetails = "Manual Bank Transfer via ${bankUsed.ifBlank { "Bank Transfer" }}",
-                customerName = senderName.ifBlank { activeUser?.fullName?.takeIf { it.isNotBlank() } }
-            )
-
-            repository.recordTransaction(entity)
             _showFundWalletSheet.value = false
-
-            val alert = InAppNotification(
-                id = reference,
-                title = "Transfer Submitted",
-                message = "₦%,.2f transfer via %s submitted. Awaiting confirmation.".format(amount, bankUsed.ifBlank { "Bank Transfer" }),
-                transactionRef = reference
-            )
-            _inAppAlertBanner.value = alert
-            _activeReceipt.value = entity
-            onSuccess(entity)
+            repository.syncRemoteProfileBalance()
+            repository.refreshMyTransactions(20)
         }
     }
 

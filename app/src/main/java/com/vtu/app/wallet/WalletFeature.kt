@@ -50,13 +50,18 @@ data class WalletBalanceUpdate(
     val wallet_balance: String
 )
 
-// 2. Shared In-Memory Realtime Wallet State Bridge (Single Source of Truth for public.users.wallet_balance)
+// 2. Shared In-Memory Realtime Wallet State Bridge (Single Source of Truth for public.users.wallet_balance & transaction_history)
 object SharedWalletObserver {
     private val _liveBalance = MutableStateFlow<Double?>(null)
     val liveBalance: StateFlow<Double?> = _liveBalance.asStateFlow()
 
+    private val _liveTransactionHistory = MutableStateFlow<String?>(null)
+    val liveTransactionHistory: StateFlow<String?> = _liveTransactionHistory.asStateFlow()
+
     private val listeners = mutableListOf<(Double) -> Unit>()
+    private val historyListeners = mutableListOf<(String) -> Unit>()
     private val isDispatching = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val isDispatchingHistory = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun addListener(listener: (Double) -> Unit) {
         synchronized(listeners) {
@@ -79,6 +84,27 @@ object SharedWalletObserver {
         synchronized(listeners) { listeners.remove(listener) }
     }
 
+    fun addHistoryListener(listener: (String) -> Unit) {
+        synchronized(historyListeners) {
+            if (!historyListeners.contains(listener)) {
+                historyListeners.add(listener)
+            }
+        }
+        _liveTransactionHistory.value?.let { hist ->
+            if (isDispatchingHistory.compareAndSet(false, true)) {
+                try {
+                    listener(hist)
+                } finally {
+                    isDispatchingHistory.set(false)
+                }
+            }
+        }
+    }
+
+    fun removeHistoryListener(listener: (String) -> Unit) {
+        synchronized(historyListeners) { historyListeners.remove(listener) }
+    }
+
     fun updateBalance(newBalance: Double) {
         val previous = _liveBalance.value
         _liveBalance.value = newBalance
@@ -96,8 +122,26 @@ object SharedWalletObserver {
         }
     }
 
+    fun updateTransactionHistory(rawHistoryJson: String?) {
+        val normalized = rawHistoryJson?.trim() ?: return
+        if (normalized.isBlank() || normalized.equals("null", ignoreCase = true)) return
+        val previous = _liveTransactionHistory.value
+        _liveTransactionHistory.value = normalized
+        if (previous == normalized) return
+        if (!isDispatchingHistory.compareAndSet(false, true)) {
+            return
+        }
+        try {
+            val snapshot = synchronized(historyListeners) { historyListeners.toList() }
+            snapshot.forEach { it(normalized) }
+        } finally {
+            isDispatchingHistory.set(false)
+        }
+    }
+
     fun clear() {
         _liveBalance.value = null
+        _liveTransactionHistory.value = null
     }
 }
 
@@ -157,8 +201,8 @@ class WalletViewModel : ViewModel() {
     }
 
     /**
-     * Queries public.users.wallet_balance by the logged-in user's id — the exact same table,
-     * row filter, and column used by the Realtime subscription.
+     * Queries public.users.wallet_balance and transaction_history by the logged-in user's id —
+     * the exact same table, row filter, and columns used by the Realtime subscription.
      */
     suspend fun queryPublicUsersWalletBalance(userId: String? = null): Double? = withContext(Dispatchers.IO) {
         val client = supabase
@@ -173,13 +217,22 @@ class WalletViewModel : ViewModel() {
             return@withContext SharedWalletObserver.liveBalance.value
         }
 
-        // 1. Query public.users.wallet_balance via Supabase Postgrest client
+        // 1. Query public.users.wallet_balance & transaction_history via Supabase Postgrest client
         if (client != null) {
             try {
-                val data = client.from("users").select(Columns.list("wallet_balance")) {
+                val data = client.from("users").select(Columns.list("wallet_balance", "transaction_history")) {
                     filter { eq("id", resolvedUserId) }
                     single()
                 }.decodeSingle<JsonObject>()
+
+                data["transaction_history"]?.let { rawHist ->
+                    val histStr = try {
+                        rawHist.jsonPrimitive.contentOrNull ?: rawHist.toString()
+                    } catch (_: Throwable) {
+                        rawHist.toString()
+                    }
+                    SharedWalletObserver.updateTransactionHistory(histStr)
+                }
 
                 val rawBal = data["wallet_balance"]?.jsonPrimitive?.doubleOrNull
                     ?: data["wallet_balance"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
@@ -194,25 +247,31 @@ class WalletViewModel : ViewModel() {
             }
         }
 
-        // 2. Direct REST query to public.users?select=wallet_balance&id=eq.<resolvedUserId>
+        // 2. Direct REST query to public.users?select=wallet_balance,transaction_history&id=eq.<resolvedUserId>
         try {
             val baseUrl = SupabaseInstance.safeUrl
             val anonKey = SupabaseInstance.rawKey
             val token = try { client?.auth?.currentAccessTokenOrNull() } catch (_: Throwable) { null } ?: anonKey
             val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
             val req = Request.Builder()
-                .url("$baseUrl/rest/v1/users?select=wallet_balance&id=eq.$resolvedUserId")
+                .url("$baseUrl/rest/v1/users?select=wallet_balance,transaction_history&id=eq.$resolvedUserId")
                 .addHeader("apikey", anonKey)
                 .addHeader("Authorization", bearer)
                 .get()
                 .build()
 
-            OkHttpClient().newCall(req).execute().use { res ->
+            com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
                 if (res.isSuccessful) {
                     val bodyStr = res.body?.string().orEmpty()
                     val arr = org.json.JSONArray(bodyStr)
                     if (arr.length() > 0) {
                         val obj = arr.getJSONObject(0)
+                        if (obj.has("transaction_history") && !obj.isNull("transaction_history")) {
+                            val rawHistObj = obj.opt("transaction_history")
+                            if (rawHistObj != null) {
+                                SharedWalletObserver.updateTransactionHistory(rawHistObj.toString())
+                            }
+                        }
                         if (obj.has("wallet_balance") && !obj.isNull("wallet_balance")) {
                             val remoteBal = obj.getDouble("wallet_balance")
                             SharedWalletObserver.updateBalance(remoteBal)
@@ -293,7 +352,7 @@ class WalletViewModel : ViewModel() {
                         .addHeader("Content-Type", "application/json")
                         .post(buildJsonObject { put("amount", amount) }.toString().toRequestBody("application/json".toMediaType()))
                         .build()
-                    OkHttpClient().newCall(req).execute().use { res ->
+                    com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
                         if (res.isSuccessful || res.code in 200..204) {
                             rpcSucceeded = true
                         } else {
@@ -399,6 +458,14 @@ fun observeWalletBalance(
         scope.launch(Dispatchers.IO) {
             try {
                 changes.collect { update ->
+                    update.record["transaction_history"]?.let { rawHist ->
+                        val histStr = try {
+                            rawHist.jsonPrimitive.contentOrNull ?: rawHist.toString()
+                        } catch (_: Throwable) {
+                            rawHist.toString()
+                        }
+                        SharedWalletObserver.updateTransactionHistory(histStr)
+                    }
                     val raw = update.record["wallet_balance"]
                     val newBalance = raw?.jsonPrimitive?.doubleOrNull
                         ?: raw?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()

@@ -134,6 +134,16 @@ object GsubzVtuService {
     @Volatile
     private var lastVtuPricesFetchedAtMs: Long = 0L
 
+    val DATA_SERVICE_IDS: Set<String> = setOf(
+        "mtn_sme",
+        "mtn_gifting",
+        "airtel_sme",
+        "airtel_gifting",
+        "glo_data",
+        "glo_sme",
+        "etisalat_data"
+    )
+
     private val _liveServicePlans = MutableStateFlow<Map<String, List<GsubzPlanItem>>>(emptyMap())
     val liveServicePlans: StateFlow<Map<String, List<GsubzPlanItem>>> = _liveServicePlans.asStateFlow()
 
@@ -145,93 +155,213 @@ object GsubzVtuService {
     var lastOutgoingRequestBodyString: String = ""
 
     /**
-     * Fetches plans for a specific VTU service strictly from the user's Supabase backend
-     * (`vtu_prices` table and `Gsubz-VTU-Services` edge function at
-     * `https://yjymxdzdhvbdjramlipg.supabase.co/functions/v1/Gsubz-VTU-Services`),
-     * with no external Gsubz API URLs.
+     * Parses a JSON array of rows from `public.vtu_prices` into a map of `service_id -> List<GsubzPlanItem>`.
      */
-    suspend fun fetchLivePlansForService(serviceId: String): List<GsubzPlanItem> = withContext(Dispatchers.IO) {
-        val cleanId = serviceId.trim().lowercase()
-        if (cleanId.isBlank()) return@withContext emptyList()
+    fun parseVtuPricesRowsByService(rawJson: String): Map<String, List<GsubzPlanItem>> {
+        if (rawJson.isBlank()) return emptyMap()
+        val grouped = mutableMapOf<String, MutableList<GsubzPlanItem>>()
+        try {
+            val arr = JSONArray(rawJson)
+            for (i in 0 until arr.length()) {
+                val row = arr.optJSONObject(i) ?: continue
+                if (row.has("active") && !row.isNull("active") && !row.optBoolean("active", true)) continue
+                val serviceId = row.optString("service_id", "").trim().lowercase()
+                val planCode = row.optString("plan", "").trim()
+                if (serviceId.isBlank() || planCode.isBlank()) continue
+                val priceVal = row.optDouble("price", Double.NaN)
+                val priceStr = if (!priceVal.isNaN() && priceVal > 0.0) {
+                    if (priceVal % 1.0 == 0.0) priceVal.toLong().toString() else priceVal.toString()
+                } else {
+                    row.optString("price", "").trim()
+                }
+                val parsedNum = priceStr.toDoubleOrNull()
+                if (parsedNum != null && parsedNum > 0.0) {
+                    val list = grouped.getOrPut(serviceId) { mutableListOf() }
+                    list.removeAll { it.value.equals(planCode, ignoreCase = true) }
+                    list.add(
+                        GsubzPlanItem(
+                            displayName = planCode,
+                            value = planCode,
+                            price = priceStr
+                        )
+                    )
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to parse vtu_prices rows: ${e.message}")
+        }
+        return grouped
+    }
 
-        val cachedPlans = _liveServicePlans.value[cleanId]
-        if (!cachedPlans.isNullOrEmpty()) return@withContext cachedPlans
+    /**
+     * Always fetches data bundle prices LIVE from `public.vtu_prices` in Supabase on every call.
+     * Never uses cached or hardcoded prices so the price shown on the Buy Data screen always
+     * matches the exact `vtu_prices` row (`service_id` + `plan`) charged by `Gsubz-VTU-Services`.
+     */
+    suspend fun fetchLiveDataPlansFromVtuPrices(
+        serviceIds: Collection<String> = DATA_SERVICE_IDS
+    ): Map<String, List<GsubzPlanItem>> = withContext(Dispatchers.IO) {
+        val cleanIds = serviceIds.map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return@withContext emptyMap()
 
         val baseUrl = SUPABASE_URL.trimEnd('/')
         val anonKey = SupabaseProvider.rawKey
         val activeToken = SupabaseProvider.resolveSessionAccessToken(null)
-        val bearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
+        val userBearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
+        val anonBearer = "Bearer $anonKey"
+        val bearerCandidates = listOf(userBearer, anonBearer).distinct()
 
-        // 1. Query Supabase vtu_prices table first so plan lookups never contend with Gsubz-VTU-Services purchases
+        val inFilter = cleanIds.joinToString(",")
+        val candidateUrls = listOf(
+            "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price,cashback_percent,active&service_id=in.($inFilter)",
+            "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price&service_id=in.($inFilter)"
+        )
+
+        for (url in candidateUrls) {
+            for (bearer in bearerCandidates) {
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .addHeader("apikey", anonKey)
+                        .addHeader("Authorization", bearer)
+                        .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                        .addHeader("Pragma", "no-cache")
+                        .get()
+                        .build()
+                    httpClient.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            val body = res.body?.string().orEmpty()
+                            val parsed = parseVtuPricesRowsByService(body)
+                            if (parsed.isNotEmpty()) {
+                                val updated = _liveServicePlans.value.toMutableMap()
+                                for (id in cleanIds) {
+                                    updated[id] = parsed[id].orEmpty()
+                                }
+                                for ((k, v) in parsed) {
+                                    updated[k] = v
+                                }
+                                _liveServicePlans.value = updated
+                                return@withContext parsed
+                            }
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Error querying live data plans from vtu_prices via HTTP: ${e.message}")
+                }
+            }
+        }
+
+        // Fallback via Supabase Postgrest client (still live from public.vtu_prices, never hardcoded)
         try {
-            val url = "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price,cashback_percent,active&service_id=eq.$cleanId"
-            val req = Request.Builder()
-                .url(url)
-                .addHeader("apikey", anonKey)
-                .addHeader("Authorization", bearer)
-                .get()
-                .build()
-            httpClient.newCall(req).execute().use { res ->
-                if (res.isSuccessful) {
-                    val body = res.body?.string().orEmpty()
-                    val arr = JSONArray(body)
-                    val items = mutableListOf<GsubzPlanItem>()
-                    for (i in 0 until arr.length()) {
-                        val row = arr.optJSONObject(i) ?: continue
-                        if (row.has("active") && !row.isNull("active") && !row.optBoolean("active", true)) continue
-                        val planCode = row.optString("plan", "").trim()
-                        if (planCode.isBlank()) continue
-                        val priceVal = row.optDouble("price", Double.NaN)
-                        val priceStr = if (!priceVal.isNaN() && priceVal > 0.0) {
-                            if (priceVal % 1.0 == 0.0) priceVal.toLong().toString() else priceVal.toString()
-                        } else {
-                            row.optString("price", "").trim()
-                        }
-                        if (priceStr.isNotBlank()) {
-                            items.add(
-                                GsubzPlanItem(
-                                    displayName = planCode,
-                                    value = planCode,
-                                    price = priceStr
-                                )
-                            )
-                        }
+            val client = SupabaseProvider.client
+            if (client != null) {
+                val rows = client.from("vtu_prices")
+                    .select(Columns.list("service_id", "plan", "price"))
+                    .decodeList<JsonObject>()
+                val arr = JSONArray()
+                for (row in rows) {
+                    val sId = row["service_id"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase().orEmpty()
+                    if (sId !in cleanIds) continue
+                    val obj = JSONObject()
+                    obj.put("service_id", sId)
+                    obj.put("plan", row["plan"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                    val priceNum = row["price"]?.jsonPrimitive?.doubleOrNull
+                        ?: row["price"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
+                    if (priceNum != null && priceNum > 0.0) {
+                        obj.put("price", priceNum)
+                        arr.put(obj)
                     }
-                    if (items.isNotEmpty()) {
-                        _liveServicePlans.value = _liveServicePlans.value + (cleanId to items)
-                        return@withContext items
+                }
+                val parsed = parseVtuPricesRowsByService(arr.toString())
+                if (parsed.isNotEmpty()) {
+                    val updated = _liveServicePlans.value.toMutableMap()
+                    for (id in cleanIds) {
+                        updated[id] = parsed[id].orEmpty()
                     }
+                    for ((k, v) in parsed) {
+                        updated[k] = v
+                    }
+                    _liveServicePlans.value = updated
+                    return@withContext parsed
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Error querying Supabase vtu_prices for $cleanId: ${e.message}")
+            Log.w(TAG, "Error querying live data plans from vtu_prices via Postgrest: ${e.message}")
         }
 
-        // 2. Fallback to catalog plans configured for this Gsubz service ID
-        val catalogItems = com.example.data.model.VtuCatalog.dataPlans
-            .filter { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
-            .map { plan ->
-                val priceStr = if (plan.price % 1.0 == 0.0) plan.price.toLong().toString() else plan.price.toString()
+        return@withContext emptyMap()
+    }
+
+    /**
+     * Fetches plans for a specific VTU service strictly from the user's Supabase backend
+     * (`public.vtu_prices` table).
+     * For data bundle services (`DATA_SERVICE_IDS`), this ALWAYS queries `public.vtu_prices` live
+     * on every call and never uses cached or hardcoded prices.
+     */
+    suspend fun fetchLivePlansForService(
+        serviceId: String,
+        forceRefresh: Boolean = true
+    ): List<GsubzPlanItem> = withContext(Dispatchers.IO) {
+        val cleanId = serviceId.trim().lowercase()
+        if (cleanId.isBlank()) return@withContext emptyList()
+
+        val isDataService = cleanId in DATA_SERVICE_IDS
+
+        if (!isDataService && !forceRefresh) {
+            val cachedPlans = _liveServicePlans.value[cleanId]
+            if (!cachedPlans.isNullOrEmpty()) return@withContext cachedPlans
+        }
+
+        if (isDataService) {
+            val freshMap = fetchLiveDataPlansFromVtuPrices(listOf(cleanId))
+            return@withContext freshMap[cleanId].orEmpty()
+        }
+
+        val baseUrl = SUPABASE_URL.trimEnd('/')
+        val anonKey = SupabaseProvider.rawKey
+        val activeToken = SupabaseProvider.resolveSessionAccessToken(null)
+        val userBearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
+        val bearerCandidates = listOf(userBearer, "Bearer $anonKey").distinct()
+
+        // 1. Query Supabase vtu_prices table live
+        for (bearer in bearerCandidates) {
+            try {
+                val url = "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price,cashback_percent,active&service_id=eq.$cleanId"
+                val req = Request.Builder()
+                    .url(url)
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Cache-Control", "no-cache")
+                    .get()
+                    .build()
+                httpClient.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string().orEmpty()
+                        val parsed = parseVtuPricesRowsByService(body)[cleanId].orEmpty()
+                        if (parsed.isNotEmpty()) {
+                            _liveServicePlans.value = _liveServicePlans.value + (cleanId to parsed)
+                            return@withContext parsed
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Error querying Supabase vtu_prices for $cleanId: ${e.message}")
+            }
+        }
+
+        // 2. Fallback for non-data services only (Cable TV / Education PINs)
+        val catalogItems = com.example.data.model.VtuCatalog.cableProviders
+            .firstOrNull { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
+            ?.bouquets
+            ?.map { b ->
+                val priceStr = if (b.price % 1.0 == 0.0) b.price.toLong().toString() else b.price.toString()
                 GsubzPlanItem(
-                    displayName = "${plan.dataAmount} - ${plan.validity}",
-                    value = plan.planCode,
+                    displayName = b.name,
+                    value = b.planCode,
                     price = priceStr
                 )
             }
-            .ifEmpty {
-                com.example.data.model.VtuCatalog.cableProviders
-                    .firstOrNull { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
-                    ?.bouquets
-                    ?.map { b ->
-                        val priceStr = if (b.price % 1.0 == 0.0) b.price.toLong().toString() else b.price.toString()
-                        GsubzPlanItem(
-                            displayName = b.name,
-                            value = b.planCode,
-                            price = priceStr
-                        )
-                    }
-                    .orEmpty()
-            }
+            .orEmpty()
             .ifEmpty {
                 com.example.data.model.VtuCatalog.educationExams
                     .filter { it.gsubzServiceId.equals(cleanId, ignoreCase = true) }
@@ -637,7 +767,8 @@ object GsubzVtuService {
         userId: String? = null,
         userEmail: String? = null,
         userToken: String? = null,
-        supabaseAnonKey: String = SupabaseProvider.rawKey
+        supabaseAnonKey: String = SupabaseProvider.rawKey,
+        userHasEnoughDashboardBalance: Boolean = true
     ): GsubzOrderResult = withContext(Dispatchers.IO) {
         val cleanPhone = phone.trim()
         val activeToken = SupabaseProvider.resolveSessionAccessToken(userToken)
@@ -717,7 +848,8 @@ object GsubzVtuService {
         return@withContext parseAndFinalizeGsubzResponse(
             rawBody = rawBody,
             httpStatusCode = httpStatusCode,
-            requestedAmount = amount
+            requestedAmount = amount,
+            userHasEnoughDashboardBalance = userHasEnoughDashboardBalance
         )
     }
 
@@ -728,11 +860,23 @@ object GsubzVtuService {
         return obj.optString(key, "").trim().toDoubleOrNull()
     }
 
-    private fun formatGsubzDescription(rawDescription: String, apiResponse: String = ""): String {
+    private fun formatGsubzDescription(
+        rawDescription: String,
+        apiResponse: String = "",
+        userHasEnoughDashboardBalance: Boolean = true
+    ): String {
         val cleanDesc = rawDescription.trim()
         val cleanApi = apiResponse.trim()
+        val hasTopUpPrompt = cleanDesc.contains("top up", ignoreCase = true) ||
+            cleanDesc.contains("top-up", ignoreCase = true)
         return when {
-            cleanDesc.equals("INSUFFICIENT_BALANCE", ignoreCase = true) -> "Insufficient wallet balance"
+            hasTopUpPrompt -> cleanDesc
+            !userHasEnoughDashboardBalance && cleanDesc.contains("insufficient", ignoreCase = true) ->
+                "Insufficient wallet balance. Please top up your account."
+            cleanDesc.equals("INSUFFICIENT_BALANCE", ignoreCase = true) -> "Purchase failed"
+            cleanDesc.equals("Insufficient wallet balance", ignoreCase = true) ||
+                cleanDesc.equals("Insufficient balance", ignoreCase = true) ||
+                (userHasEnoughDashboardBalance && cleanDesc.contains("insufficient", ignoreCase = true)) -> "Purchase failed"
             cleanDesc.equals("INVALID_PLAN", ignoreCase = true) -> {
                 if (cleanApi.isNotBlank()) cleanApi else "This service or plan is not available"
             }
@@ -747,7 +891,8 @@ object GsubzVtuService {
     fun parseAndFinalizeGsubzResponse(
         rawBody: String,
         httpStatusCode: Int,
-        requestedAmount: Double
+        requestedAmount: Double,
+        userHasEnoughDashboardBalance: Boolean = true
     ): GsubzOrderResult {
         try {
             val json = JSONObject(rawBody)
@@ -779,8 +924,9 @@ object GsubzVtuService {
             val narration = json.optString("narration", "").takeIf { it.isNotBlank() && it != "null" }
             val apiResponse = gsubzDataObj?.optString("api_response", "")?.takeIf { it.isNotBlank() && it != "null" }
 
-            // Requirement 5: Show the "error" text from the response,
-            // e.g. "Insufficient wallet balance" or "This service or plan is not available".
+            // Show the "error" text from the response, mapping Gsubz provider insufficient balance
+            // (when user has enough money in their dashboard) to "Purchase failed" while preserving
+            // "Insufficient wallet balance. Please top up your account." when the user tries to buy more than their dashboard balance.
             val explicitError = json.optString("error", "").takeIf { it.isNotBlank() && it != "null" }
                 ?: dataObj.optString("error", "").takeIf { it.isNotBlank() && it != "null" }
 
@@ -856,12 +1002,34 @@ object GsubzVtuService {
             }
 
             if (explicitError != null) {
+                val cleanErr = explicitError.trim()
+                val hasTopUp = cleanErr.contains("top up", ignoreCase = true) ||
+                    cleanErr.contains("top-up", ignoreCase = true)
+                val isGsubzInsufficient = !hasTopUp && (
+                    cleanErr.equals("INSUFFICIENT_BALANCE", ignoreCase = true) ||
+                        (userHasEnoughDashboardBalance && (
+                            cleanErr.equals("Insufficient wallet balance", ignoreCase = true) ||
+                                cleanErr.equals("Insufficient balance", ignoreCase = true) ||
+                                cleanErr.contains("insufficient", ignoreCase = true)
+                            )) ||
+                        ((gsubzDataObj != null || contentObj != null || rawTxId.startsWith("REF_", ignoreCase = true) || rawTxId.startsWith("GSUBZ", ignoreCase = true)) &&
+                            cleanErr.contains("insufficient", ignoreCase = true))
+                    )
+                val resolvedErrorMsg = when {
+                    hasTopUp -> cleanErr
+                    isGsubzInsufficient -> "Purchase failed"
+                    !userHasEnoughDashboardBalance && cleanErr.contains("insufficient", ignoreCase = true) ->
+                        "Insufficient wallet balance. Please top up your account."
+                    cleanErr.equals("Insufficient wallet balance", ignoreCase = true) ||
+                        cleanErr.equals("Insufficient balance", ignoreCase = true) -> "Purchase failed"
+                    else -> cleanErr
+                }
                 return GsubzOrderResult(
                     isSuccess = false,
                     isPending = false,
                     status = "FAILED",
                     transactionId = txId,
-                    message = explicitError,
+                    message = resolvedErrorMsg,
                     amountPaid = 0.0,
                     airtimeValue = serverAirtimeValue,
                     cashback = serverCashback,
@@ -909,10 +1077,14 @@ object GsubzVtuService {
                     )
             ).trim()
 
-            val formattedDescription = formatGsubzDescription(rawDescription, apiResponse.orEmpty())
+            val formattedDescription = formatGsubzDescription(
+                rawDescription = rawDescription,
+                apiResponse = apiResponse.orEmpty(),
+                userHasEnoughDashboardBalance = userHasEnoughDashboardBalance
+            )
 
             if (!isSuccess) {
-                val errorMsg = formattedDescription.ifBlank { "Transaction failed" }
+                val errorMsg = formattedDescription.ifBlank { "Purchase failed" }
                 return GsubzOrderResult(
                     isSuccess = false,
                     isPending = false,

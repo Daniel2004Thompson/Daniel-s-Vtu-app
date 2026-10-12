@@ -515,12 +515,11 @@ object ApiNetworkClient {
         get() = "${com.example.util.SecurityVault.supabaseUrl().trimEnd('/')}/"
 
     val okHttpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(25, TimeUnit.SECONDS)
-            .readTimeout(25, TimeUnit.SECONDS)
-            .writeTimeout(25, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
+        com.example.util.SecurityVault.createGatewayOkHttpClient(
+            connectTimeoutSec = 25,
+            readTimeoutSec = 25,
+            writeTimeoutSec = 25
+        )
     }
 
     val service: VtuApiService by lazy {

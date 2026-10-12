@@ -121,6 +121,7 @@ dependencies {
   implementation("io.github.jan-tennert.supabase:realtime-kt")
   implementation("io.github.jan-tennert.supabase:postgrest-kt")
   implementation("io.github.jan-tennert.supabase:functions-kt")
+  implementation("io.github.jan-tennert.supabase:storage-kt")
   implementation("io.ktor:ktor-client-okhttp:3.0.3")
   implementation("io.ktor:ktor-client-cio:3.0.3")
   implementation("io.ktor:ktor-client-content-negotiation:3.0.3")

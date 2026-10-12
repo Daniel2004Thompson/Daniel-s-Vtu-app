@@ -14,6 +14,7 @@ import io.github.jan.supabase.functions.Functions
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.realtime.Realtime
+import io.github.jan.supabase.storage.Storage
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.request.header
@@ -34,6 +35,9 @@ object SupabaseProvider {
     val safeUrl: String
         get() = com.example.util.SecurityVault.supabaseUrl()
 
+    val gatewayUrl: String
+        get() = com.example.util.SecurityVault.supabaseGatewayUrl()
+
     val rawKey: String
         get() = com.example.util.SecurityVault.supabaseAnonKey()
 
@@ -49,24 +53,30 @@ object SupabaseProvider {
                 supabaseUrl = safeUrl,
                 supabaseKey = rawKey
             ) {
-                httpEngine = OkHttp.create()
+                httpEngine = OkHttp.create {
+                    preconfigured = com.example.data.remote.ApiNetworkClient.okHttpClient
+                }
                 install(Auth)
                 install(Postgrest)
                 install(Realtime)
                 install(Functions)
+                install(Storage)
             }
         } catch (_: Throwable) {
             createSupabaseClient(
                 supabaseUrl = safeUrl,
                 supabaseKey = rawKey
             ) {
-                httpEngine = OkHttp.create()
+                httpEngine = OkHttp.create {
+                    preconfigured = com.example.data.remote.ApiNetworkClient.okHttpClient
+                }
                 install(Auth) {
                     minimalSettings()
                 }
                 install(Postgrest)
                 install(Realtime)
                 install(Functions)
+                install(Storage)
             }
         }
     }

@@ -123,7 +123,7 @@ data class DataPlan(
     val category: DataCategory,
     val dataAmount: String,
     val validity: String,
-    val price: Double,
+    val price: Double = 0.0,
     val originalPrice: Double? = null,
     val planCode: String = id,
     val gsubzServiceId: String = when (network) {

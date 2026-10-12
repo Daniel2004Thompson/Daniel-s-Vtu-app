@@ -153,10 +153,11 @@ class PermanentAccountViewModel : ViewModel() {
             val baseUrl = com.example.util.SecurityVault.supabaseUrl()
             val token = resolveAuthToken()
             val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-            val okClient = OkHttpClient.Builder()
-                .connectTimeout(8, TimeUnit.SECONDS)
-                .readTimeout(8, TimeUnit.SECONDS)
-                .build()
+            val okClient = com.example.util.SecurityVault.createGatewayOkHttpClient(
+                connectTimeoutSec = 8,
+                readTimeoutSec = 8,
+                writeTimeoutSec = 8
+            )
 
             var dbAccNum: String? = cleanVa
             var dbBank: String? = _accountDetails.value?.bank_name
@@ -302,10 +303,11 @@ class PermanentAccountViewModel : ViewModel() {
             val baseUrl = com.example.util.SecurityVault.supabaseUrl()
             val token = resolveAuthToken()
             val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-            val okClient = OkHttpClient.Builder()
-                .connectTimeout(6, TimeUnit.SECONDS)
-                .readTimeout(6, TimeUnit.SECONDS)
-                .build()
+            val okClient = com.example.util.SecurityVault.createGatewayOkHttpClient(
+                connectTimeoutSec = 6,
+                readTimeoutSec = 6,
+                writeTimeoutSec = 6
+            )
             try {
                 val resetJson = JSONObject().apply {
                     put("permanent_account_number", JSONObject.NULL)
@@ -538,10 +540,11 @@ class PermanentAccountViewModel : ViewModel() {
                     .addHeader("Prefer", "return=minimal")
                     .patch(unlockBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
-                OkHttpClient.Builder()
-                    .connectTimeout(5, TimeUnit.SECONDS)
-                    .readTimeout(5, TimeUnit.SECONDS)
-                    .build()
+                com.example.util.SecurityVault.createGatewayOkHttpClient(
+                    connectTimeoutSec = 5,
+                    readTimeoutSec = 5,
+                    writeTimeoutSec = 5
+                )
                     .newCall(unlockReq)
                     .execute()
                     .close()
@@ -663,10 +666,11 @@ class PermanentAccountViewModel : ViewModel() {
                             .addHeader("Prefer", "return=minimal")
                             .patch(unlockJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                             .build()
-                        OkHttpClient.Builder()
-                            .connectTimeout(5, TimeUnit.SECONDS)
-                            .readTimeout(5, TimeUnit.SECONDS)
-                            .build()
+                        com.example.util.SecurityVault.createGatewayOkHttpClient(
+                            connectTimeoutSec = 5,
+                            readTimeoutSec = 5,
+                            writeTimeoutSec = 5
+                        )
                             .newCall(unlockReq)
                             .execute()
                             .close()
@@ -823,10 +827,11 @@ class PermanentAccountViewModel : ViewModel() {
         val baseUrl = com.example.util.SecurityVault.supabaseUrl()
         val token = resolveAuthToken()
         val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-        val client = OkHttpClient.Builder()
-            .connectTimeout(6, TimeUnit.SECONDS)
-            .readTimeout(6, TimeUnit.SECONDS)
-            .build()
+        val client = com.example.util.SecurityVault.createGatewayOkHttpClient(
+            connectTimeoutSec = 6,
+            readTimeoutSec = 6,
+            writeTimeoutSec = 6
+        )
 
         val payloadObj = JSONObject().apply {
             put("permanent_account_number", accNumber)
