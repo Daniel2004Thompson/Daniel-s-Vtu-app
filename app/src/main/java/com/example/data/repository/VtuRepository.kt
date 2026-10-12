@@ -2589,6 +2589,13 @@ class VtuRepository(
                 )
             }
 
+            val dbAvatarUrl = (dbRow?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+                ?: dbRow?.get("avatar_url")?.toString()?.trim('"')
+                ?: meta?.get("avatar_data_uri")?.toString()?.trim('"')
+                ?: meta?.get("avatar_url")?.toString()?.trim('"'))?.takeIf {
+                !it.equals("null", ignoreCase = true) && it.isNotBlank()
+            }
+
             val user = SupabaseUser(
                 id = realUserId,
                 email = email.trim(),
@@ -2606,6 +2613,12 @@ class VtuRepository(
                 dynamicAccountAmount = existingLocalProfile?.dynamicAccountAmount
             )
             saveSession(user, realToken, realRefreshToken)
+            com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
+                context = context,
+                userId = realUserId,
+                email = email.trim(),
+                remoteAvatarUrl = dbAvatarUrl
+            )
         }
         return result
     }
@@ -2741,6 +2754,13 @@ class VtuRepository(
                 !it.equals("null", ignoreCase = true) && it.isNotBlank()
             }
 
+            val dbAvatarUrl = (dbRow?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+                ?: dbRow?.get("avatar_url")?.toString()?.trim('"')
+                ?: meta?.get("avatar_data_uri")?.toString()?.trim('"')
+                ?: meta?.get("avatar_url")?.toString()?.trim('"'))?.takeIf {
+                !it.equals("null", ignoreCase = true) && it.isNotBlank()
+            }
+
             val user = SupabaseUser(
                 id = realUserId,
                 email = email.trim(),
@@ -2754,6 +2774,12 @@ class VtuRepository(
                 virtualAccountName = dbAccName
             )
             saveSession(user, realToken, realRefreshToken)
+            com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
+                context = context,
+                userId = realUserId,
+                email = email.trim(),
+                remoteAvatarUrl = dbAvatarUrl
+            )
         }
         return result
     }
@@ -2936,9 +2962,12 @@ class VtuRepository(
         SupabaseProvider.tokenRefreshCallback = { resolveValidAccessToken(forceRefresh = true) }
         if (_isLoggedIn.value) {
             val initUid = _currentUser.value?.id?.trim()
+            val initEmail = _currentUser.value?.email
             if (!initUid.isNullOrBlank()) {
                 loadUserSecurityAndSettings(initUid)
                 repoScope.launch {
+                    com.example.ui.components.ProfilePictureStore.ensureSupabaseAuthHydrated(context)
+                    com.example.ui.components.ProfilePictureStore.loadAvatar(context, initEmail)
                     refreshMyTransactions(20)
                 }
             }
@@ -3230,6 +3259,17 @@ class VtuRepository(
                         applyUsersTransactionHistoryJson(userId, histStr)
                     }
 
+                    val remoteAvatarUrl = (data["avatar_url"]?.jsonPrimitive?.contentOrNull
+                        ?: data["avatar_url"]?.toString()?.trim('"'))?.takeIf {
+                        !it.equals("null", ignoreCase = true) && it.isNotBlank()
+                    }
+                    com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
+                        context = context,
+                        userId = userId,
+                        email = activeEmail,
+                        remoteAvatarUrl = remoteAvatarUrl
+                    )
+
                     val remotePhone = sanitizeRealPhone(
                         data["phone"]?.jsonPrimitive?.contentOrNull
                             ?: data["phone"]?.toString()?.trim('"')
@@ -3383,6 +3423,17 @@ class VtuRepository(
                             val rawHist = if (obj.isNull("transaction_history")) "[]" else (obj.opt("transaction_history")?.toString() ?: "[]")
                             applyUsersTransactionHistoryJson(userId, rawHist)
                         }
+                        val remoteAvatarUrl = if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
+                            obj.optString("avatar_url", "").trim().takeIf {
+                                !it.equals("null", ignoreCase = true) && it.isNotBlank()
+                            }
+                        } else null
+                        com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
+                            context = context,
+                            userId = userId,
+                            email = activeEmail,
+                            remoteAvatarUrl = remoteAvatarUrl
+                        )
                         val remotePhone = sanitizeRealPhone(obj.optString("phone", "")) ?: _currentUser.value?.phone
                         val remoteVa = obj.optString("permanent_account_number").ifBlank { obj.optString("virtual_account_number") }
                             .trim().takeIf { !it.equals("null", ignoreCase = true) && it.filter { c -> c.isDigit() }.length in 10..12 }
@@ -4092,6 +4143,8 @@ class VtuRepository(
 
         repoScope.launch {
             persistCurrentUserToLocalDatabase(resolvedUser)
+            com.example.ui.components.ProfilePictureStore.ensureSupabaseAuthHydrated(context)
+            com.example.ui.components.ProfilePictureStore.loadAvatar(context, resolvedUser.email)
             refreshAirtimePrices()
             refreshMyTransactions(20)
         }
@@ -4117,6 +4170,7 @@ class VtuRepository(
         _currentUser.value = null
         _accessToken.value = null
         SupabaseProvider.activeUserAccessToken = null
+        com.example.ui.components.ProfilePictureStore.onSessionCleared()
         _isLoggedIn.value = false
         _walletBalance.value = 0.0
         _cashbackBalance.value = 0.0

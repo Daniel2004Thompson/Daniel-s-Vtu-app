@@ -208,7 +208,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                 } catch (_: Throwable) { null }
 
                 var data = try {
-                    supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history")) {
+                    supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history", "avatar_url")) {
                         filter { eq("id", currentUserId) }
                         limit(1)
                     }.decodeSingleOrNull<JsonObject>()
@@ -223,7 +223,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
 
                 if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
                     try {
-                        val byEmail = supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history")) {
+                        val byEmail = supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history", "avatar_url")) {
                             filter { eq("email", activeEmail) }
                             limit(1)
                         }.decodeSingleOrNull<JsonObject>()
@@ -242,6 +242,16 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                         }
                         com.vtu.app.wallet.SharedWalletObserver.updateTransactionHistory(histStr)
                     }
+                    val remoteAvatarUrl = (data["avatar_url"]?.jsonPrimitive?.contentOrNull
+                        ?: data["avatar_url"]?.toString()?.trim('"'))?.takeIf {
+                        !it.equals("null", ignoreCase = true) && it.isNotBlank()
+                    }
+                    com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
+                        context = context,
+                        userId = currentUserId,
+                        email = activeEmail,
+                        remoteAvatarUrl = remoteAvatarUrl
+                    )
                     val initialBal = data["wallet_balance"]?.jsonPrimitive?.doubleOrNull
                         ?: data["wallet_balance"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
                         ?: data["wallet_balance"]?.toString()?.trim('"')?.toDoubleOrNull()

@@ -149,7 +149,7 @@ fun ProfileSecurityScreen(
 
                     var data = try {
                         supabase.postgrest.from("users").select(
-                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone")
+                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "avatar_url")
                         ) {
                             filter { eq("id", userId) }
                             limit(1)
@@ -168,7 +168,7 @@ fun ProfileSecurityScreen(
                     if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
                         try {
                             val byEmail = supabase.postgrest.from("users").select(
-                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone")
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "avatar_url")
                             ) {
                                 filter { eq("email", activeEmail) }
                                 limit(1)
@@ -178,6 +178,16 @@ fun ProfileSecurityScreen(
                             }
                         } catch (_: Throwable) {}
                     }
+
+                    val remoteAvatarUrl = data?.get("avatar_url")?.let {
+                        (it as? kotlinx.serialization.json.JsonPrimitive)?.content ?: it.toString().trim('"')
+                    }?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                    com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
+                        context = context,
+                        userId = userId,
+                        email = activeEmail,
+                        remoteAvatarUrl = remoteAvatarUrl
+                    )
 
                     val dbPhone = com.example.data.repository.VtuRepository.sanitizeRealPhone(
                         data?.get("phone")?.let {

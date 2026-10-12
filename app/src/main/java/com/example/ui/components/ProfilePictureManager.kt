@@ -102,6 +102,7 @@ suspend fun uploadAvatar(context: Context, uri: Uri) {
     val supabase = SupabaseInstance.client
     val userId = try { supabase?.auth?.currentUserOrNull()?.id } catch (_: Throwable) { null }
         ?: ProfilePictureStore.resolveActiveUserId(context)
+    val userEmail = ProfilePictureStore.resolveActiveUserEmail(context, null)
 
     // Shrink to max 512px and compress to JPEG (keeps it well under 2 MB)
     val bytes = withContext(Dispatchers.IO) {
@@ -124,33 +125,34 @@ suspend fun uploadAvatar(context: Context, uri: Uri) {
         val jpegBytes = ByteArrayOutputStream().also {
             small.compress(Bitmap.CompressFormat.JPEG, 85, it)
         }.toByteArray()
-        ProfilePictureStore.persistLocalAvatarImmediately(context, small, jpegBytes, null)
+        ProfilePictureStore.persistLocalAvatarImmediately(context, small, jpegBytes, userEmail)
         jpegBytes
     } ?: return
 
     if (userId.isNullOrBlank()) return
 
-    ProfilePictureStore.beginRemoteUpload()
-    try {
-        var sdkSucceeded = false
-        if (supabase != null) {
-            try {
-                supabase.storage.from("avatars").upload("$userId/avatar.jpg", bytes) { upsert = true }
-                supabase.postgrest.rpc("set_my_avatar")      // saves the link in users.avatar_url
-                sdkSucceeded = true
-            } catch (_: Throwable) {
-                sdkSucceeded = false
+    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+        ProfilePictureStore.beginRemoteUpload()
+        try {
+            var sdkStorageUploaded = false
+            if (supabase != null) {
+                try {
+                    supabase.storage.from("avatars").upload("$userId/avatar.jpg", bytes) { upsert = true }
+                    sdkStorageUploaded = true
+                    supabase.postgrest.rpc("set_my_avatar")      // saves the link in users.avatar_url
+                } catch (_: Throwable) {}
             }
+            // Always ensure Storage + RPC + public.users.avatar_url are synced with the valid user JWT
+            ProfilePictureStore.uploadAvatarRestFallback(
+                context = context,
+                userId = userId,
+                bytes = bytes,
+                email = userEmail,
+                skipStorageUpload = sdkStorageUploaded
+            )
+        } finally {
+            ProfilePictureStore.endRemoteUpload()
         }
-        // Always ensure Storage + RPC + public.users.avatar_url are synced with the valid user JWT
-        ProfilePictureStore.uploadAvatarRestFallback(
-            context = context,
-            userId = userId,
-            bytes = bytes,
-            skipStorageUpload = sdkSucceeded
-        )
-    } finally {
-        ProfilePictureStore.endRemoteUpload()
     }
 }
 
@@ -160,13 +162,15 @@ suspend fun removeAvatar() {
         ?: ProfilePictureStore.resolveActiveUserId(null)
     ProfilePictureStore.markAvatarRemoved()
     if (userId.isNullOrBlank()) return
-    try {
-        if (supabase != null) {
-            supabase.storage.from("avatars").delete("$userId/avatar.jpg")
-            supabase.postgrest.rpc("remove_my_avatar")   // clears the link, app shows "DT"
-        }
-    } catch (_: Throwable) {}
-    ProfilePictureStore.removeAvatarRestFallback(userId)
+    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+        try {
+            if (supabase != null) {
+                supabase.storage.from("avatars").delete("$userId/avatar.jpg")
+                supabase.postgrest.rpc("remove_my_avatar")   // clears the link, app shows "DT"
+            }
+        } catch (_: Throwable) {}
+        ProfilePictureStore.removeAvatarRestFallback(userId)
+    }
 }
 
 object ProfilePictureStore {
@@ -174,6 +178,10 @@ object ProfilePictureStore {
     private const val KEY_AVATAR_B64 = "key_profile_avatar_b64"
     private const val KEY_AVATAR_REMOVED = "key_profile_avatar_explicitly_removed"
     private const val KEY_PENDING_CAMERA_PATH = "key_pending_camera_file_path"
+
+    private val backgroundScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
+    )
 
     private val _currentAvatar = MutableStateFlow<Bitmap?>(null)
     val currentAvatar: StateFlow<Bitmap?> = _currentAvatar.asStateFlow()
@@ -258,6 +266,9 @@ object ProfilePictureStore {
         }
         if (fromAuth != null) return fromAuth
 
+        val fromJwt = com.example.util.JwtUtils.getEmailFromJwt(SupabaseInstance.activeUserAccessToken)?.trim()
+        if (!fromJwt.isNullOrBlank()) return fromJwt
+
         if (context != null) {
             try {
                 val prefs = getSecurePrefs(context)
@@ -296,34 +307,104 @@ object ProfilePictureStore {
         return null
     }
 
+    internal fun onSessionCleared() {
+        if (!isUploadingAvatar.get()) {
+            _currentAvatar.value = null
+            loadedEmailKey = null
+        }
+    }
+
     internal suspend fun ensureSupabaseAuthHydrated(context: Context?) {
         val supabase = SupabaseInstance.client ?: return
         val existingToken = try { supabase.auth.currentAccessTokenOrNull()?.trim() } catch (_: Throwable) { null }
+        val existingUser = try { supabase.auth.currentUserOrNull() } catch (_: Throwable) { null }
         val hasValidSession = !existingToken.isNullOrBlank() &&
             existingToken != SupabaseInstance.rawKey &&
-            !com.example.util.JwtUtils.isExpired(existingToken)
-        if (hasValidSession) return
+            !com.example.util.JwtUtils.isExpired(existingToken) &&
+            existingUser != null
+        if (hasValidSession) {
+            SupabaseInstance.activeUserAccessToken = existingToken
+            return
+        }
         try {
             val prefs = context?.let { getSecurePrefs(it) }
             val storedAccess = prefs?.getString("key_auth_access_token", null) ?: prefs?.getString("key_access_token", null)
-            val access = SupabaseInstance.resolveValidSessionAccessToken(storedAccess)
-            val refresh = (prefs?.getString("key_auth_refresh_token", null) ?: prefs?.getString("key_refresh_token", null)).orEmpty()
+            var access = SupabaseInstance.resolveValidSessionAccessToken(storedAccess)
+            var refresh = (prefs?.getString("key_auth_refresh_token", null) ?: prefs?.getString("key_refresh_token", null)).orEmpty()
+
+            // If access token is expired and we have a refresh token, refresh via Supabase Auth REST endpoint directly
+            if ((access.isBlank() || access == SupabaseInstance.rawKey || com.example.util.JwtUtils.isExpired(access)) && refresh.isNotBlank()) {
+                val baseUrl = SupabaseInstance.safeUrl.trimEnd('/')
+                val anonKey = SupabaseInstance.rawKey
+                if (baseUrl.isNotBlank() && anonKey.isNotBlank()) {
+                    try {
+                        val bodyJson = org.json.JSONObject().put("refresh_token", refresh).toString()
+                        val req = Request.Builder()
+                            .url("$baseUrl/auth/v1/token?grant_type=refresh_token")
+                            .addHeader("apikey", anonKey)
+                            .addHeader("Content-Type", "application/json")
+                            .post(bodyJson.toRequestBody("application/json".toMediaType()))
+                            .build()
+                        com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
+                            if (res.isSuccessful) {
+                                val json = org.json.JSONObject(res.body?.string().orEmpty().ifBlank { "{}" })
+                                val newAccess = json.optString("access_token").trim()
+                                val newRefresh = json.optString("refresh_token").trim()
+                                if (newAccess.isNotBlank()) {
+                                    access = newAccess
+                                    if (newRefresh.isNotBlank()) refresh = newRefresh
+                                    prefs?.edit()?.apply {
+                                        putString("key_auth_access_token", newAccess)
+                                        if (newRefresh.isNotBlank()) putString("key_auth_refresh_token", newRefresh)
+                                        apply()
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {}
+                }
+            }
+
             if (access.isNotBlank() && access != SupabaseInstance.rawKey && !access.startsWith("session_")) {
                 SupabaseInstance.activeUserAccessToken = access
                 supabase.auth.importAuthToken(
                     accessToken = access,
                     refreshToken = refresh,
-                    retrieveUser = false,
+                    retrieveUser = true,
                     autoRefresh = refresh.isNotBlank()
                 )
             }
         } catch (_: Throwable) {}
     }
 
+    private fun buildCompactDataUri(bytes: ByteArray): String? {
+        return try {
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: decodeSampledBitmap(bytes, 256) ?: return null
+            val scale = 256f / maxOf(bmp.width.coerceAtLeast(1), bmp.height.coerceAtLeast(1))
+            val scaled = if (scale < 1f) {
+                Bitmap.createScaledBitmap(
+                    bmp,
+                    (bmp.width * scale).toInt().coerceAtLeast(1),
+                    (bmp.height * scale).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else {
+                bmp
+            }
+            val compactBytes = ByteArrayOutputStream().also {
+                scaled.compress(Bitmap.CompressFormat.JPEG, 80, it)
+            }.toByteArray()
+            "data:image/jpeg;base64," + Base64.encodeToString(compactBytes, Base64.NO_WRAP)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     internal suspend fun uploadAvatarRestFallback(
         context: Context?,
         userId: String,
         bytes: ByteArray,
+        email: String? = null,
         skipStorageUpload: Boolean = false
     ) = withContext(Dispatchers.IO) {
         try {
@@ -336,6 +417,7 @@ object ProfilePictureStore {
             if (baseUrl.isBlank() || anonKey.isBlank()) return@withContext
             val http = com.example.data.remote.ApiNetworkClient.okHttpClient
 
+            var storageUploadOk = skipStorageUpload
             if (!skipStorageUpload) {
                 val uploadReq = Request.Builder()
                     .url("$baseUrl/storage/v1/object/avatars/$userId/avatar.jpg")
@@ -345,11 +427,11 @@ object ProfilePictureStore {
                     .addHeader("Content-Type", "image/jpeg")
                     .post(bytes.toRequestBody("image/jpeg".toMediaType()))
                     .build()
-                val uploadOk = try {
+                storageUploadOk = try {
                     http.newCall(uploadReq).execute().use { it.isSuccessful }
                 } catch (_: Throwable) { false }
 
-                if (!uploadOk) {
+                if (!storageUploadOk) {
                     val putReq = Request.Builder()
                         .url("$baseUrl/storage/v1/object/avatars/$userId/avatar.jpg")
                         .addHeader("apikey", anonKey)
@@ -358,10 +440,13 @@ object ProfilePictureStore {
                         .addHeader("Content-Type", "image/jpeg")
                         .put(bytes.toRequestBody("image/jpeg".toMediaType()))
                         .build()
-                    try { http.newCall(putReq).execute().close() } catch (_: Throwable) {}
+                    storageUploadOk = try {
+                        http.newCall(putReq).execute().use { it.isSuccessful }
+                    } catch (_: Throwable) { false }
                 }
             }
 
+            // Call set_my_avatar RPC so server function updates public.users.avatar_url
             val rpcReq = Request.Builder()
                 .url("$baseUrl/rest/v1/rpc/set_my_avatar")
                 .addHeader("apikey", anonKey)
@@ -371,18 +456,89 @@ object ProfilePictureStore {
                 .build()
             try { http.newCall(rpcReq).execute().close() } catch (_: Throwable) {}
 
-            // Also ensure public.users.avatar_url is directly populated in case set_my_avatar RPC did not set it
+            // Verify if Storage URL actually serves a valid decodable image
             val avatarPublicUrl = "$baseUrl/storage/v1/object/public/avatars/$userId/avatar.jpg"
-            val patchBody = org.json.JSONObject().put("avatar_url", avatarPublicUrl).toString()
-            val patchReq = Request.Builder()
+            val storageDeliverable = if (storageUploadOk) {
+                val verifyBmp = downloadAndDecodeUrl(avatarPublicUrl, bearer, anonKey)
+                    ?: downloadAndDecodeUrl("$baseUrl/storage/v1/object/authenticated/avatars/$userId/avatar.jpg", bearer, anonKey)
+                    ?: downloadAndDecodeUrl("$baseUrl/storage/v1/object/avatars/$userId/avatar.jpg", bearer, anonKey)
+                verifyBmp != null
+            } else {
+                false
+            }
+
+            val compactDataUri = buildCompactDataUri(bytes)
+            // Value to store in public.users.avatar_url:
+            // If Storage object is downloadable, use the Storage public URL;
+            // if Storage bucket is unavailable/blocked, store the self-contained data URI directly in public.users.avatar_url!
+            val effectiveAvatarUrl = if (storageDeliverable) {
+                avatarPublicUrl
+            } else {
+                compactDataUri ?: avatarPublicUrl
+            }
+
+            // Try updating public.users.avatar_url via Postgrest SDK first
+            try {
+                SupabaseInstance.client?.from("users")?.update(
+                    buildJsonObject { put("avatar_url", JsonPrimitive(effectiveAvatarUrl)) }
+                ) {
+                    filter { eq("id", userId) }
+                }
+            } catch (_: Throwable) {}
+
+            val patchBody = org.json.JSONObject().put("avatar_url", effectiveAvatarUrl).toString()
+            var updatedRows = false
+            val patchByIdReq = Request.Builder()
                 .url("$baseUrl/rest/v1/users?id=eq.$userId")
                 .addHeader("apikey", anonKey)
                 .addHeader("Authorization", bearer)
                 .addHeader("Content-Type", "application/json")
-                .addHeader("Prefer", "return=minimal")
+                .addHeader("Prefer", "return=representation")
                 .patch(patchBody.toRequestBody("application/json".toMediaType()))
                 .build()
-            try { http.newCall(patchReq).execute().close() } catch (_: Throwable) {}
+            try {
+                http.newCall(patchByIdReq).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
+                        updatedRows = arr.length() > 0
+                    }
+                }
+            } catch (_: Throwable) {}
+
+            val resolvedEmail = resolveActiveUserEmail(context, email)
+            if (!updatedRows && !resolvedEmail.isNullOrBlank()) {
+                val encodedEmail = java.net.URLEncoder.encode(resolvedEmail, "UTF-8")
+                val patchByEmailReq = Request.Builder()
+                    .url("$baseUrl/rest/v1/users?email=eq.$encodedEmail")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "return=representation")
+                    .patch(patchBody.toRequestBody("application/json".toMediaType()))
+                    .build()
+                try {
+                    http.newCall(patchByEmailReq).execute().close()
+                } catch (_: Throwable) {}
+            }
+
+            // Also persist in Supabase Auth user_metadata so login session always carries avatar_url & avatar_data_uri
+            try {
+                val metaObj = org.json.JSONObject().apply {
+                    put("avatar_url", effectiveAvatarUrl)
+                    if (!compactDataUri.isNullOrBlank()) {
+                        put("avatar_data_uri", compactDataUri)
+                    }
+                }
+                val authBody = org.json.JSONObject().put("data", metaObj).toString()
+                val authReq = Request.Builder()
+                    .url("$baseUrl/auth/v1/user")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Content-Type", "application/json")
+                    .put(authBody.toRequestBody("application/json".toMediaType()))
+                    .build()
+                http.newCall(authReq).execute().close()
+            } catch (_: Throwable) {}
         } catch (_: Throwable) {}
     }
 
@@ -422,6 +578,22 @@ object ProfilePictureStore {
                 .patch(patchBody.toRequestBody("application/json".toMediaType()))
                 .build()
             try { http.newCall(patchReq).execute().close() } catch (_: Throwable) {}
+
+            try {
+                val metaObj = org.json.JSONObject().apply {
+                    put("avatar_url", org.json.JSONObject.NULL)
+                    put("avatar_data_uri", org.json.JSONObject.NULL)
+                }
+                val authBody = org.json.JSONObject().put("data", metaObj).toString()
+                val authReq = Request.Builder()
+                    .url("$baseUrl/auth/v1/user")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Content-Type", "application/json")
+                    .put(authBody.toRequestBody("application/json".toMediaType()))
+                    .build()
+                http.newCall(authReq).execute().close()
+            } catch (_: Throwable) {}
         } catch (_: Throwable) {}
     }
 
@@ -452,6 +624,172 @@ object ProfilePictureStore {
             prefs.getString(KEY_PENDING_CAMERA_PATH, null)?.takeIf { it.isNotBlank() }
         } catch (_: Throwable) {
             null
+        }
+    }
+
+    private fun decodeBytesToValidBitmap(bytes: ByteArray?): Bitmap? {
+        if (bytes == null || bytes.size < 32) return null
+        return try {
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: decodeSampledBitmap(bytes, 512)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun downloadAndDecodeUrl(url: String, bearer: String, anonKey: String): Bitmap? {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isBlank()) return null
+        if (cleanUrl.startsWith("data:image", ignoreCase = true) || (!cleanUrl.startsWith("http", ignoreCase = true) && cleanUrl.length > 200)) {
+            return decodeBase64Bitmap(cleanUrl)
+        }
+        val http = com.example.data.remote.ApiNetworkClient.okHttpClient
+        // 1. Try authenticated request with user JWT + apikey
+        try {
+            val reqAuth = Request.Builder()
+                .url(cleanUrl)
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", bearer)
+                .addHeader("Cache-Control", "no-cache")
+                .get()
+                .build()
+            http.newCall(reqAuth).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val bmp = decodeBytesToValidBitmap(resp.body?.bytes())
+                    if (bmp != null) return bmp
+                }
+            }
+        } catch (_: Throwable) {}
+
+        // 2. Try public request without Authorization header (in case signed/public URL rejects extra headers)
+        try {
+            val reqPub = Request.Builder()
+                .url(cleanUrl)
+                .addHeader("Cache-Control", "no-cache")
+                .get()
+                .build()
+            http.newCall(reqPub).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val bmp = decodeBytesToValidBitmap(resp.body?.bytes())
+                    if (bmp != null) return bmp
+                }
+            }
+        } catch (_: Throwable) {}
+        return null
+    }
+
+    private suspend fun downloadRemoteAvatarBitmap(
+        userId: String?,
+        remoteAvatarUrl: String?,
+        bearer: String,
+        anonKey: String
+    ): Bitmap? {
+        val baseUrl = SupabaseInstance.safeUrl.trimEnd('/')
+        val cleanUrl = remoteAvatarUrl?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+
+        // 1. If remoteAvatarUrl is a data URI or Base64 string, decode immediately
+        if (!cleanUrl.isNullOrBlank() &&
+            (cleanUrl.startsWith("data:image", ignoreCase = true) || (!cleanUrl.startsWith("http", ignoreCase = true) && !cleanUrl.contains("/") && cleanUrl.length > 128))
+        ) {
+            decodeBase64Bitmap(cleanUrl)?.let { return it }
+        }
+
+        // 2. If remoteAvatarUrl is a full URL or relative Storage path from public.users.avatar_url
+        if (!cleanUrl.isNullOrBlank()) {
+            val resolvedUrl = when {
+                cleanUrl.startsWith("http", ignoreCase = true) -> cleanUrl
+                cleanUrl.startsWith("/storage/", ignoreCase = true) -> "$baseUrl$cleanUrl"
+                cleanUrl.startsWith("storage/", ignoreCase = true) -> "$baseUrl/$cleanUrl"
+                cleanUrl.startsWith("avatars/", ignoreCase = true) -> "$baseUrl/storage/v1/object/public/$cleanUrl"
+                else -> "$baseUrl/storage/v1/object/public/avatars/${cleanUrl.trimStart('/')}"
+            }
+            downloadAndDecodeUrl(resolvedUrl, bearer, anonKey)?.let { return it }
+        }
+
+        // 3. Try all Supabase Storage endpoints for "$userId/avatar.jpg" (validating each decoded Bitmap!)
+        if (!userId.isNullOrBlank() && baseUrl.isNotBlank()) {
+            val storageUrls = listOf(
+                "$baseUrl/storage/v1/object/public/avatars/$userId/avatar.jpg",
+                "$baseUrl/storage/v1/object/authenticated/avatars/$userId/avatar.jpg",
+                "$baseUrl/storage/v1/object/avatars/$userId/avatar.jpg"
+            )
+            for (sUrl in storageUrls) {
+                downloadAndDecodeUrl(sUrl, bearer, anonKey)?.let { return it }
+            }
+
+            val supabase = SupabaseInstance.client
+            if (supabase != null) {
+                val pubBytes = try {
+                    supabase.storage.from("avatars").downloadPublic("$userId/avatar.jpg")
+                } catch (_: Throwable) { null }
+                decodeBytesToValidBitmap(pubBytes)?.let { return it }
+
+                val authBytes = try {
+                    supabase.storage.from("avatars").downloadAuthenticated("$userId/avatar.jpg")
+                } catch (_: Throwable) { null }
+                decodeBytesToValidBitmap(authBytes)?.let { return it }
+            }
+        }
+
+        // 4. Check Supabase Auth user_metadata backup (avatar_data_uri / avatar_url)
+        try {
+            val meta = SupabaseInstance.client?.auth?.currentUserOrNull()?.userMetadata
+            val metaDataUri = meta?.get("avatar_data_uri")?.jsonPrimitive?.contentOrNull
+                ?: meta?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+            if (!metaDataUri.isNullOrBlank() && metaDataUri != "null") {
+                downloadAndDecodeUrl(metaDataUri, bearer, anonKey)?.let { return it }
+            }
+        } catch (_: Throwable) {}
+
+        return null
+    }
+
+    /**
+     * Called whenever `public.users` is fetched during login or profile sync so `avatar_url`
+     * from `public.users` is immediately downloaded and shown on the dashboard.
+     */
+    fun syncAvatarFromUsersRow(
+        context: Context,
+        userId: String?,
+        email: String?,
+        remoteAvatarUrl: String?
+    ) {
+        backgroundScope.launch {
+            if (isUploadingAvatar.get()) return@launch
+            val cleanUrl = remoteAvatarUrl?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+            val resolvedEmail = resolveActiveUserEmail(context, email)
+            val key = sanitizeEmailKey(resolvedEmail)
+            val userFile = getAvatarFile(context, resolvedEmail)
+            val prefs = getSecurePrefs(context)
+            val wasExplicitlyRemoved = prefs.getBoolean("${KEY_AVATAR_REMOVED}_$key", false)
+            if (wasExplicitlyRemoved && cleanUrl.isNullOrBlank()) return@launch
+
+            // If we already have the avatar loaded in memory AND saved on disk for this user, no need to re-download
+            if (_currentAvatar.value != null && userFile.exists() && userFile.length() > 0 && loadedEmailKey == key) {
+                return@launch
+            }
+
+            if (!cleanUrl.isNullOrBlank()) {
+                val storedAccess = prefs.getString("key_auth_access_token", null) ?: prefs.getString("key_access_token", null)
+                val token = SupabaseInstance.resolveValidSessionAccessToken(storedAccess)
+                val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+                val bmp = downloadRemoteAvatarBitmap(userId, cleanUrl, bearer, SupabaseInstance.rawKey)
+                if (bmp != null && !isUploadingAvatar.get()) {
+                    _currentAvatar.value = bmp
+                    loadedEmailKey = key
+                    saveBitmapToFile(bmp, userFile)
+                    val b64 = encodeBitmapBase64(bmp, quality = 85)
+                    prefs.edit()
+                        .putString("${KEY_AVATAR_B64}_$key", b64)
+                        .putString(KEY_AVATAR_B64, b64)
+                        .putBoolean("${KEY_AVATAR_REMOVED}_$key", false)
+                        .apply()
+                    return@launch
+                }
+            }
+            if (_currentAvatar.value == null) {
+                loadAvatar(context, resolvedEmail)
+            }
         }
     }
 
@@ -489,8 +827,7 @@ object ProfilePictureStore {
             if (candidateFile != null) {
                 try {
                     val bytes = candidateFile.readBytes()
-                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        ?: decodeSampledBitmap(bytes, 512)
+                    val bmp = decodeBytesToValidBitmap(bytes)
                     if (bmp != null && !isUploadingAvatar.get() && avatarVersion.get() == startVersion) {
                         _currentAvatar.value = bmp
                     }
@@ -517,32 +854,65 @@ object ProfilePictureStore {
 
         val supabase = SupabaseInstance.client
         val userId = resolveActiveUserId(context)
-        if (supabase != null && !userId.isNullOrBlank()) {
+        val storedAccess = prefs.getString("key_auth_access_token", null) ?: prefs.getString("key_access_token", null)
+        val token = SupabaseInstance.resolveValidSessionAccessToken(storedAccess)
+        val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+        val anonKey = SupabaseInstance.rawKey
+        val baseUrl = SupabaseInstance.safeUrl.trimEnd('/')
+
+        if (supabase != null && (!userId.isNullOrBlank() || !resolvedEmail.isNullOrBlank())) {
             var remoteAvatarUrl: String? = null
             var checkedUsersTable = false
 
-            try {
-                val row = supabase.from("users").select(Columns.list("avatar_url")) {
-                    filter { eq("id", userId) }
-                    limit(1)
-                }.decodeSingleOrNull<JsonObject>()
-                if (row != null) {
-                    checkedUsersTable = true
-                    remoteAvatarUrl = row["avatar_url"]?.jsonPrimitive?.contentOrNull
-                        ?.trim()
-                        ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
-                }
-            } catch (_: Throwable) {}
-
-            if (!checkedUsersTable) {
+            if (!userId.isNullOrBlank()) {
                 try {
-                    val storedAccess = prefs.getString("key_auth_access_token", null) ?: prefs.getString("key_access_token", null)
-                    val token = SupabaseInstance.resolveValidSessionAccessToken(storedAccess)
-                    val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+                    val row = supabase.from("users").select(Columns.list("avatar_url")) {
+                        filter { eq("id", userId) }
+                        limit(1)
+                    }.decodeSingleOrNull<JsonObject>()
+                    if (row != null) {
+                        checkedUsersTable = true
+                        remoteAvatarUrl = row["avatar_url"]?.jsonPrimitive?.contentOrNull
+                            ?.trim()
+                            ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            if ((!checkedUsersTable || remoteAvatarUrl.isNullOrBlank()) && !userId.isNullOrBlank() && baseUrl.isNotBlank()) {
+                try {
                     val req = Request.Builder()
-                        .url("${SupabaseInstance.safeUrl.trimEnd('/')}/rest/v1/users?select=avatar_url&id=eq.$userId&limit=1")
-                        .addHeader("apikey", SupabaseInstance.rawKey)
+                        .url("$baseUrl/rest/v1/users?select=avatar_url&id=eq.$userId&limit=1")
+                        .addHeader("apikey", anonKey)
                         .addHeader("Authorization", bearer)
+                        .addHeader("Cache-Control", "no-cache")
+                        .get()
+                        .build()
+                    com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
+                            if (arr.length() > 0) {
+                                checkedUsersTable = true
+                                val obj = arr.getJSONObject(0)
+                                if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
+                                    remoteAvatarUrl = obj.optString("avatar_url", "")
+                                        .trim()
+                                        .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            if ((!checkedUsersTable || remoteAvatarUrl.isNullOrBlank()) && !resolvedEmail.isNullOrBlank() && baseUrl.isNotBlank()) {
+                try {
+                    val encodedEmail = java.net.URLEncoder.encode(resolvedEmail, "UTF-8")
+                    val req = Request.Builder()
+                        .url("$baseUrl/rest/v1/users?select=id,avatar_url&email=eq.$encodedEmail&limit=1")
+                        .addHeader("apikey", anonKey)
+                        .addHeader("Authorization", bearer)
+                        .addHeader("Cache-Control", "no-cache")
                         .get()
                         .build()
                     com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
@@ -564,74 +934,47 @@ object ProfilePictureStore {
 
             if (isUploadingAvatar.get() || avatarVersion.get() != startVersion) return@withContext
 
-            if (checkedUsersTable) {
-                val currentAvatarUrl = remoteAvatarUrl
-                if (!currentAvatarUrl.isNullOrBlank()) {
-                    // Download avatar bytes from Supabase Storage or avatar_url
-                    val downloadedBytes = try {
-                        supabase.storage.from("avatars").downloadPublic("$userId/avatar.jpg")
-                    } catch (_: Throwable) {
-                        try {
-                            supabase.storage.from("avatars").downloadAuthenticated("$userId/avatar.jpg")
-                        } catch (_: Throwable) {
-                            try {
-                                val resolvedUrl = if (currentAvatarUrl.startsWith("http", ignoreCase = true)) {
-                                    currentAvatarUrl
-                                } else {
-                                    "${SupabaseInstance.safeUrl.trimEnd('/')}/storage/v1/object/public/avatars/$userId/avatar.jpg"
-                                }
-                                val storedAccess = prefs.getString("key_auth_access_token", null) ?: prefs.getString("key_access_token", null)
-                                val token = SupabaseInstance.resolveValidSessionAccessToken(storedAccess)
-                                val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-                                val req = Request.Builder()
-                                    .url(resolvedUrl)
-                                    .addHeader("apikey", SupabaseInstance.rawKey)
-                                    .addHeader("Authorization", bearer)
-                                    .get()
-                                    .build()
-                                com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { resp ->
-                                    if (resp.isSuccessful) resp.body?.bytes() else null
-                                }
-                            } catch (_: Throwable) {
-                                null
-                            }
-                        }
-                    }
+            if (!remoteAvatarUrl.isNullOrBlank() || (!wasExplicitlyRemoved && _currentAvatar.value == null)) {
+                val bmp = downloadRemoteAvatarBitmap(
+                    userId = userId,
+                    remoteAvatarUrl = remoteAvatarUrl,
+                    bearer = bearer,
+                    anonKey = anonKey
+                )
+                if (bmp != null && !isUploadingAvatar.get() && avatarVersion.get() == startVersion) {
+                    _currentAvatar.value = bmp
+                    saveBitmapToFile(bmp, userFile)
+                    val b64 = encodeBitmapBase64(bmp, quality = 85)
+                    prefs.edit()
+                        .putString("${KEY_AVATAR_B64}_$key", b64)
+                        .putString(KEY_AVATAR_B64, b64)
+                        .putBoolean("${KEY_AVATAR_REMOVED}_$key", false)
+                        .apply()
 
-                    if (downloadedBytes != null &&
-                        downloadedBytes.isNotEmpty() &&
-                        !isUploadingAvatar.get() &&
-                        avatarVersion.get() == startVersion
-                    ) {
-                        val bmp = BitmapFactory.decodeByteArray(downloadedBytes, 0, downloadedBytes.size)
-                            ?: decodeSampledBitmap(downloadedBytes, 512)
-                        if (bmp != null) {
-                            _currentAvatar.value = bmp
-                            saveBitmapToFile(bmp, userFile)
-                            val b64 = Base64.encodeToString(downloadedBytes, Base64.NO_WRAP)
-                            prefs.edit()
-                                .putString("${KEY_AVATAR_B64}_$key", b64)
-                                .putBoolean("${KEY_AVATAR_REMOVED}_$key", false)
-                                .apply()
-                            return@withContext
-                        }
+                    // If public.users.avatar_url was blank when we recovered the avatar from Storage/Auth, sync it to public.users.avatar_url
+                    if (remoteAvatarUrl.isNullOrBlank() && !userId.isNullOrBlank()) {
+                        val bytes = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+                        uploadAvatarRestFallback(context, userId, bytes, resolvedEmail, skipStorageUpload = true)
                     }
-                } else if (_currentAvatar.value != null && !wasExplicitlyRemoved) {
-                    // Local avatar exists on device but public.users.avatar_url was null; push local avatar up to Supabase
-                    try {
-                        val localBytes = if (userFile.exists() && userFile.length() > 0) {
-                            userFile.readBytes()
-                        } else {
-                            val bmp = _currentAvatar.value
-                            if (bmp != null) {
-                                ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
-                            } else null
-                        }
-                        if (localBytes != null && localBytes.isNotEmpty()) {
-                            uploadAvatarRestFallback(context, userId, localBytes, skipStorageUpload = false)
-                        }
-                    } catch (_: Throwable) {}
+                    return@withContext
                 }
+            }
+
+            if (remoteAvatarUrl.isNullOrBlank() && _currentAvatar.value != null && !wasExplicitlyRemoved && !userId.isNullOrBlank()) {
+                // Local avatar exists on device but public.users.avatar_url was null; push local avatar up to Supabase
+                try {
+                    val localBytes = if (userFile.exists() && userFile.length() > 0) {
+                        userFile.readBytes()
+                    } else {
+                        val bmp = _currentAvatar.value
+                        if (bmp != null) {
+                            ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+                        } else null
+                    }
+                    if (localBytes != null && localBytes.isNotEmpty()) {
+                        uploadAvatarRestFallback(context, userId, localBytes, resolvedEmail, skipStorageUpload = false)
+                    }
+                } catch (_: Throwable) {}
             }
         }
     }
@@ -673,10 +1016,38 @@ object ProfilePictureStore {
             // Save locally and update StateFlow immediately so it never flickers or disappears
             persistLocalAvatarImmediately(context, small, jpegBytes, resolvedEmail)
 
-            // Execute the Supabase Storage upload + set_my_avatar RPC in background/IO
-            uploadAvatar(context, uri)
+            // Execute the Supabase Storage upload + set_my_avatar RPC + public.users.avatar_url sync in backgroundScope
+            // so navigating away from the Profile screen never cancels the upload
+            val appContext = context.applicationContext ?: context
+            backgroundScope.launch {
+                ensureSupabaseAuthHydrated(appContext)
+                val supabase = SupabaseInstance.client
+                val userId = try { supabase?.auth?.currentUserOrNull()?.id } catch (_: Throwable) { null }
+                    ?: resolveActiveUserId(appContext)
+                if (!userId.isNullOrBlank()) {
+                    beginRemoteUpload()
+                    try {
+                        var sdkUploaded = false
+                        if (supabase != null) {
+                            try {
+                                supabase.storage.from("avatars").upload("$userId/avatar.jpg", jpegBytes) { upsert = true }
+                                sdkUploaded = true
+                                supabase.postgrest.rpc("set_my_avatar")
+                            } catch (_: Throwable) {}
+                        }
+                        uploadAvatarRestFallback(
+                            context = appContext,
+                            userId = userId,
+                            bytes = jpegBytes,
+                            email = resolvedEmail,
+                            skipStorageUpload = sdkUploaded
+                        )
+                    } finally {
+                        endRemoteUpload()
+                    }
+                }
+            }
 
-            // Ensure _currentAvatar remains set to the newly selected bitmap
             if (_currentAvatar.value == null) {
                 _currentAvatar.value = small
             }
@@ -725,8 +1096,11 @@ object ProfilePictureStore {
                 .apply()
         } catch (_: Throwable) {}
 
-        ensureSupabaseAuthHydrated(context)
-        removeAvatar()
+        val appContext = context.applicationContext ?: context
+        backgroundScope.launch {
+            ensureSupabaseAuthHydrated(appContext)
+            removeAvatar()
+        }
     }
 
     private fun decodeSampledBitmap(bytes: ByteArray, maxDimension: Int): Bitmap? {
@@ -813,7 +1187,7 @@ fun EditableProfileAvatar(
     var pendingCameraUriString by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     var pendingCameraFilePath by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(userEmail) {
+    LaunchedEffect(userEmail, SupabaseInstance.activeUserAccessToken) {
         ProfilePictureStore.loadAvatar(context, userEmail)
     }
 
@@ -1232,7 +1606,7 @@ fun UserProfileAvatar(
     val context = LocalContext.current
     val avatarBitmap by ProfilePictureStore.currentAvatar.collectAsState()
 
-    LaunchedEffect(userEmail) {
+    LaunchedEffect(userEmail, SupabaseInstance.activeUserAccessToken) {
         ProfilePictureStore.loadAvatar(context, userEmail)
     }
 

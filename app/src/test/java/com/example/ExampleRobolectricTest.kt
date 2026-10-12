@@ -1041,5 +1041,44 @@ class ExampleRobolectricTest {
     assertEquals("229", parsedByService["glo_sme"]?.firstOrNull { it.value == "491" }?.price)
     assertEquals("290", parsedByService["etisalat_data"]?.firstOrNull { it.value == "182" }?.price)
   }
+
+  @Test
+  fun profilePictureStore_restoresFromRemoteAvatarUrlAfterReinstallAndLogin() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val email = "danielkaladathompson@gmail.com"
+    val userId = "2eb31618-2c7d-4dc8-a1ae-9f47b71a83c5"
+
+    // 1. Create a sample avatar bitmap and encode as stored in public.users.avatar_url
+    val sourceBmp = android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888)
+    sourceBmp.eraseColor(android.graphics.Color.GREEN)
+    val jpegBytes = java.io.ByteArrayOutputStream().also {
+      sourceBmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, it)
+    }.toByteArray()
+    val remoteAvatarUrl = "data:image/jpeg;base64," + android.util.Base64.encodeToString(jpegBytes, android.util.Base64.NO_WRAP)
+
+    // 2. Simulate fresh install (clear local files and in-memory state)
+    java.io.File(context.filesDir, "profile_avatar_danielkaladathompson_gmail.com.jpg").delete()
+    com.example.ui.components.ProfilePictureStore.onSessionCleared()
+    assertEquals(null, com.example.ui.components.ProfilePictureStore.currentAvatar.value)
+
+    // 3. Simulate login fetching public.users.avatar_url
+    com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
+      context = context,
+      userId = userId,
+      email = email,
+      remoteAvatarUrl = remoteAvatarUrl
+    )
+
+    // Wait briefly for backgroundScope IO coroutine to decode and update currentAvatar
+    val deadline = System.currentTimeMillis() + 3000L
+    while (com.example.ui.components.ProfilePictureStore.currentAvatar.value == null && System.currentTimeMillis() < deadline) {
+      Thread.sleep(50)
+    }
+
+    val restoredBmp = com.example.ui.components.ProfilePictureStore.currentAvatar.value
+    assertTrue("Avatar must be restored from public.users.avatar_url after reinstall and login", restoredBmp != null)
+    assertEquals(64, restoredBmp?.width)
+    assertEquals(64, restoredBmp?.height)
+  }
 }
 
