@@ -186,6 +186,7 @@ fun HomeScreen(
         val isValidUuid = !userId.isNullOrBlank() && userId.length == 36 && userId.count { it == '-' } == 4
 
         if (!userId.isNullOrBlank() && isValidUuid) {
+            com.vtu.app.wallet.SharedWalletObserver.ensureGatewayRealtimePolling(userId, activeEmail)
             walletViewModel.loadInitialBalance(userId)
             walletViewModel.subscribeToWalletBalance(userId) { newBalance ->
                 onUpdateWalletBalance?.invoke(newBalance)
@@ -208,7 +209,7 @@ fun HomeScreen(
 
                     var data = try {
                         supabase.postgrest.from("users").select(
-                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "transaction_history", "avatar_url")
+                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "wallet_balance", "phone", "transaction_history", "avatar_url")
                         ) {
                             filter { eq("id", userId) }
                             limit(1)
@@ -216,7 +217,7 @@ fun HomeScreen(
                     } catch (_: Throwable) {
                         try {
                             supabase.postgrest.from("users").select(
-                                io.github.jan.supabase.postgrest.query.Columns.list("id", "phone", "transaction_history")
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "wallet_balance", "phone", "transaction_history")
                             ) {
                                 filter { eq("id", userId) }
                                 limit(1)
@@ -224,10 +225,10 @@ fun HomeScreen(
                         } catch (_: Throwable) { null }
                     }
 
-                    if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
+                    if (data == null && activeEmail.isNotBlank()) {
                         try {
                             val byEmail = supabase.postgrest.from("users").select(
-                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "transaction_history", "avatar_url")
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "wallet_balance", "phone", "transaction_history", "avatar_url")
                             ) {
                                 filter { eq("email", activeEmail) }
                                 limit(1)
@@ -236,6 +237,17 @@ fun HomeScreen(
                                 data = byEmail
                             }
                         } catch (_: Throwable) {}
+                    }
+
+                    data?.get("wallet_balance")?.let { rawBal ->
+                        val parsedBal = try {
+                            (rawBal as? kotlinx.serialization.json.JsonPrimitive)?.content?.toDoubleOrNull()
+                                ?: rawBal.toString().trim('"').toDoubleOrNull()
+                        } catch (_: Throwable) { null }
+                        if (parsedBal != null && parsedBal >= 0.0) {
+                            walletViewModel.setWalletBalance(parsedBal)
+                            onUpdateWalletBalance?.invoke(parsedBal)
+                        }
                     }
 
                     data?.get("transaction_history")?.let { rawHist ->

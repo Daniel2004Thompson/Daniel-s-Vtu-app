@@ -208,7 +208,7 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                 } catch (_: Throwable) { null }
 
                 var data = try {
-                    supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history", "avatar_url")) {
+                    supabase.from("users").select(Columns.list("id", "email", "wallet_balance", "phone", "transaction_history", "avatar_url")) {
                         filter { eq("id", currentUserId) }
                         limit(1)
                     }.decodeSingleOrNull<JsonObject>()
@@ -221,9 +221,9 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                     } catch (_: Throwable) { null }
                 }
 
-                if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
+                if (data == null && activeEmail.isNotBlank()) {
                     try {
-                        val byEmail = supabase.from("users").select(Columns.list("id", "email", "fullname", "wallet_balance", "phone", "transaction_history", "avatar_url")) {
+                        val byEmail = supabase.from("users").select(Columns.list("id", "email", "wallet_balance", "phone", "transaction_history", "avatar_url")) {
                             filter { eq("email", activeEmail) }
                             limit(1)
                         }.decodeSingleOrNull<JsonObject>()

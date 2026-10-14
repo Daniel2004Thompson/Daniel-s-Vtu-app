@@ -312,7 +312,6 @@ class PermanentAccountViewModel : ViewModel() {
                 val resetJson = JSONObject().apply {
                     put("permanent_account_number", JSONObject.NULL)
                     put("permanent_account_bank", JSONObject.NULL)
-                    put("is_creating_account", false)
                 }
                 val req = Request.Builder()
                     .url("$baseUrl/rest/v1/users?id=eq.$cleanUid")
@@ -526,30 +525,6 @@ class PermanentAccountViewModel : ViewModel() {
             val firstName = nameParts.firstOrNull().orEmpty()
             val lastName = if (nameParts.size > 1) nameParts.drop(1).joinToString(" ") else firstName
 
-            // Release any stale lock on public.users before querying Create-Permanent-Account
-            try {
-                val baseUrl = com.example.util.SecurityVault.supabaseUrl()
-                val anonKey = SupabaseProvider.rawKey
-                val token = accessToken ?: SupabaseProvider.resolveSessionAccessToken()
-                val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-                val unlockBody = JSONObject().apply { put("is_creating_account", false) }
-                val unlockReq = Request.Builder()
-                    .url("$baseUrl/rest/v1/users?id=eq.$cleanUid")
-                    .addHeader("apikey", anonKey)
-                    .addHeader("Authorization", bearer)
-                    .addHeader("Prefer", "return=minimal")
-                    .patch(unlockBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
-                com.example.util.SecurityVault.createGatewayOkHttpClient(
-                    connectTimeoutSec = 5,
-                    readTimeoutSec = 5,
-                    writeTimeoutSec = 5
-                )
-                    .newCall(unlockReq)
-                    .execute()
-                    .close()
-            } catch (_: Throwable) {}
-
             val payload = JSONObject().apply {
                 put("userId", cleanUid)
                 put("user_id", cleanUid)
@@ -652,30 +627,6 @@ class PermanentAccountViewModel : ViewModel() {
                     val resolvedLast = if (nameParts.size > 1) nameParts.drop(1).joinToString(" ") else lastname.trim().ifBlank { resolvedFirst }
 
                     // Ensure public.users lock is cleared before invoking Create-Permanent-Account
-                    try {
-                        val baseUrl = com.example.util.SecurityVault.supabaseUrl()
-                        val token = resolveAuthToken()
-                        val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-                        val unlockJson = JSONObject().apply {
-                            put("is_creating_account", false)
-                        }
-                        val unlockReq = Request.Builder()
-                            .url("$baseUrl/rest/v1/users?id=eq.$cleanUid")
-                            .addHeader("apikey", anonKey)
-                            .addHeader("Authorization", bearer)
-                            .addHeader("Prefer", "return=minimal")
-                            .patch(unlockJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                            .build()
-                        com.example.util.SecurityVault.createGatewayOkHttpClient(
-                            connectTimeoutSec = 5,
-                            readTimeoutSec = 5,
-                            writeTimeoutSec = 5
-                        )
-                            .newCall(unlockReq)
-                            .execute()
-                            .close()
-                    } catch (_: Throwable) {}
-
                     // Send request to Create-Permanent-Account with firstname & lastname so the Edge Function formats "Thompson Daniel/ <Name>"
                     val primaryPayload = JSONObject().apply {
                         put("userId", cleanUid)

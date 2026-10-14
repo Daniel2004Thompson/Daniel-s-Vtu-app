@@ -63,6 +63,13 @@ object SharedWalletObserver {
     private val isDispatching = java.util.concurrent.atomic.AtomicBoolean(false)
     private val isDispatchingHistory = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    private val pollingScope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+    @Volatile
+    private var pollingUserId: String? = null
+    private var pollingJob: kotlinx.coroutines.Job? = null
+    @Volatile
+    private var lastGatewayFetchMs: Long = 0L
+
     fun addListener(listener: (Double) -> Unit) {
         synchronized(listeners) {
             if (!listeners.contains(listener)) {
@@ -139,7 +146,186 @@ object SharedWalletObserver {
         }
     }
 
+    @Volatile
+    private var pollingEmail: String? = null
+
+    /**
+     * Fetches wallet_balance and transaction_history for [userId] (with optional [email] fallback)
+     * via the `swift-processor` gateway and dispatches any updates to all registered realtime listeners.
+     */
+    suspend fun fetchAndPublishFromGateway(
+        userId: String,
+        email: String? = null,
+        force: Boolean = false
+    ): Double? = withContext(Dispatchers.IO) {
+        val cleanUid = userId.trim()
+        val cleanEmail = (email ?: pollingEmail)?.trim().orEmpty()
+        val isValidUuid = cleanUid.length == 36 && cleanUid.count { it == '-' } == 4
+        if (!isValidUuid && cleanEmail.isBlank()) return@withContext _liveBalance.value
+
+        val now = System.currentTimeMillis()
+        if (!force && (now - lastGatewayFetchMs) < 1500L && _liveBalance.value != null) {
+            return@withContext _liveBalance.value
+        }
+        lastGatewayFetchMs = now
+
+        val token = com.example.auth.SupabaseProvider.resolveValidSessionAccessToken()
+        val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+        val baseUrl = SupabaseInstance.safeUrl.trimEnd('/')
+        val anonKey = SupabaseInstance.rawKey
+
+        // 1. Direct HTTP GET routed via SecurityVault.gatewayInterceptor -> swift-processor
+        val filterQueries = mutableListOf<String>()
+        if (isValidUuid) {
+            filterQueries.add("id=eq.$cleanUid")
+        }
+        if (cleanEmail.isNotBlank()) {
+            filterQueries.add("email=eq.$cleanEmail")
+        }
+
+        for (filter in filterQueries) {
+            try {
+                val req = Request.Builder()
+                    .url("$baseUrl/rest/v1/users?select=wallet_balance,transaction_history&$filter&limit=1")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .get()
+                    .build()
+
+                com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val bodyStr = res.body?.string().orEmpty()
+                        val arr = org.json.JSONArray(bodyStr.ifBlank { "[]" })
+                        if (arr.length() > 0) {
+                            val obj = arr.getJSONObject(0)
+                            if (obj.has("transaction_history") && !obj.isNull("transaction_history")) {
+                                val rawHistObj = obj.opt("transaction_history")
+                                if (rawHistObj != null) {
+                                    updateTransactionHistory(rawHistObj.toString())
+                                }
+                            }
+                            if (obj.has("wallet_balance") && !obj.isNull("wallet_balance")) {
+                                val remoteBal = obj.getDouble("wallet_balance")
+                                updateBalance(remoteBal)
+                                return@withContext remoteBal
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // 1b. Check profiles table if users table had no balance yet
+        for (filter in filterQueries) {
+            try {
+                val req = Request.Builder()
+                    .url("$baseUrl/rest/v1/profiles?select=wallet_balance&$filter&limit=1")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .get()
+                    .build()
+
+                com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val bodyStr = res.body?.string().orEmpty()
+                        val arr = org.json.JSONArray(bodyStr.ifBlank { "[]" })
+                        if (arr.length() > 0) {
+                            val obj = arr.getJSONObject(0)
+                            if (obj.has("wallet_balance") && !obj.isNull("wallet_balance")) {
+                                val remoteBal = obj.getDouble("wallet_balance")
+                                updateBalance(remoteBal)
+                                return@withContext remoteBal
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // 2. Fallback via Supabase Postgrest client
+        try {
+            val client = SupabaseInstance.client
+            if (client != null) {
+                var data: JsonObject? = null
+                if (isValidUuid) {
+                    try {
+                        data = client.from("users").select(Columns.list("wallet_balance", "transaction_history")) {
+                            filter { eq("id", cleanUid) }
+                            limit(1)
+                        }.decodeSingleOrNull<JsonObject>()
+                    } catch (_: Throwable) {}
+                }
+                if (data == null && cleanEmail.isNotBlank()) {
+                    try {
+                        data = client.from("users").select(Columns.list("wallet_balance", "transaction_history")) {
+                            filter { eq("email", cleanEmail) }
+                            limit(1)
+                        }.decodeSingleOrNull<JsonObject>()
+                    } catch (_: Throwable) {}
+                }
+
+                if (data != null) {
+                    data["transaction_history"]?.let { rawHist ->
+                        val histStr = try {
+                            rawHist.jsonPrimitive.contentOrNull ?: rawHist.toString()
+                        } catch (_: Throwable) {
+                            rawHist.toString()
+                        }
+                        updateTransactionHistory(histStr)
+                    }
+                    val rawBal = data["wallet_balance"]?.jsonPrimitive?.doubleOrNull
+                        ?: data["wallet_balance"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
+                        ?: data["wallet_balance"]?.toString()?.trim('"')?.toDoubleOrNull()
+
+                    if (rawBal != null) {
+                        updateBalance(rawBal)
+                        return@withContext rawBal
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+
+        _liveBalance.value
+    }
+
+    /**
+     * Starts a continuous, deduplicated real-time sync loop over `swift-processor` so that
+     * `public.users.wallet_balance` and `transaction_history` update live even when direct
+     * WebSockets are blocked by the gateway-managed key architecture.
+     */
+    @Synchronized
+    fun ensureGatewayRealtimePolling(userId: String, email: String? = null) {
+        val cleanUid = userId.trim()
+        val cleanEmail = email?.trim().orEmpty()
+        val isValidUuid = cleanUid.length == 36 && cleanUid.count { it == '-' } == 4
+        if (!isValidUuid && cleanEmail.isBlank()) return
+
+        pollingEmail = cleanEmail.ifBlank { pollingEmail }
+        if (pollingUserId == cleanUid && pollingJob?.isActive == true) {
+            pollingScope.launch {
+                fetchAndPublishFromGateway(cleanUid, cleanEmail, force = false)
+            }
+            return
+        }
+        pollingJob?.cancel()
+        pollingUserId = cleanUid
+        pollingJob = pollingScope.launch {
+            while (coroutineContext[kotlinx.coroutines.Job]?.isActive != false && pollingUserId == cleanUid) {
+                try {
+                    fetchAndPublishFromGateway(cleanUid, pollingEmail, force = false)
+                } catch (_: Throwable) {}
+                kotlinx.coroutines.delay(2200L)
+            }
+        }
+    }
+
+    @Synchronized
     fun clear() {
+        pollingUserId = null
+        pollingEmail = null
+        pollingJob?.cancel()
+        pollingJob = null
+        lastGatewayFetchMs = 0L
         _liveBalance.value = null
         _liveTransactionHistory.value = null
     }
@@ -206,86 +392,17 @@ class WalletViewModel : ViewModel() {
      */
     suspend fun queryPublicUsersWalletBalance(userId: String? = null): Double? = withContext(Dispatchers.IO) {
         val client = supabase
+        val validToken = com.example.auth.SupabaseProvider.resolveValidSessionAccessToken()
         val resolvedUserId = userId?.takeIf { it.isNotBlank() && it != "usr_guest" && it != "usr_default" }
-            ?: try {
-                client?.auth?.retrieveUserForCurrentSession(updateSession = true)?.id
-            } catch (_: Throwable) {
-                try { client?.auth?.currentUserOrNull()?.id } catch (_: Throwable) { null }
-            }
+            ?: com.example.util.JwtUtils.getUserIdFromJwt(validToken)
+            ?: try { client?.auth?.currentUserOrNull()?.id } catch (_: Throwable) { null }
 
         if (resolvedUserId.isNullOrBlank()) {
             return@withContext SharedWalletObserver.liveBalance.value
         }
 
-        // 1. Query public.users.wallet_balance & transaction_history via Supabase Postgrest client
-        if (client != null) {
-            try {
-                val data = client.from("users").select(Columns.list("wallet_balance", "transaction_history")) {
-                    filter { eq("id", resolvedUserId) }
-                    single()
-                }.decodeSingle<JsonObject>()
-
-                data["transaction_history"]?.let { rawHist ->
-                    val histStr = try {
-                        rawHist.jsonPrimitive.contentOrNull ?: rawHist.toString()
-                    } catch (_: Throwable) {
-                        rawHist.toString()
-                    }
-                    SharedWalletObserver.updateTransactionHistory(histStr)
-                }
-
-                val rawBal = data["wallet_balance"]?.jsonPrimitive?.doubleOrNull
-                    ?: data["wallet_balance"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
-                    ?: data["wallet_balance"]?.toString()?.trim('"')?.toDoubleOrNull()
-
-                if (rawBal != null) {
-                    SharedWalletObserver.updateBalance(rawBal)
-                    return@withContext rawBal
-                }
-            } catch (error: Throwable) {
-                Log.w("WalletViewModel", "Postgrest public.users.wallet_balance query note: ${error.message}")
-            }
-        }
-
-        // 2. Direct REST query to public.users?select=wallet_balance,transaction_history&id=eq.<resolvedUserId>
-        try {
-            val baseUrl = SupabaseInstance.safeUrl
-            val anonKey = SupabaseInstance.rawKey
-            val token = try { client?.auth?.currentAccessTokenOrNull() } catch (_: Throwable) { null } ?: anonKey
-            val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
-            val req = Request.Builder()
-                .url("$baseUrl/rest/v1/users?select=wallet_balance,transaction_history&id=eq.$resolvedUserId")
-                .addHeader("apikey", anonKey)
-                .addHeader("Authorization", bearer)
-                .get()
-                .build()
-
-            com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
-                if (res.isSuccessful) {
-                    val bodyStr = res.body?.string().orEmpty()
-                    val arr = org.json.JSONArray(bodyStr)
-                    if (arr.length() > 0) {
-                        val obj = arr.getJSONObject(0)
-                        if (obj.has("transaction_history") && !obj.isNull("transaction_history")) {
-                            val rawHistObj = obj.opt("transaction_history")
-                            if (rawHistObj != null) {
-                                SharedWalletObserver.updateTransactionHistory(rawHistObj.toString())
-                            }
-                        }
-                        if (obj.has("wallet_balance") && !obj.isNull("wallet_balance")) {
-                            val remoteBal = obj.getDouble("wallet_balance")
-                            SharedWalletObserver.updateBalance(remoteBal)
-                            return@withContext remoteBal
-                        }
-                    }
-                }
-            }
-        } catch (error: Throwable) {
-            Log.w("WalletViewModel", "REST public.users.wallet_balance query note: ${error.message}")
-        }
-
-        // Fallback to the current value already held by the active Realtime subscription
-        SharedWalletObserver.liveBalance.value
+        SharedWalletObserver.fetchAndPublishFromGateway(resolvedUserId, force = true)
+            ?: SharedWalletObserver.liveBalance.value
     }
 
     fun loadInitialBalance(userId: String? = null) {
@@ -343,7 +460,7 @@ class WalletViewModel : ViewModel() {
             } else {
                 try {
                     val anonKey = SupabaseInstance.rawKey
-                    val token = try { SupabaseInstance.client?.auth?.currentAccessTokenOrNull() } catch (_: Throwable) { null } ?: anonKey
+                    val token = com.example.auth.SupabaseProvider.resolveValidSessionAccessToken()
                     val bearer = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
                     val req = Request.Builder()
                         .url("${SupabaseInstance.safeUrl}/rest/v1/rpc/debit_wallet")
@@ -386,6 +503,7 @@ class WalletViewModel : ViewModel() {
         if (activeSubscribedUserId != null && activeSubscribedUserId != userId) {
             resetState()
         }
+        SharedWalletObserver.ensureGatewayRealtimePolling(userId)
         if (activeSubscribedUserId == userId && walletChannel != null) return
         activeSubscribedUserId = userId
 
@@ -438,7 +556,8 @@ class WalletViewModel : ViewModel() {
 
 /**
  * Realtime observer for Supabase 'public.users' table wallet_balance updates.
- * Listens directly to PostgreSQL changes on public.users filtered by the logged-in user's ID.
+ * Listens directly to PostgreSQL changes on public.users filtered by the logged-in user's ID,
+ * and maintains a continuous `swift-processor` gateway sync so updates arrive in real time.
  */
 fun observeWalletBalance(
     supabase: SupabaseClient,
@@ -446,6 +565,23 @@ fun observeWalletBalance(
     scope: CoroutineScope,
     onBalanceChanged: (Double) -> Unit
 ): RealtimeChannel? {
+    // 1. Register with SharedWalletObserver and start the swift-processor gateway realtime sync loop
+    val bridgeListener: (Double) -> Unit = { newBal ->
+        scope.launch(Dispatchers.Main) {
+            onBalanceChanged(newBal)
+        }
+    }
+    SharedWalletObserver.addListener(bridgeListener)
+    SharedWalletObserver.ensureGatewayRealtimePolling(userId)
+
+    val rawKey = try { supabase.supabaseKey } catch (_: Throwable) { "" }
+    val canUseDirectWebSocket = rawKey.startsWith("ey") &&
+        !rawKey.equals(com.example.util.SecurityVault.GATEWAY_MANAGED_KEY_PLACEHOLDER, ignoreCase = true)
+    if (!canUseDirectWebSocket) {
+        // Gateway-managed security architecture uses HTTP gateway polling; skip direct WebSockets to prevent 401 loops
+        return null
+    }
+
     return try {
         val uniqueTopic = "wallet-$userId-${System.nanoTime()}"
         val channel = supabase.channel(uniqueTopic)

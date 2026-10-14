@@ -80,19 +80,40 @@ fun DynamicAccountScreen(
         )
     }
 
+    val liveWalletBalance by com.vtu.app.wallet.SharedWalletObserver.liveBalance.collectAsState()
+    var lastObservedBalance by remember(currentUser?.id) { mutableStateOf<Double?>(null) }
+
     LaunchedEffect(currentUser?.id) {
         viewModel.onUserChanged(currentUser?.id)
-        if (currentUser?.id.isNullOrBlank()) {
+        val uid = currentUser?.id?.trim().orEmpty()
+        if (uid.isBlank()) {
             accountNumber = ""
             bankName = ""
             accountName = "Wallet Topup"
+        } else {
+            com.vtu.app.wallet.SharedWalletObserver.ensureGatewayRealtimePolling(uid, currentUser?.email)
+            onRefreshBalance()
         }
+    }
+
+    LaunchedEffect(liveWalletBalance) {
+        val currentBal = liveWalletBalance ?: return@LaunchedEffect
+        val prevBal = lastObservedBalance
+        if (prevBal != null && currentBal > prevBal + 0.01) {
+            onRefreshBalance()
+            Toast.makeText(
+                context,
+                "Wallet credited! New balance: ₦%,.2f".format(currentBal),
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        lastObservedBalance = currentBal
     }
 
     // Keep state updated if currentUser.dynamicAccountNumber loads or changes
     LaunchedEffect(currentUser?.id, currentUser?.dynamicAccountNumber) {
         val dyn = currentUser?.dynamicAccountNumber?.trim()
-        if (!dyn.isNullOrBlank() && dyn.filter { it.isDigit() }.length in 10..12) {
+        if (!dyn.isNullOrBlank() && dyn.filter { c -> c.isDigit() }.length in 10..12) {
             accountNumber = dyn
             bankName = currentUser.dynamicBankName?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) } ?: ""
             accountName = "Wallet Topup"
@@ -115,6 +136,10 @@ fun DynamicAccountScreen(
             accountName = "Wallet Topup"
             if (successState.amount != null) {
                 selectedAmountText = String.format(java.util.Locale.US, "%.0f", successState.amount)
+            }
+            val uid = currentUser?.id?.trim().orEmpty()
+            if (uid.isNotBlank()) {
+                com.vtu.app.wallet.SharedWalletObserver.ensureGatewayRealtimePolling(uid, currentUser?.email)
             }
             onAccountDetailsUpdated(successState.accountNumber, successState.bankName)
             Toast.makeText(context, "Dynamic Account Created Successfully!", Toast.LENGTH_LONG).show()

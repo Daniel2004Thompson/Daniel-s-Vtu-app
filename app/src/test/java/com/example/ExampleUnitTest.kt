@@ -191,8 +191,8 @@ class ExampleUnitTest {
             )
         )
 
-        // Verify profile name is "Daniel Thompson" from public.users.fullname (not "Daniel Kalada Thompson")
-        assertTrue("fullname" in VtuRepository.USERS_SAFE_COLUMNS_FULL)
+        assertTrue("email" in VtuRepository.USERS_SAFE_COLUMNS_FULL)
+        assertTrue("wallet_balance" in VtuRepository.USERS_SAFE_COLUMNS_FULL)
         val userRowObj = kotlinx.serialization.json.Json.parseToJsonElement(
             """{"id":"u1","email":"danielkaladathompson@gmail.com","fullname":"Daniel Thompson"}"""
         ) as kotlinx.serialization.json.JsonObject
@@ -405,11 +405,140 @@ class ExampleUnitTest {
             rawHistoryJson = rawJson,
             userId = "550e8400-e29b-41d4-a716-446655440000",
             userEmail = "danielkaladathompson@gmail.com",
-            userFullName = "Daniel Thompson"
+            userFullName = "Daniel Thompson",
+            maxReceipts = 10
         )
         assertEquals(10, lastTen.size)
         assertEquals("VTU-AIR-15", lastTen.first().reference)
         assertEquals("VTU-AIR-6", lastTen.last().reference)
     }
+
+    @Test
+    fun vtuPriceRow_serialization_ignoreUnknownKeys() {
+        val jsonString = """
+            [
+                {
+                    "service_id": "airtel_sme",
+                    "plan": "476",
+                    "price": 150.0,
+                    "label": "300 MB - 2 Days",
+                    "validity_days": 2,
+                    "categories": ["sme"],
+                    "active": true,
+                    "unknown_future_col": "ignored"
+                }
+            ]
+        """.trimIndent()
+
+        val rows = com.example.data.remote.GsubzVtuService.vtuPriceJson
+            .decodeFromString<List<com.example.data.model.VtuPriceRow>>(jsonString)
+        assertEquals(1, rows.size)
+        val row = rows.first()
+        assertEquals("airtel_sme", row.service_id)
+        assertEquals("476", row.plan)
+        assertEquals(150.0, row.price, 0.001)
+        assertEquals("300 MB - 2 Days", row.label)
+        assertEquals(2, row.validity_days)
+        assertEquals(listOf("sme"), row.categories)
+        assertEquals(true, row.active)
+    }
+
+    @Test
+    fun vtuPrices_allTabsAndNetworks_matchExpectedPlanCounts() = kotlinx.coroutines.runBlocking {
+        // Expected plan counts table from specification:
+        // Network  | SME | Corporate | Gifting | Monthly | Daily/Weekly
+        // 9mobile  |  4  |     4     |    4    |    8    |      0
+        // Airtel   |  5  |     5     |    5    |    3    |      7
+        // Glo      |  4  |     4     |    4    |    3    |      2
+        // MTN      |  5  |     4     |    5    |    9    |      5
+        val expected = mapOf(
+            com.example.data.model.NetworkProvider.NINEMOBILE to mapOf(
+                com.example.data.model.DataCategory.SME to 4,
+                com.example.data.model.DataCategory.CORPORATE to 4,
+                com.example.data.model.DataCategory.GIFTING to 4,
+                com.example.data.model.DataCategory.MONTHLY to 8,
+                com.example.data.model.DataCategory.DAILY_WEEKLY to 0
+            ),
+            com.example.data.model.NetworkProvider.AIRTEL to mapOf(
+                com.example.data.model.DataCategory.SME to 5,
+                com.example.data.model.DataCategory.CORPORATE to 5,
+                com.example.data.model.DataCategory.GIFTING to 5,
+                com.example.data.model.DataCategory.MONTHLY to 3,
+                com.example.data.model.DataCategory.DAILY_WEEKLY to 7
+            ),
+            com.example.data.model.NetworkProvider.GLO to mapOf(
+                com.example.data.model.DataCategory.SME to 4,
+                com.example.data.model.DataCategory.CORPORATE to 4,
+                com.example.data.model.DataCategory.GIFTING to 4,
+                com.example.data.model.DataCategory.MONTHLY to 3,
+                com.example.data.model.DataCategory.DAILY_WEEKLY to 2
+            ),
+            com.example.data.model.NetworkProvider.MTN to mapOf(
+                com.example.data.model.DataCategory.SME to 5,
+                com.example.data.model.DataCategory.CORPORATE to 4,
+                com.example.data.model.DataCategory.GIFTING to 5,
+                com.example.data.model.DataCategory.MONTHLY to 9,
+                com.example.data.model.DataCategory.DAILY_WEEKLY to 5
+            )
+        )
+
+        for ((network, catMap) in expected) {
+            for ((cat, expectedCount) in catMap) {
+                val plans = com.example.data.remote.GsubzVtuService.fetchPlansForNetworkAndTab(
+                    network = network,
+                    category = cat
+                )
+                assertEquals(
+                    "Network ${network.displayName} tab ${cat.label} count mismatch",
+                    expectedCount,
+                    plans.size
+                )
+                if (plans.isNotEmpty()) {
+                    // Check price sorting ascending
+                    assertTrue(
+                        "Plans for ${network.displayName} ${cat.label} must be ordered by price ascending",
+                        plans.zipWithNext().all { (a, b) -> a.price <= b.price }
+                    )
+                    // Check categories contains catValue
+                    assertTrue(
+                        "Every plan must contain category ${cat.categoryValue}",
+                        plans.all { it.categories.contains(cat.categoryValue) }
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun purchasePayload_sendsExactRowServiceIdAndPlanIdWithoutPrice() {
+        // Test that purchase request payload uses THAT ROW's service_id and its plan code as plan_id
+        val testRow = com.example.data.model.VtuPriceRow(
+            service_id = "airtel_sme",
+            plan = "476",
+            price = 150.0,
+            label = "300 MB - 2 Days",
+            validity_days = 2,
+            categories = listOf("sme"),
+            active = true
+        )
+
+        val payload = com.example.data.remote.GsubzVtuService.buildRequestJson(
+            serviceID = testRow.service_id,
+            amount = testRow.price,
+            phone = "08021234567",
+            plan = testRow.plan,
+            service = "data",
+            network = testRow.service_id,
+            userId = "550e8400-e29b-41d4-a716-446655440000",
+            userEmail = "user@example.com"
+        )
+
+        assertTrue("Payload must contain service_id", payload.contains("\"service_id\":\"airtel_sme\""))
+        assertTrue("Payload must contain serviceID", payload.contains("\"serviceID\":\"airtel_sme\""))
+        assertTrue("Payload must contain plan_id", payload.contains("\"plan_id\":\"476\""))
+        assertTrue("Payload must contain plan", payload.contains("\"plan\":\"476\""))
+        assertTrue("Payload must not contain price field", !payload.contains("\"price\":"))
+    }
 }
+
 

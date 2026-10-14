@@ -121,7 +121,6 @@ class VtuRepository(
         val USERS_SAFE_COLUMNS_FULL = listOf(
             "id",
             "email",
-            "fullname",
             "phone",
             "wallet_balance",
             "permanent_account_number",
@@ -2275,7 +2274,7 @@ class VtuRepository(
     suspend fun login(email: String, password: String): AuthResult {
         val result = authClient.login(email, password)
         if (result is AuthResult.Success) {
-            saveSession(result.user, result.session?.accessToken)
+            saveSession(result.user, result.session?.accessToken, result.session?.refreshToken)
         }
         return result
     }
@@ -2284,7 +2283,7 @@ class VtuRepository(
         val result = authClient.signUp(email, password, fullName, phone)
         if (result is AuthResult.Success && result.session != null) {
             setNewAccountZeroBalance(result.user.email, result.user.id)
-            saveSession(result.user, result.session.accessToken)
+            saveSession(result.user, result.session.accessToken, result.session.refreshToken)
         }
         return result
     }
@@ -2296,7 +2295,7 @@ class VtuRepository(
     suspend fun resetPasswordWithOtp(email: String, otpToken: String, newPassword: String): AuthResult {
         val result = authClient.resetPasswordWithOtp(email, otpToken, newPassword)
         if (result is AuthResult.Success && result.session != null) {
-            saveSession(result.user, result.session.accessToken)
+            saveSession(result.user, result.session.accessToken, result.session.refreshToken)
         }
         return result
     }
@@ -2966,6 +2965,7 @@ class VtuRepository(
             if (!initUid.isNullOrBlank()) {
                 loadUserSecurityAndSettings(initUid)
                 repoScope.launch {
+                    resolveValidAccessToken()
                     com.example.ui.components.ProfilePictureStore.ensureSupabaseAuthHydrated(context)
                     com.example.ui.components.ProfilePictureStore.loadAvatar(context, initEmail)
                     refreshMyTransactions(20)
@@ -3007,6 +3007,7 @@ class VtuRepository(
             }
         }
         realtimeJob = repoScope.launch {
+            resolveValidAccessToken()
             val activeUid = _currentUser.value?.id?.trim()
             if (!activeUid.isNullOrBlank()) {
                 syncUserDataFromDatabase(activeUid)
@@ -3017,12 +3018,16 @@ class VtuRepository(
             val userId = try { client?.auth?.currentUserOrNull()?.id } catch (_: Throwable) { null }
                 ?: com.example.util.JwtUtils.getUserIdFromJwt(currentAccessToken)
                 ?: _currentUser.value?.id
-            if (client != null && !userId.isNullOrBlank() && userId != "usr_guest" && userId != "usr_default") {
-                try {
-                    realtimeChannel = observeWalletBalance(client, userId, this) { liveBal ->
-                        setWalletBalance(liveBal)
-                    }
-                } catch (_: Throwable) {}
+            if (!userId.isNullOrBlank() && userId != "usr_guest" && userId != "usr_default") {
+                val activeEmail = _currentUser.value?.email
+                SharedWalletObserver.ensureGatewayRealtimePolling(userId, activeEmail)
+                if (client != null) {
+                    try {
+                        realtimeChannel = observeWalletBalance(client, userId, this) { liveBal ->
+                            setWalletBalance(liveBal)
+                        }
+                    } catch (_: Throwable) {}
+                }
             }
         }
     }
@@ -3113,14 +3118,10 @@ class VtuRepository(
         }
 
         if (!usersRowExists || forceUpsert) {
-            val cleanFullName = sanitizeFullName(fullName, cleanEmail)
             try {
                 val insertUsersJson = JSONObject().apply {
                     put("id", cleanUid)
                     put("email", cleanEmail)
-                    if (cleanFullName.isNotBlank()) {
-                        put("fullname", cleanFullName)
-                    }
                     if (!cleanPhone.isNullOrBlank()) {
                         put("phone", cleanPhone)
                     }
@@ -3136,37 +3137,12 @@ class VtuRepository(
                     .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
                     .post(insertUsersJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
-                val upsertedWithFullname = http.newCall(upsertUsersReq).execute().use { upsertResp ->
+                val upserted = http.newCall(upsertUsersReq).execute().use { upsertResp ->
                     upsertResp.isSuccessful
                 }
-                if (upsertedWithFullname) {
+                if (upserted) {
                     lastVerifiedUserRecordUid = cleanUid
                     lastVerifiedUserRecordAtMs = System.currentTimeMillis()
-                } else {
-                    val fallbackUsersJson = JSONObject().apply {
-                        put("id", cleanUid)
-                        put("email", cleanEmail)
-                        if (!cleanPhone.isNullOrBlank()) {
-                            put("phone", cleanPhone)
-                        }
-                        if (!usersRowExists) {
-                            put("wallet_balance", _walletBalance.value.coerceAtLeast(0.0))
-                        }
-                    }
-                    val fallbackReq = Request.Builder()
-                        .url("$baseUrl/rest/v1/users?on_conflict=id")
-                        .addHeader("apikey", anonKey)
-                        .addHeader("Authorization", bearer)
-                        .addHeader("Content-Type", "application/json")
-                        .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-                        .post(fallbackUsersJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                        .build()
-                    http.newCall(fallbackReq).execute().use { fallbackResp ->
-                        if (fallbackResp.isSuccessful) {
-                            lastVerifiedUserRecordUid = cleanUid
-                            lastVerifiedUserRecordAtMs = System.currentTimeMillis()
-                        }
-                    }
                 }
             } catch (_: Throwable) {}
         }
@@ -3196,7 +3172,7 @@ class VtuRepository(
             }
         }
         val cleanEmail = email?.trim().orEmpty()
-        if ((usersObj == null || extractUsersTableFullName(usersObj) == null) && cleanEmail.isNotBlank()) {
+        if (usersObj == null && cleanEmail.isNotBlank()) {
             for (cols in columnSets) {
                 try {
                     val byEmail = sb.from("users").select(Columns.list(*cols.toTypedArray())) {
@@ -3906,19 +3882,9 @@ class VtuRepository(
         // 2. Persist to public.users where id = userId using separate column-safe PATCH payloads
         // Note: public.users has columns (id, email, fullname, phone, wallet_balance, permanent_account_number, permanent_account_bank, bvn, nin)
         val candidatePayloads = mutableListOf<org.json.JSONObject>()
-        if (cleanFullName.isNotBlank()) {
-            candidatePayloads.add(org.json.JSONObject().apply {
-                put("fullname", cleanFullName)
-            })
-        }
         if (cleanPhone != null) {
             candidatePayloads.add(org.json.JSONObject().apply {
                 put("phone", cleanPhone)
-            })
-        }
-        if (!nin.isNullOrBlank()) {
-            candidatePayloads.add(org.json.JSONObject().apply {
-                put("nin", nin.trim())
             })
         }
         if (accNumber.isNotBlank()) {
@@ -3940,26 +3906,6 @@ class VtuRepository(
                     .addHeader("Authorization", bearer)
                     .addHeader("Prefer", "return=minimal")
                     .patch(requestBody)
-                    .build()
-                client.newCall(req).execute().close()
-            } catch (_: Throwable) {}
-        }
-
-        // 2b. Persist full_name and phone to public.profiles where id = userId
-        if (cleanFullName.isNotBlank() || cleanPhone != null) {
-            try {
-                val profileJson = org.json.JSONObject().apply {
-                    put("id", userId)
-                    if (email.isNotBlank()) put("email", email)
-                    if (cleanFullName.isNotBlank()) put("full_name", cleanFullName)
-                    if (cleanPhone != null) put("phone", cleanPhone)
-                }
-                val req = Request.Builder()
-                    .url("$baseUrl/rest/v1/profiles?on_conflict=id")
-                    .addHeader("apikey", anonKey)
-                    .addHeader("Authorization", bearer)
-                    .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-                    .post(profileJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                     .build()
                 client.newCall(req).execute().close()
             } catch (_: Throwable) {}
@@ -4078,7 +4024,7 @@ class VtuRepository(
         _currentUser.value = resolvedUser
         _accessToken.value = token
         SupabaseProvider.activeUserAccessToken = token
-        SupabaseProvider.tokenRefreshCallback = { resolveValidAccessToken() }
+        SupabaseProvider.tokenRefreshCallback = { resolveValidAccessToken(forceRefresh = true) }
         _isLoggedIn.value = true
 
         loadUserBalance(resolvedUser.email, userId)
@@ -4142,6 +4088,14 @@ class VtuRepository(
         editor.apply()
 
         repoScope.launch {
+            if (!token.isNullOrBlank() && token.startsWith("ey") && !com.example.util.JwtUtils.isExpired(token)) {
+                try {
+                    SupabaseInstance.client?.auth?.importAuthToken(
+                        accessToken = token,
+                        refreshToken = refreshToken?.takeIf { it.isNotBlank() } ?: findPersistedRefreshToken()
+                    )
+                } catch (_: Throwable) {}
+            }
             persistCurrentUserToLocalDatabase(resolvedUser)
             com.example.ui.components.ProfilePictureStore.ensureSupabaseAuthHydrated(context)
             com.example.ui.components.ProfilePictureStore.loadAvatar(context, resolvedUser.email)
@@ -4338,12 +4292,9 @@ class VtuRepository(
             }
 
             // Fallback via PostgREST HTTP if the session JWT was held in repository token storage
-            val sessionToken = try {
-                SupabaseProvider.client?.auth?.currentAccessTokenOrNull()
-                    ?: SupabaseProvider.client?.auth?.currentSessionOrNull()?.accessToken
-            } catch (_: Throwable) {
-                null
-            } ?: currentAccessToken?.takeIf { it.startsWith("eyJ") }
+            val sessionToken = SupabaseProvider.resolveSessionAccessToken(currentAccessToken)
+                .takeIf { it.startsWith("eyJ") && !com.example.util.JwtUtils.isExpired(it) }
+                ?: SupabaseProvider.blockingRefreshAccessTokenIfNeeded()
 
             if (!sessionToken.isNullOrBlank()) {
                 val baseUrl = SupabaseProvider.safeUrl.trimEnd('/')
@@ -4504,14 +4455,9 @@ class VtuRepository(
         val nameToUse = userName.ifBlank { _currentUser.value?.fullName.orEmpty() }
         val emailToUse = userEmail.ifBlank { _currentUser.value?.email.orEmpty() }
 
-        val sessionToken = try {
-            SupabaseProvider.client?.let { client ->
-                client.auth.currentAccessTokenOrNull()
-                    ?: client.auth.currentSessionOrNull()?.accessToken
-            }
-        } catch (_: Throwable) {
-            null
-        } ?: currentAccessToken?.takeIf { it.startsWith("eyJ") }
+        val sessionToken = SupabaseProvider.resolveSessionAccessToken(currentAccessToken)
+            .takeIf { it.startsWith("eyJ") && !com.example.util.JwtUtils.isExpired(it) }
+            ?: SupabaseProvider.blockingRefreshAccessTokenIfNeeded()
 
         val result = apiKeyRepo.generateApiKeyForUser(
             userId = effectiveUid,
@@ -4534,7 +4480,7 @@ class VtuRepository(
 
         val error = result.exceptionOrNull()
         Log.e("VtuRepository", "Generate-api-key failed: ${error?.message}")
-        Result.failure(error ?: Exception("Network connection bad. Please check your internet connection and try again."))
+        Result.failure(error ?: Exception("Failed to generate API key. Please try again."))
     }
 
     suspend fun regenerateApiKeyRemote(
@@ -4550,14 +4496,9 @@ class VtuRepository(
         val emailToUse = userEmail.ifBlank { _currentUser.value?.email.orEmpty() }
         val nameToUse = userName.ifBlank { _currentUser.value?.fullName.orEmpty() }
 
-        val sessionToken = try {
-            SupabaseProvider.client?.let { client ->
-                client.auth.currentAccessTokenOrNull()
-                    ?: client.auth.currentSessionOrNull()?.accessToken
-            }
-        } catch (_: Throwable) {
-            null
-        } ?: currentAccessToken?.takeIf { it.startsWith("eyJ") }
+        val sessionToken = SupabaseProvider.resolveSessionAccessToken(currentAccessToken)
+            .takeIf { it.startsWith("eyJ") && !com.example.util.JwtUtils.isExpired(it) }
+            ?: SupabaseProvider.blockingRefreshAccessTokenIfNeeded()
 
         val result = apiKeyRepo.regenerateApiKeyForUser(
             userId = effectiveUid,

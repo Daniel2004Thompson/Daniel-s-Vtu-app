@@ -345,17 +345,29 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
     ): Result<DynamicAccountResponse> {
         return withContext(Dispatchers.IO) {
             try {
-                val cleanEmail = email.trim()
-                val cleanUserId = userId.trim()
+                val activeToken = authToken?.takeIf { it.isNotBlank() }
+                    ?: SupabaseProvider.activeUserAccessToken
+                val cleanEmail = email.trim().ifBlank {
+                    com.example.util.JwtUtils.getEmailFromJwt(activeToken).orEmpty()
+                }
+                val cleanUserId = userId.trim().ifBlank {
+                    com.example.util.JwtUtils.getUserIdFromJwt(activeToken).orEmpty()
+                }
                 val cleanFirst = firstName?.trim() ?: ""
                 val cleanLast = lastName?.trim() ?: ""
                 val txRef = "DYN-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(6)}"
 
                 val jsonPayload = JSONObject().apply {
-                    put("userId", cleanUserId)
-                    put("user_id", cleanUserId)
+                    if (cleanUserId.isNotBlank()) {
+                        put("userId", cleanUserId)
+                        put("user_id", cleanUserId)
+                    }
                     put("email", cleanEmail)
-                    put("amount", amount)
+                    if (amount % 1.0 == 0.0) {
+                        put("amount", amount.toLong())
+                    } else {
+                        put("amount", amount)
+                    }
                     put("firstname", cleanFirst)
                     put("lastname", cleanLast)
                     put("currency", "NGN")
@@ -395,6 +407,10 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
 
                                 val accName = "Wallet Topup"
 
+                                if (cleanUserId.isNotBlank()) {
+                                    SharedWalletObserver.ensureGatewayRealtimePolling(cleanUserId, cleanEmail)
+                                }
+
                                 val parsedResponse = DynamicAccountResponse(
                                     status = "success",
                                     success = true,
@@ -403,7 +419,7 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
                                         accountNumberSnake = accNum,
                                         accountBankName = bank,
                                         accountNameSnake = accName,
-                                        amount = dataObj?.optDouble("amount") ?: amount,
+                                        amount = dataObj?.optDouble("amount")?.takeIf { !it.isNaN() && it > 0.0 } ?: amount,
                                         accountExpirationDatetime = dataObj?.optString("account_expiration_datetime"),
                                         note = dataObj?.optString("note")
                                     )
@@ -412,6 +428,7 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
                             }
 
                             val errDetail = errorObj?.optString("message")?.takeIf { it.isNotBlank() }
+                                ?: rootJson.optString("error").takeIf { it.isNotBlank() && !it.startsWith("{") }
                                 ?: message.takeIf { it.isNotBlank() }
 
                             if (!errDetail.isNullOrBlank()) {
@@ -463,10 +480,19 @@ class WalletRepository(private val apiService: BackendApiService = NetworkModule
         return withContext(Dispatchers.IO) {
             try {
                 val cleanNin = nin?.filter { it.isDigit() }?.take(11)
+                val resolvedUid = com.example.util.JwtUtils.getUserIdFromJwt(authToken)
+                    ?: com.example.util.JwtUtils.getUserIdFromJwt(SupabaseProvider.activeUserAccessToken)
+                    ?: try { com.example.auth.SupabaseInstance.client?.auth?.currentUserOrNull()?.id } catch (_: Throwable) { null }
                 val payload = JSONObject().apply {
+                    if (!resolvedUid.isNullOrBlank()) {
+                        put("userId", resolvedUid)
+                        put("user_id", resolvedUid)
+                    }
                     put("email", email)
                     put("firstName", firstName)
+                    put("firstname", firstName)
                     put("lastName", lastName)
+                    put("lastname", lastName)
                     put("phone", phone)
                     if (!cleanNin.isNullOrBlank() && cleanNin.length == 11) {
                         put("nin", cleanNin)

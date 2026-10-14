@@ -3,10 +3,15 @@ package com.example.data.remote
 import android.util.Log
 import com.example.auth.SupabaseProvider
 import com.example.data.model.AirtimeNetworkPricing
+import com.example.data.model.DataCategory
 import com.example.data.model.NetworkProvider
+import com.example.data.model.VtuPriceRow
+import com.example.data.model.getServiceIds
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Columns
+import java.io.IOException
+import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -191,6 +196,92 @@ object GsubzVtuService {
             Log.w(TAG, "Failed to parse vtu_prices rows: ${e.message}")
         }
         return grouped
+    }
+
+    val vtuPriceJson = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
+    }
+
+    /**
+     * Loads live data bundle plans from `public.vtu_prices` for the given network and tab.
+     * Table columns: service_id, plan, price, label, validity_days, categories, active.
+     * Filters rows where active = true, service_id in the network's service_id list,
+     * and categories array CONTAINS the tab's category value, ordered by price ascending.
+     * Uses the logged-in user's token.
+     */
+    suspend fun fetchPlansForNetworkAndTab(
+        network: NetworkProvider,
+        category: DataCategory,
+        userToken: String? = null
+    ): List<VtuPriceRow> = withContext(Dispatchers.IO) {
+        val serviceIds = network.getServiceIds()
+        val catValue = category.categoryValue
+        val baseUrl = SUPABASE_URL.trimEnd('/')
+        val anonKey = SupabaseProvider.rawKey
+        val activeToken = SupabaseProvider.resolveSessionAccessToken(userToken)
+        val userBearer = if (activeToken.startsWith("Bearer ", ignoreCase = true)) activeToken else "Bearer $activeToken"
+
+        // 1. First try Supabase Postgrest client if configured
+        try {
+            val client = SupabaseProvider.client
+            if (client != null) {
+                val results = client.from("vtu_prices").select {
+                    filter {
+                        eq("active", true)
+                        isIn("service_id", serviceIds)
+                        contains("categories", listOf(catValue))
+                    }
+                    order("price", io.github.jan.supabase.postgrest.query.Order.ASCENDING)
+                }.decodeList<VtuPriceRow>()
+                return@withContext results
+            }
+        } catch (postgrestErr: Throwable) {
+            Log.w(TAG, "Postgrest query for ${network.displayName} $catValue failed, trying direct HTTP: ${postgrestErr.message}")
+        }
+
+        // 2. Direct HTTP query routed via OkHttp (which gatewayInterceptor forwards with user bearer token)
+        val inFilter = serviceIds.joinToString(",")
+        val encodedCat = URLEncoder.encode(catValue, "UTF-8")
+        val url = "$baseUrl/rest/v1/vtu_prices?select=service_id,plan,price,label,validity_days,categories,active&active=eq.true&service_id=in.($inFilter)&categories=cs.{$encodedCat}&order=price.asc"
+
+        val bearerCandidates = listOf(userBearer, "Bearer $anonKey").distinct()
+        var lastException: Throwable? = null
+
+        for (bearer in bearerCandidates) {
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                    .addHeader("Pragma", "no-cache")
+                    .get()
+                    .build()
+                httpClient.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string().orEmpty()
+                        val parsed = vtuPriceJson.decodeFromString<List<VtuPriceRow>>(body)
+                        return@withContext parsed
+                            .filter { it.active && it.service_id in serviceIds && it.categories.contains(catValue) }
+                            .sortedBy { it.price }
+                    } else {
+                        val errText = res.body?.string().orEmpty()
+                        lastException = IOException("HTTP ${res.code} loading data prices: $errText")
+                    }
+                }
+            } catch (httpErr: Throwable) {
+                lastException = httpErr
+                Log.w(TAG, "Error querying live vtu_prices for ${network.displayName} $catValue: ${httpErr.message}")
+            }
+        }
+
+        if (lastException != null) {
+            throw lastException!!
+        }
+
+        emptyList()
     }
 
     /**
@@ -771,7 +862,7 @@ object GsubzVtuService {
         userHasEnoughDashboardBalance: Boolean = true
     ): GsubzOrderResult = withContext(Dispatchers.IO) {
         val cleanPhone = phone.trim()
-        val activeToken = SupabaseProvider.resolveSessionAccessToken(userToken)
+        val activeToken = SupabaseProvider.resolveValidSessionAccessToken(userToken)
 
         val requestJsonString = buildRequestJson(
             serviceID = serviceID,
@@ -807,6 +898,37 @@ object GsubzVtuService {
                 amountPaid = 0.0,
                 isLiveEdge = false
             )
+        }
+
+        // Automatic retry on 401 session expiration with fresh token
+        if (httpStatusCode == 401 && (rawBody.contains("session", ignoreCase = true) || rawBody.contains("jwt", ignoreCase = true))) {
+            val freshToken = SupabaseProvider.resolveValidSessionAccessToken(userToken)
+            if (freshToken != activeToken && freshToken != SupabaseProvider.rawKey) {
+                val refreshJsonString = buildRequestJson(
+                    serviceID = serviceID,
+                    amount = amount,
+                    phone = cleanPhone,
+                    plan = plan,
+                    customerID = customerID,
+                    service = service,
+                    network = network,
+                    userId = userId,
+                    userEmail = userEmail,
+                    narration = narration,
+                    meterNumber = meterNumber,
+                    smartcardNumber = smartcardNumber,
+                    userToken = freshToken
+                )
+                try {
+                    val retryResp = SupabaseProvider.postEdgeFunction(
+                        functionName = FUNCTION_NAME,
+                        bodyJson = refreshJsonString,
+                        accessTokenOverride = freshToken
+                    )
+                    httpStatusCode = retryResp.first
+                    rawBody = retryResp.second
+                } catch (_: Exception) {}
+            }
         }
 
         // If the Edge Function only accepts ["airtime", "data", "cable", "electricity"] for service_type

@@ -291,7 +291,19 @@ class VtuViewModel(application: Application) : AndroidViewModel(application) {
 
     fun subscribeToWalletBalance(userId: String, onBalanceChanged: (Double) -> Unit = {}) {
         if (userId.isBlank() || userId == "usr_guest" || userId == "usr_default") return
-        if (!SupabaseRealtimeClient.isConfigured) return
+
+        val bridgeListener: (Double) -> Unit = { newBal ->
+            setLiveWalletBalance(newBal)
+            onBalanceChanged(newBal)
+        }
+        com.vtu.app.wallet.SharedWalletObserver.addListener(bridgeListener)
+        com.vtu.app.wallet.SharedWalletObserver.ensureGatewayRealtimePolling(userId, currentUser.value?.email)
+
+        val rawKey = try { com.example.auth.SupabaseProvider.rawKey } catch (_: Throwable) { "" }
+        val canUseDirectWebSocket = rawKey.startsWith("ey") &&
+            !rawKey.equals(com.example.util.SecurityVault.GATEWAY_MANAGED_KEY_PLACEHOLDER, ignoreCase = true)
+        if (!canUseDirectWebSocket || !SupabaseRealtimeClient.isConfigured) return
+
         try {
             val channel = SupabaseRealtimeClient.client.channel("wallet-balance-$userId-${System.nanoTime()}")
             realtimeBalanceChannel = channel

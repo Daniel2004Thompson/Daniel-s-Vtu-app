@@ -370,7 +370,7 @@ object ProfilePictureStore {
                 supabase.auth.importAuthToken(
                     accessToken = access,
                     refreshToken = refresh,
-                    retrieveUser = true,
+                    retrieveUser = false,
                     autoRefresh = refresh.isNotBlank()
                 )
             }
@@ -521,13 +521,15 @@ object ProfilePictureStore {
                 } catch (_: Throwable) {}
             }
 
-            // Also persist in Supabase Auth user_metadata so login session always carries avatar_url & avatar_data_uri
+            // Also persist in Supabase Auth user_metadata so login session carries clean avatar_url,
+            // while stripping any legacy bloated avatar_base64 or avatar_data_uri from the JWT payload
             try {
                 val metaObj = org.json.JSONObject().apply {
-                    put("avatar_url", effectiveAvatarUrl)
-                    if (!compactDataUri.isNullOrBlank()) {
-                        put("avatar_data_uri", compactDataUri)
+                    if (effectiveAvatarUrl.startsWith("http://") || effectiveAvatarUrl.startsWith("https://")) {
+                        put("avatar_url", effectiveAvatarUrl)
                     }
+                    put("avatar_base64", org.json.JSONObject.NULL)
+                    put("avatar_data_uri", org.json.JSONObject.NULL)
                 }
                 val authBody = org.json.JSONObject().put("data", metaObj).toString()
                 val authReq = Request.Builder()

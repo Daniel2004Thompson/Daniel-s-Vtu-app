@@ -107,7 +107,7 @@ object SecurityVault {
         val gatewayPath = "/functions/v1/$GATEWAY_FUNCTION_NAME"
         val builder = original.newBuilder()
 
-        if (!encodedPath.startsWith(gatewayPath)) {
+        val effectiveTargetPath: String = if (!encodedPath.startsWith(gatewayPath)) {
             val encodedQuery = url.encodedQuery
             val targetPath = if (!encodedQuery.isNullOrBlank()) {
                 "$encodedPath?$encodedQuery"
@@ -120,6 +120,9 @@ object SecurityVault {
                 .build()
             builder.url(gatewayHttpUrl)
             builder.header("x-target-path", targetPath)
+            targetPath
+        } else {
+            original.header("x-target-path")?.trim().orEmpty().ifBlank { encodedPath }
         }
 
         val existingApiKey = original.header("apikey")?.trim().orEmpty()
@@ -127,10 +130,52 @@ object SecurityVault {
             builder.removeHeader("apikey")
         }
 
-        val existingAuth = original.header("Authorization")?.trim().orEmpty()
-        val rawToken = existingAuth.removePrefix("Bearer ").removePrefix("bearer ").trim()
-        if (rawToken.isEmpty() || rawToken.equals(GATEWAY_MANAGED_KEY_PLACEHOLDER, ignoreCase = true)) {
+        val targetLower = effectiveTargetPath.lowercase()
+        // Edge Functions that use server-side gateway anon key & body parameters (userId/email)
+        // and enforce legacy JWT secret at the Edge Function gateway:
+        val useGatewayManagedAuthOnly =
+            targetLower.contains("/functions/v1/create-dynamic-account") ||
+            targetLower.contains("/functions/v1/create-permanent-account") ||
+            targetLower.contains("/functions/v1/create-virtual-account")
+
+        val isPublicAuthEndpoint =
+            targetLower.startsWith("/auth/v1/token") ||
+            targetLower.startsWith("/auth/v1/otp") ||
+            targetLower.startsWith("/auth/v1/verify") ||
+            targetLower.startsWith("/auth/v1/signup") ||
+            targetLower.startsWith("/auth/v1/recover")
+
+        if (useGatewayManagedAuthOnly || isPublicAuthEndpoint) {
             builder.removeHeader("Authorization")
+        } else {
+            val existingAuth = original.header("Authorization")?.trim().orEmpty()
+            val rawToken = existingAuth.removePrefix("Bearer ").removePrefix("bearer ").trim()
+            val isRawValidJwt = rawToken.isNotBlank() &&
+                !rawToken.equals(GATEWAY_MANAGED_KEY_PLACEHOLDER, ignoreCase = true) &&
+                rawToken.startsWith("ey") &&
+                !JwtUtils.isExpired(rawToken)
+
+            if (isRawValidJwt) {
+                com.example.auth.SupabaseProvider.activeUserAccessToken = rawToken
+                builder.header("Authorization", "Bearer $rawToken")
+            } else {
+                val activeCandidate = com.example.auth.SupabaseProvider.activeUserAccessToken
+                    ?.trim()
+                    ?.removePrefix("Bearer ")
+                    ?.removePrefix("bearer ")
+                    ?.trim()
+                    .orEmpty()
+                val validActive = if (activeCandidate.startsWith("ey") && !JwtUtils.isExpired(activeCandidate)) {
+                    activeCandidate
+                } else {
+                    com.example.auth.SupabaseProvider.blockingRefreshAccessTokenIfNeeded()
+                }
+                if (!validActive.isNullOrBlank() && validActive.startsWith("ey") && !JwtUtils.isExpired(validActive)) {
+                    builder.header("Authorization", "Bearer $validActive")
+                } else {
+                    builder.removeHeader("Authorization")
+                }
+            }
         }
 
         chain.proceed(builder.build())

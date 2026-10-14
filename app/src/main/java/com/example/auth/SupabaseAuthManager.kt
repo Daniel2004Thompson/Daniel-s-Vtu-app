@@ -58,7 +58,9 @@ object SupabaseProvider {
                 }
                 install(Auth)
                 install(Postgrest)
-                install(Realtime)
+                install(Realtime) {
+                    connectOnSubscribe = false
+                }
                 install(Functions)
                 install(Storage)
             }
@@ -74,7 +76,9 @@ object SupabaseProvider {
                     minimalSettings()
                 }
                 install(Postgrest)
-                install(Realtime)
+                install(Realtime) {
+                    connectOnSubscribe = false
+                }
                 install(Functions)
                 install(Storage)
             }
@@ -108,10 +112,43 @@ object SupabaseProvider {
     @Volatile
     var tokenRefreshCallback: (suspend () -> String?)? = null
 
+    private val isRefreshingOnThread = object : ThreadLocal<Boolean>() {
+        override fun initialValue(): Boolean = false
+    }
+
+    fun blockingRefreshAccessTokenIfNeeded(): String? {
+        if (isRefreshingOnThread.get() == true) {
+            return null
+        }
+        val callback = tokenRefreshCallback ?: return null
+        isRefreshingOnThread.set(true)
+        return try {
+            val refreshed = kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                kotlinx.coroutines.withTimeoutOrNull(6000L) {
+                    callback.invoke()
+                }
+            }?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
+            if (!refreshed.isNullOrBlank() &&
+                refreshed != rawKey &&
+                refreshed.startsWith("ey") &&
+                !com.example.util.JwtUtils.isExpired(refreshed)
+            ) {
+                activeUserAccessToken = refreshed
+                refreshed
+            } else {
+                null
+            }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            isRefreshingOnThread.set(false)
+        }
+    }
+
     /**
      * Resolves the logged-in user's session access token from the single SupabaseProvider.client
      * or the repository's persisted user session token, falling back to the provided token or the
-     * Supabase anon key if unauthenticated.
+     * Supabase anon key if unauthenticated or expired.
      */
     fun resolveSessionAccessToken(fallbackToken: String? = null): String {
         val cleanFallback = fallbackToken?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
@@ -132,12 +169,10 @@ object SupabaseProvider {
         } catch (_: Throwable) {
             null
         }
-        val validSession = sessionToken?.takeIf { !com.example.util.JwtUtils.isExpired(it) }
-        return validSession
-            ?: sessionToken
-            ?: cleanFallback?.takeIf { it.isNotBlank() && !it.startsWith("session_") && !it.startsWith("demo_") }
-            ?: cleanActive?.takeIf { it.isNotBlank() && !it.startsWith("session_") && !it.startsWith("demo_") }
-            ?: rawKey
+        val validSession = sessionToken?.takeIf {
+            it != rawKey && !it.startsWith("session_") && !it.startsWith("demo_") && !com.example.util.JwtUtils.isExpired(it)
+        }
+        return validSession ?: rawKey
     }
 
     /**
@@ -214,10 +249,10 @@ object SupabaseProvider {
         if (firstAttempt.first == 401) {
             try {
                 val refreshed = tokenRefreshCallback?.invoke()?.trim()?.removePrefix("Bearer ")?.removePrefix("bearer ")?.trim()
-                if (!refreshed.isNullOrBlank() && refreshed != accessToken && refreshed != rawKey) {
+                if (!refreshed.isNullOrBlank() && refreshed != accessToken && refreshed != rawKey && !com.example.util.JwtUtils.isExpired(refreshed)) {
                     activeUserAccessToken = refreshed
                     val retryBearer = "Bearer $refreshed"
-                    return try {
+                    val retryAttempt = try {
                         val retryRes = ktorClient.post(url) {
                             header(HttpHeaders.Authorization, retryBearer)
                             header("apikey", rawKey)
@@ -229,8 +264,29 @@ object SupabaseProvider {
                     } catch (e: io.ktor.client.plugins.ResponseException) {
                         Pair(e.response.status.value, e.response.bodyAsText())
                     }
+                    if (retryAttempt.first != 401) {
+                        return retryAttempt
+                    }
                 }
             } catch (_: Throwable) {}
+
+            // Fallback: let swift-processor inject the server-side anon key when gateway legacy JWT check rejects client token
+            if (accessToken != rawKey) {
+                try {
+                    return try {
+                        val anonRes = ktorClient.post(url) {
+                            header(HttpHeaders.Authorization, "Bearer $rawKey")
+                            header("apikey", rawKey)
+                            header("x-client-info", "vtu-android-client/1.0")
+                            contentType(ContentType.Application.Json)
+                            setBody(bodyJson)
+                        }
+                        Pair(anonRes.status.value, anonRes.bodyAsText())
+                    } catch (e: io.ktor.client.plugins.ResponseException) {
+                        Pair(e.response.status.value, e.response.bodyAsText())
+                    }
+                } catch (_: Throwable) {}
+            }
         }
 
         return firstAttempt
@@ -361,9 +417,9 @@ class AuthRepository(
             throw lastError
         }
         try {
-            lastPasswordVerifiedUser = client.auth.retrieveUserForCurrentSession(updateSession = true)
+            lastPasswordVerifiedUser = client.auth.currentUserOrNull()
         } catch (_: Throwable) {
-            lastPasswordVerifiedUser = try { client.auth.currentUserOrNull() } catch (_: Throwable) { null }
+            lastPasswordVerifiedUser = null
         }
     }
 
@@ -402,10 +458,8 @@ class AuthRepository(
             this.password = password
         }
         lastPasswordVerifiedUser = try {
-            client.auth.retrieveUserForCurrentSession(updateSession = true)
-        } catch (_: Throwable) {
-            try { client.auth.currentUserOrNull() } catch (_: Throwable) { null }
-        }
+            client.auth.currentUserOrNull()
+        } catch (_: Throwable) { null }
         lastVerifiedEmail = cleanEmail
         lastVerifiedPassword = password
         otpSendWasRateLimited = false
@@ -483,10 +537,8 @@ class AuthRepository(
             throw lastError
         }
         try {
-            lastPasswordVerifiedUser = client.auth.retrieveUserForCurrentSession(updateSession = true)
-        } catch (_: Throwable) {
-            lastPasswordVerifiedUser = try { client.auth.currentUserOrNull() } catch (_: Throwable) { lastPasswordVerifiedUser }
-        }
+            lastPasswordVerifiedUser = client.auth.currentUserOrNull() ?: lastPasswordVerifiedUser
+        } catch (_: Throwable) {}
     }
 
     suspend fun signOut(): AuthResult = safeCall {

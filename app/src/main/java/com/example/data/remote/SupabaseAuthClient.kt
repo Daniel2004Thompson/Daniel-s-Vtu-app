@@ -160,7 +160,7 @@ class SupabaseAuthClient(
                     try {
                         val filter = if (userId.isNotBlank()) "id=eq.$userId" else "email=eq.${userEmail.trim()}"
                         val userRowReq = Request.Builder()
-                            .url("$cleanUrl/rest/v1/users?select=id,email,fullname,phone&$filter&limit=1")
+                            .url("$cleanUrl/rest/v1/users?select=id,email,phone&$filter&limit=1")
                             .addHeader("apikey", supabaseAnonKey)
                             .addHeader("Authorization", "Bearer ${accessToken.ifBlank { supabaseAnonKey }}")
                             .get()

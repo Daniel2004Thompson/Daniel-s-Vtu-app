@@ -1,6 +1,6 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.Image
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,23 +16,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +37,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,24 +47,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.DataCategory
-import com.example.data.model.DataPlan
 import com.example.data.model.NetworkProvider
-import com.example.data.model.VtuCatalog
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import com.example.data.model.VtuPriceRow
 import com.example.data.remote.GsubzVtuService
-import com.example.ui.theme.VtuCyan
-import com.example.ui.theme.VtuGoldAccent
 import com.example.ui.theme.VtuGreenPrimary
 import com.example.ui.viewmodel.PendingTransaction
+
+private const val TAG = "DataScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -79,81 +69,34 @@ fun DataScreen(
     onRequestPayment: (PendingTransaction) -> Unit
 ) {
     var selectedNetwork by remember { mutableStateOf(NetworkProvider.AIRTEL) }
-    var selectedCategory by remember { mutableStateOf<DataCategory?>(null) }
+    var selectedCategory by remember { mutableStateOf(DataCategory.SME) }
     var phoneNumber by remember { mutableStateOf("") }
-    var selectedPlan by remember { mutableStateOf<DataPlan?>(null) }
+    var selectedPlan by remember { mutableStateOf<VtuPriceRow?>(null) }
     var showNetworkPicker by remember { mutableStateOf(false) }
     var isLoadingPrices by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var plansForCurrentTab by remember { mutableStateOf<List<VtuPriceRow>>(emptyList()) }
     var refreshTrigger by remember { mutableStateOf(0) }
-    val livePlansByService by GsubzVtuService.liveServicePlans.collectAsState()
 
-    LaunchedEffect(selectedNetwork, refreshTrigger) {
+    LaunchedEffect(selectedNetwork, selectedCategory, refreshTrigger) {
         isLoadingPrices = true
-        val serviceIdsToSync = when (selectedNetwork) {
-            NetworkProvider.MTN -> listOf("mtn_sme", "mtn_gifting")
-            NetworkProvider.AIRTEL -> listOf("airtel_sme", "airtel_gifting")
-            NetworkProvider.GLO -> listOf("glo_data", "glo_sme")
-            NetworkProvider.NINEMOBILE -> listOf("etisalat_data")
-        }
-        GsubzVtuService.fetchLiveDataPlansFromVtuPrices(
-            (serviceIdsToSync + GsubzVtuService.DATA_SERVICE_IDS).distinct()
-        )
-        isLoadingPrices = false
-    }
-
-    val filteredPlans = remember(selectedNetwork, selectedCategory, livePlansByService) {
-        val basePlans = VtuCatalog.dataPlans
-            .filter {
-                it.network == selectedNetwork && (selectedCategory == null || it.category == selectedCategory)
-            }
-            .mapNotNull { catalogPlan ->
-                val liveMatch = livePlansByService[catalogPlan.gsubzServiceId.lowercase()]
-                    ?.firstOrNull { it.value.equals(catalogPlan.planCode, ignoreCase = true) }
-                val livePrice = liveMatch?.price?.toDoubleOrNull()
-                if (livePrice != null && livePrice > 0.0) {
-                    catalogPlan.copy(price = livePrice, originalPrice = null)
-                } else {
-                    null
-                }
-            }
-        val knownPlanKeys = VtuCatalog.dataPlans
-            .filter { it.network == selectedNetwork }
-            .map { "${it.gsubzServiceId.lowercase()}_${it.planCode.lowercase()}" }
-            .toSet()
-        val serviceIdsForNetwork = when (selectedNetwork) {
-            NetworkProvider.MTN -> listOf("mtn_sme", "mtn_gifting")
-            NetworkProvider.AIRTEL -> listOf("airtel_sme", "airtel_gifting")
-            NetworkProvider.GLO -> listOf("glo_data", "glo_sme")
-            NetworkProvider.NINEMOBILE -> listOf("etisalat_data")
-        }
-        val extraDynamicPlans = serviceIdsForNetwork.flatMap { sId ->
-            val cat = if (sId.contains("sme")) DataCategory.SME else DataCategory.GIFTING
-            livePlansByService[sId.lowercase()].orEmpty().mapNotNull { item ->
-                val key = "${sId.lowercase()}_${item.value.lowercase()}"
-                val priceVal = item.price.toDoubleOrNull()
-                if (key !in knownPlanKeys && priceVal != null && priceVal > 0.0 && (selectedCategory == null || selectedCategory == cat)) {
-                    val parts = item.displayName.split("-").map { it.trim() }
-                    DataPlan(
-                        id = "live_${sId}_${item.value}",
-                        network = selectedNetwork,
-                        category = cat,
-                        dataAmount = parts.firstOrNull()?.takeIf { it.isNotBlank() } ?: item.displayName,
-                        validity = parts.getOrNull(1)?.takeIf { it.isNotBlank() } ?: "30 Days",
-                        price = priceVal,
-                        originalPrice = null,
-                        planCode = item.value,
-                        gsubzServiceId = sId
-                    )
-                } else null
-            }
-        }
-        basePlans + extraDynamicPlans
-    }
-
-    LaunchedEffect(filteredPlans) {
-        val current = selectedPlan
-        if (current != null) {
-            selectedPlan = filteredPlans.firstOrNull { it.id == current.id }
+        loadError = null
+        selectedPlan = null
+        try {
+            val results = GsubzVtuService.fetchPlansForNetworkAndTab(
+                network = selectedNetwork,
+                category = selectedCategory
+            )
+            plansForCurrentTab = results
+            loadError = null
+        } catch (e: Throwable) {
+            val errMsg = e.message?.ifBlank { e.javaClass.simpleName }
+                ?: "Unable to load live ${selectedNetwork.displayName} data prices right now"
+            Log.e(TAG, "Unable to load live ${selectedNetwork.displayName} data prices right now: $errMsg", e)
+            loadError = errMsg
+            plansForCurrentTab = emptyList()
+        } finally {
+            isLoadingPrices = false
         }
     }
 
@@ -280,7 +223,7 @@ fun DataScreen(
                 }
             }
 
-            // Plan Category Filter Chips
+            // Tabs: SME Data, Corporate, Gifting, Monthly, Daily/Weekly
             item {
                 Column {
                     Text(
@@ -289,32 +232,116 @@ fun DataScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item {
-                            FilterChip(
-                                selected = selectedCategory == null,
-                                onClick = { selectedCategory = null },
-                                label = { Text("All Plans") }
-                            )
-                        }
-                        items(DataCategory.entries) { cat ->
-                            FilterChip(
-                                selected = selectedCategory == cat,
-                                onClick = { selectedCategory = cat },
-                                label = { Text(cat.label) }
+                    ScrollableTabRow(
+                        selectedTabIndex = DataCategory.entries.indexOf(selectedCategory).coerceAtLeast(0),
+                        edgePadding = 0.dp,
+                        containerColor = Color.Transparent,
+                        contentColor = VtuGreenPrimary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("data_category_tabs")
+                    ) {
+                        DataCategory.entries.forEach { cat ->
+                            val isSelected = selectedCategory == cat
+                            Tab(
+                                selected = isSelected,
+                                onClick = {
+                                    if (selectedCategory != cat) {
+                                        selectedCategory = cat
+                                        selectedPlan = null
+                                    }
+                                },
+                                text = {
+                                    Text(
+                                        text = cat.label,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        fontSize = 14.sp
+                                    )
+                                },
+                                modifier = Modifier
+                                    .testTag("tab_${cat.categoryValue}")
+                                    .testTag("data_category_${cat.categoryValue}")
                             )
                         }
                     }
                 }
             }
 
-            // Data Bundles List
-            if (filteredPlans.isEmpty()) {
+            // Data Bundles List / Empty / Error States
+            if (isLoadingPrices) {
                 item {
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 12.dp),
+                            .padding(vertical = 12.dp)
+                            .testTag("data_loading_card"),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(28.dp),
+                                color = VtuGreenPrimary,
+                                strokeWidth = 3.dp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Fetching live ${selectedNetwork.displayName} data prices...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            } else if (loadError != null) {
+                // On failure, log the real exception message with Log.e and show it in the error card
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp)
+                            .testTag("data_error_card"),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = loadError ?: "Unable to load live ${selectedNetwork.displayName} data prices right now.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = { refreshTrigger++ },
+                                colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.testTag("refresh_prices_button")
+                            ) {
+                                Text("Refresh Live Prices", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            } else if (plansForCurrentTab.isEmpty()) {
+                // If a tab has 0 plans (e.g. 9mobile Daily/Weekly), show "No plans available here" instead of the error.
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp)
+                            .testTag("data_empty_card"),
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                     ) {
@@ -325,119 +352,113 @@ fun DataScreen(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = if (isLoadingPrices) {
-                                    "Fetching live ${selectedNetwork.displayName} data prices..."
-                                } else {
-                                    "Unable to load live ${selectedNetwork.displayName} data prices right now."
-                                },
+                                text = "No plans available here",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            if (!isLoadingPrices) {
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Button(
-                                    onClick = { refreshTrigger++ },
-                                    colors = ButtonDefaults.buttonColors(containerColor = VtuGreenPrimary),
-                                    shape = RoundedCornerShape(10.dp)
-                                ) {
-                                    Text("Refresh Live Prices", fontWeight = FontWeight.Bold)
-                                }
-                            }
                         }
                     }
                 }
-            }
-
-            items(filteredPlans) { plan ->
-                val isSelected = selectedPlan?.id == plan.id
-                val formattedPrice = if (plan.price % 1.0 == 0.0) {
-                    "₦%,.0f".format(plan.price)
-                } else {
-                    "₦%,.2f".format(plan.price)
-                }
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(
-                            width = if (isSelected) 2.dp else 1.dp,
-                            color = if (isSelected) VtuGreenPrimary else Color.Transparent,
-                            shape = RoundedCornerShape(16.dp)
-                        )
-                        .clickable { selectedPlan = plan }
-                        .testTag("data_plan_${plan.id}"),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isSelected) VtuGreenPrimary.copy(alpha = 0.08f)
-                        else MaterialTheme.colorScheme.surface
-                    ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 4.dp else 1.dp)
-                ) {
-                    Row(
+            } else {
+                items(plansForCurrentTab) { plan ->
+                    val isSelected = selectedPlan?.plan == plan.plan && selectedPlan?.service_id == plan.service_id
+                    val formattedPrice = if (plan.price % 1.0 == 0.0) {
+                        "₦%,.0f".format(plan.price)
+                    } else {
+                        "₦%,.2f".format(plan.price)
+                    }
+                    val planName = plan.label?.takeIf { it.isNotBlank() } ?: "${plan.plan} Data"
+                    val validityText = if (plan.validity_days != null) {
+                        if (plan.validity_days == 1) "Validity: 1 Day" else "Validity: ${plan.validity_days} Days"
+                    } else {
+                        ""
+                    }
+                    Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(
+                                width = if (isSelected) 2.dp else 1.dp,
+                                color = if (isSelected) VtuGreenPrimary else Color.Transparent,
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .clickable { selectedPlan = plan }
+                            .testTag("data_plan_${plan.service_id}_${plan.plan}"),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSelected) VtuGreenPrimary.copy(alpha = 0.08f)
+                            else MaterialTheme.colorScheme.surface
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 4.dp else 1.dp)
                     ) {
                         Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            com.example.ui.components.NetworkLogoIcon(
-                                provider = plan.network,
-                                size = 42.dp,
-                                isCircular = true
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = plan.dataAmount,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontSize = if (plan.dataAmount.length > 10) 14.sp else 16.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    ) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                com.example.ui.components.NetworkLogoIcon(
+                                    provider = selectedNetwork,
+                                    size = 42.dp,
+                                    isCircular = true
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(
-                                            text = plan.category.label,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontSize = 10.sp,
+                                            text = planName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontSize = if (planName.length > 15) 14.sp else 16.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f, fill = false)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = selectedCategory.label,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 10.sp,
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
+                                        }
+                                    }
+                                    if (validityText.isNotBlank()) {
+                                        Text(
+                                            text = validityText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
                                             softWrap = false
                                         )
                                     }
                                 }
+                            }
+
+                            Column(horizontalAlignment = Alignment.End) {
                                 Text(
-                                    text = "Validity: ${plan.validity}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    text = formattedPrice,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = VtuGreenPrimary,
                                     maxLines = 1,
                                     softWrap = false
                                 )
                             }
-                        }
-
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = formattedPrice,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = VtuGreenPrimary,
-                                maxLines = 1,
-                                softWrap = false
-                            )
                         }
                     }
                 }
@@ -452,15 +473,16 @@ fun DataScreen(
                     onClick = {
                         val plan = selectedPlan ?: return@Button
                         if (plan.price <= 0.0) return@Button
+                        val planDisplayName = plan.label?.takeIf { it.isNotBlank() } ?: "${plan.plan} Data"
                         val pending = PendingTransaction(
-                            title = "${plan.network.displayName} Data ${plan.dataAmount}",
+                            title = "${selectedNetwork.displayName} Data $planDisplayName",
                             serviceType = "DATA",
-                            provider = plan.network.displayName,
+                            provider = selectedNetwork.displayName,
                             recipient = phoneNumber.trim(),
                             amount = plan.price,
-                            planId = plan.planCode.ifBlank { plan.id },
-                            serviceId = plan.gsubzServiceId,
-                            details = "${plan.dataAmount} • ${plan.validity} (${plan.category.label})"
+                            planId = plan.plan, // THAT ROW's plan code (as plan_id)
+                            serviceId = plan.service_id, // THAT ROW's service_id
+                            details = "$planDisplayName (${selectedCategory.label})"
                         )
                         onRequestPayment(pending)
                     },

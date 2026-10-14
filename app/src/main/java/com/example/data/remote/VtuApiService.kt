@@ -664,21 +664,26 @@ class ApiKeyRepository(private val service: VtuApiService = ApiNetworkClient.ser
                     if (!extractedKey.isNullOrBlank()) {
                         return Result.success(extractedKey)
                     } else {
-                        lastError = IOException("Network connection bad. Please check your internet connection and try again.")
+                        val errMsg = json?.optString("error")?.takeIf { it.isNotBlank() }
+                            ?: json?.optString("message")?.takeIf { it.isNotBlank() }
+                            ?: "No API key found in server response."
+                        lastError = IOException(errMsg)
                     }
                 } else {
-                    lastError = IOException("Network connection bad. Please check your internet connection and try again.")
+                    val serverErrMsg = json?.optString("error")?.takeIf { it.isNotBlank() }
+                        ?: json?.optString("message")?.takeIf { it.isNotBlank() }
+                    lastError = IOException(serverErrMsg ?: "API key service returned status $statusCode")
                     if (statusCode != 404) {
                         return Result.failure(lastError)
                     }
                 }
             } catch (e: Exception) {
                 Log.w("ApiKeyRepository", "Attempt to call $fnName failed: ${e.message}")
-                lastError = IOException("Network connection bad. Please check your internet connection and try again.")
+                lastError = IOException(e.message ?: "Failed to reach API key service")
             }
         }
 
-        return Result.failure(IOException("Network connection bad. Please check your internet connection and try again."))
+        return Result.failure(lastError ?: IOException("Failed to generate API key. Please check your connection."))
     }
 
     private fun parseKeyFromJson(json: JSONObject): String? {

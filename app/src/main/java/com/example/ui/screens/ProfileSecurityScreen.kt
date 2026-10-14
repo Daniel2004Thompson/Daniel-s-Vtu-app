@@ -149,7 +149,7 @@ fun ProfileSecurityScreen(
 
                     var data = try {
                         supabase.postgrest.from("users").select(
-                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "avatar_url")
+                            io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "phone", "avatar_url")
                         ) {
                             filter { eq("id", userId) }
                             limit(1)
@@ -165,10 +165,10 @@ fun ProfileSecurityScreen(
                         } catch (_: Throwable) { null }
                     }
 
-                    if ((data == null || com.example.data.repository.VtuRepository.extractUsersTableFullName(data) == null) && activeEmail.isNotBlank()) {
+                    if (data == null && activeEmail.isNotBlank()) {
                         try {
                             val byEmail = supabase.postgrest.from("users").select(
-                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "fullname", "phone", "avatar_url")
+                                io.github.jan.supabase.postgrest.query.Columns.list("id", "email", "phone", "avatar_url")
                             ) {
                                 filter { eq("email", activeEmail) }
                                 limit(1)

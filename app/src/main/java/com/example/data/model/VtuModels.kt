@@ -7,6 +7,7 @@ import com.example.ui.theme.Network9mobile
 import com.example.ui.theme.NetworkAirtel
 import com.example.ui.theme.NetworkGlo
 import com.example.ui.theme.NetworkMtn
+import kotlinx.serialization.Serializable
 
 enum class NetworkProvider(
     val id: String,          // Default fallback airtime serviceID; live service_id is read from vtu_prices
@@ -109,13 +110,40 @@ enum class NetworkProvider(
     }
 }
 
-enum class DataCategory(val label: String) {
-    SME("SME Data"),
-    CORPORATE("Corporate"),
-    GIFTING("Gifting"),
-    MONTHLY("Monthly"),
-    DAILY_WEEKLY("Daily/Weekly")
+fun NetworkProvider.getServiceIds(): List<String> = when (this) {
+    NetworkProvider.MTN -> listOf("mtn_sme", "mtn_gifting")
+    NetworkProvider.AIRTEL -> listOf("airtel_sme", "airtel_gifting")
+    NetworkProvider.GLO -> listOf("glo_data", "glo_sme")
+    NetworkProvider.NINEMOBILE -> listOf("etisalat_data")
 }
+
+enum class DataCategory(val label: String, val categoryValue: String) {
+    SME("SME Data", "sme"),
+    CORPORATE("Corporate", "corporate"),
+    GIFTING("Gifting", "gifting"),
+    MONTHLY("Monthly", "monthly"),
+    DAILY_WEEKLY("Daily/Weekly", "daily_weekly");
+
+    companion object {
+        fun fromCategoryValue(value: String): DataCategory? =
+            entries.firstOrNull { it.categoryValue.equals(value.trim(), ignoreCase = true) }
+    }
+}
+
+/**
+ * Live data bundle plan row from public.vtu_prices.
+ * Loaded with the logged-in user's token.
+ */
+@Serializable
+data class VtuPriceRow(
+    val service_id: String = "",
+    val plan: String = "",
+    val price: Double = 0.0,
+    val label: String? = null,
+    val validity_days: Int? = null,
+    val categories: List<String> = emptyList(),
+    val active: Boolean = true
+)
 
 data class DataPlan(
     val id: String,
