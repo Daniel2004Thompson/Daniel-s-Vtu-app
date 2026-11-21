@@ -2588,7 +2588,9 @@ class VtuRepository(
                 )
             }
 
-            val dbAvatarUrl = (dbRow?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+            val profileAvatarUrl = fetchSafeProfilesAvatarUrl(authRepo.supabase, realUserId, email.trim())
+            val dbAvatarUrl = (profileAvatarUrl
+                ?: dbRow?.get("avatar_url")?.jsonPrimitive?.contentOrNull
                 ?: dbRow?.get("avatar_url")?.toString()?.trim('"')
                 ?: meta?.get("avatar_data_uri")?.toString()?.trim('"')
                 ?: meta?.get("avatar_url")?.toString()?.trim('"'))?.takeIf {
@@ -2753,7 +2755,9 @@ class VtuRepository(
                 !it.equals("null", ignoreCase = true) && it.isNotBlank()
             }
 
-            val dbAvatarUrl = (dbRow?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+            val profileAvatarUrl = fetchSafeProfilesAvatarUrl(authRepo.supabase, realUserId, email.trim())
+            val dbAvatarUrl = (profileAvatarUrl
+                ?: dbRow?.get("avatar_url")?.jsonPrimitive?.contentOrNull
                 ?: dbRow?.get("avatar_url")?.toString()?.trim('"')
                 ?: meta?.get("avatar_data_uri")?.toString()?.trim('"')
                 ?: meta?.get("avatar_url")?.toString()?.trim('"'))?.takeIf {
@@ -3189,6 +3193,41 @@ class VtuRepository(
         return usersObj
     }
 
+    private suspend fun fetchSafeProfilesAvatarUrl(
+        sb: io.github.jan.supabase.SupabaseClient?,
+        userId: String?,
+        email: String?
+    ): String? {
+        if (sb == null) return null
+        val cleanEmail = email?.trim().orEmpty()
+        if (cleanEmail.isNotBlank()) {
+            try {
+                val byEmail = sb.from("profiles").select(Columns.list("avatar_url")) {
+                    filter { ilike("email", cleanEmail) }
+                    limit(1)
+                }.decodeSingleOrNull<JsonObject>()
+                val url = byEmail?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                if (url != null) return url
+            } catch (_: Throwable) {}
+        }
+        val cleanId = userId?.trim().orEmpty()
+        if (cleanId.isNotBlank()) {
+            try {
+                val byId = sb.from("profiles").select(Columns.list("avatar_url")) {
+                    filter { eq("id", cleanId) }
+                    limit(1)
+                }.decodeSingleOrNull<JsonObject>()
+                val url = byId?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                if (url != null) return url
+            } catch (_: Throwable) {}
+        }
+        return null
+    }
+
     /**
      * Queries public.users where id = current logged-in user's id (or email) for fullname,
      * wallet_balance, phone, and permanent_account_number/bank.
@@ -3235,7 +3274,9 @@ class VtuRepository(
                         applyUsersTransactionHistoryJson(userId, histStr)
                     }
 
-                    val remoteAvatarUrl = (data["avatar_url"]?.jsonPrimitive?.contentOrNull
+                    val profileAvatarUrl = fetchSafeProfilesAvatarUrl(supabase, userId, activeEmail)
+                    val remoteAvatarUrl = (profileAvatarUrl
+                        ?: data["avatar_url"]?.jsonPrimitive?.contentOrNull
                         ?: data["avatar_url"]?.toString()?.trim('"'))?.takeIf {
                         !it.equals("null", ignoreCase = true) && it.isNotBlank()
                     }
@@ -3399,7 +3440,8 @@ class VtuRepository(
                             val rawHist = if (obj.isNull("transaction_history")) "[]" else (obj.opt("transaction_history")?.toString() ?: "[]")
                             applyUsersTransactionHistoryJson(userId, rawHist)
                         }
-                        val remoteAvatarUrl = if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
+                        val profileAvatarUrl = fetchSafeProfilesAvatarUrl(supabase, userId, activeEmail)
+                        val remoteAvatarUrl = profileAvatarUrl ?: if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
                             obj.optString("avatar_url", "").trim().takeIf {
                                 !it.equals("null", ignoreCase = true) && it.isNotBlank()
                             }
@@ -3964,6 +4006,7 @@ class VtuRepository(
             SharedWalletObserver.clear()
             _currentUserApiKey.value = null
             _inAppNotifications.value = emptyList()
+            com.example.ui.components.ProfilePictureStore.onSessionSwitched(user.email)
         }
 
         val cleanStoredVa = user.virtualAccountNumber?.trim()?.takeIf {

@@ -1080,5 +1080,48 @@ class ExampleRobolectricTest {
     assertEquals(64, restoredBmp?.width)
     assertEquals(64, restoredBmp?.height)
   }
+
+  @Test
+  fun profilePictureStore_isolatesAvatarsPerEmailAccount() = kotlinx.coroutines.runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val accountA = "danikalthom@gmail.com"
+    val accountB = "dthompson037@uniport.edu.ng"
+
+    // 1. Clean both accounts first
+    com.example.ui.components.ProfilePictureStore.clearAvatar(context, accountA)
+    com.example.ui.components.ProfilePictureStore.clearAvatar(context, accountB)
+    com.example.ui.components.ProfilePictureStore.onSessionCleared()
+
+    // 2. Account A saves an avatar
+    val bmpA = android.graphics.Bitmap.createBitmap(48, 48, android.graphics.Bitmap.Config.ARGB_8888)
+    bmpA.eraseColor(android.graphics.Color.BLUE)
+    val savedA = com.example.ui.components.ProfilePictureStore.saveAvatarFromBitmap(context, bmpA, accountA)
+    assertTrue("Account A avatar should save", savedA)
+    org.junit.Assert.assertNotNull("Account A avatar should be active", com.example.ui.components.ProfilePictureStore.currentAvatar.value)
+
+    // 3. Simulate legacy unscoped cache pollution (the exact bug that leaked Account A's image to Account B)
+    java.io.File(context.filesDir, "profile_avatar_default_user.jpg").writeBytes(byteArrayOf(1, 2, 3, 4))
+    context.getSharedPreferences("daniel_vtu_prefs", Context.MODE_PRIVATE)
+      .edit()
+      .putString("key_profile_avatar_b64", "legacy_shared_leak")
+      .apply()
+
+    // 4. Switch to Account B and load its avatar — must be null (initials), NOT Account A's photo
+    com.example.ui.components.ProfilePictureStore.onSessionSwitched(accountB)
+    com.example.ui.components.ProfilePictureStore.loadAvatar(context, accountB)
+    assertEquals(
+      "Account B must NOT display Account A's avatar",
+      null,
+      com.example.ui.components.ProfilePictureStore.currentAvatar.value
+    )
+
+    // 5. Switch back to Account A — Account A's own avatar must still load
+    com.example.ui.components.ProfilePictureStore.onSessionSwitched(accountA)
+    com.example.ui.components.ProfilePictureStore.loadAvatar(context, accountA)
+    org.junit.Assert.assertNotNull(
+      "Account A must retain its own avatar",
+      com.example.ui.components.ProfilePictureStore.currentAvatar.value
+    )
+  }
 }
 

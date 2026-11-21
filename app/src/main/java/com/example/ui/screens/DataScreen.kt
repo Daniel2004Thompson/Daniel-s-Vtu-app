@@ -90,10 +90,9 @@ fun DataScreen(
             plansForCurrentTab = results
             loadError = null
         } catch (e: Throwable) {
-            val errMsg = e.message?.ifBlank { e.javaClass.simpleName }
-                ?: "Unable to load live ${selectedNetwork.displayName} data prices right now"
-            Log.e(TAG, "Unable to load live ${selectedNetwork.displayName} data prices right now: $errMsg", e)
-            loadError = errMsg
+            val rawMsg = e.message?.ifBlank { e.javaClass.simpleName }.orEmpty()
+            Log.e(TAG, "Unable to load live ${selectedNetwork.displayName} data prices right now: $rawMsg", e)
+            loadError = "Network connection bad. Please check your internet connection and try again."
             plansForCurrentTab = emptyList()
         } finally {
             isLoadingPrices = false
@@ -317,10 +316,11 @@ fun DataScreen(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = loadError ?: "Unable to load live ${selectedNetwork.displayName} data prices right now.",
+                                text = loadError ?: "Network connection bad. Please check your internet connection and try again.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onErrorContainer
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Button(

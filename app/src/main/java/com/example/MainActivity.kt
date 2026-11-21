@@ -242,10 +242,29 @@ fun MainAppContainer(viewModel: VtuViewModel = viewModel()) {
                         }
                         com.vtu.app.wallet.SharedWalletObserver.updateTransactionHistory(histStr)
                     }
-                    val remoteAvatarUrl = (data["avatar_url"]?.jsonPrimitive?.contentOrNull
-                        ?: data["avatar_url"]?.toString()?.trim('"'))?.takeIf {
-                        !it.equals("null", ignoreCase = true) && it.isNotBlank()
-                    }
+                    val remoteAvatarUrl = try {
+                        val pByEmail = if (activeEmail.isNotBlank()) {
+                            supabase.from("profiles").select(Columns.list("avatar_url")) {
+                                filter { ilike("email", activeEmail) }
+                                limit(1)
+                            }.decodeSingleOrNull<JsonObject>()
+                        } else null
+                        val pById = if (pByEmail == null) {
+                            supabase.from("profiles").select(Columns.list("avatar_url")) {
+                                filter { eq("id", currentUserId) }
+                                limit(1)
+                            }.decodeSingleOrNull<JsonObject>()
+                        } else null
+                        val profileRow = pByEmail ?: pById
+                        (profileRow?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+                            ?: profileRow?.get("avatar_url")?.toString()?.trim('"'))?.takeIf {
+                            !it.equals("null", ignoreCase = true) && it.isNotBlank()
+                        }
+                    } catch (_: Throwable) { null }
+                        ?: (data["avatar_url"]?.jsonPrimitive?.contentOrNull
+                            ?: data["avatar_url"]?.toString()?.trim('"'))?.takeIf {
+                            !it.equals("null", ignoreCase = true) && it.isNotBlank()
+                        }
                     com.example.ui.components.ProfilePictureStore.syncAvatarFromUsersRow(
                         context = context,
                         userId = currentUserId,

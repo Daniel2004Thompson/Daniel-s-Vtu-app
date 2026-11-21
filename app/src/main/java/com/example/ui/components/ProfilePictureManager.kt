@@ -176,6 +176,8 @@ suspend fun removeAvatar() {
 object ProfilePictureStore {
     private const val PREFS_NAME = "daniel_vtu_prefs"
     private const val KEY_AVATAR_B64 = "key_profile_avatar_b64"
+    private const val KEY_AVATAR_URL = "key_profile_avatar_url"
+    private const val KEY_AVATAR_LOCAL_PENDING = "key_profile_avatar_local_pending"
     private const val KEY_AVATAR_REMOVED = "key_profile_avatar_explicitly_removed"
     private const val KEY_PENDING_CAMERA_PATH = "key_pending_camera_file_path"
 
@@ -249,8 +251,9 @@ object ProfilePictureStore {
             val prefs = getSecurePrefs(context)
             prefs.edit()
                 .putString("${KEY_AVATAR_B64}_$key", b64)
-                .putString(KEY_AVATAR_B64, b64)
+                .putBoolean("${KEY_AVATAR_LOCAL_PENDING}_$key", true)
                 .putBoolean("${KEY_AVATAR_REMOVED}_$key", false)
+                .remove(KEY_AVATAR_B64) // Never store unscoped avatar shared across accounts
                 .apply()
         } catch (_: Throwable) {}
     }
@@ -258,13 +261,6 @@ object ProfilePictureStore {
     internal fun resolveActiveUserEmail(context: Context?, fallbackEmail: String? = null): String? {
         val cleanFallback = fallbackEmail?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
         if (cleanFallback != null) return cleanFallback
-
-        val fromAuth = try {
-            SupabaseInstance.client?.auth?.currentUserOrNull()?.email?.trim()?.takeIf { it.isNotBlank() }
-        } catch (_: Throwable) {
-            null
-        }
-        if (fromAuth != null) return fromAuth
 
         val fromJwt = com.example.util.JwtUtils.getEmailFromJwt(SupabaseInstance.activeUserAccessToken)?.trim()
         if (!fromJwt.isNullOrBlank()) return fromJwt
@@ -278,17 +274,20 @@ object ProfilePictureStore {
                 }
             } catch (_: Throwable) {}
         }
+
+        val fromAuth = try {
+            SupabaseInstance.client?.auth?.currentUserOrNull()?.email?.trim()?.takeIf { it.isNotBlank() }
+        } catch (_: Throwable) {
+            null
+        }
+        if (fromAuth != null) return fromAuth
+
         return null
     }
 
     internal fun resolveActiveUserId(context: Context?): String? {
-        val fromAuth = try {
-            SupabaseInstance.client?.auth?.currentUserOrNull()?.id?.takeIf { it.isNotBlank() }
-        } catch (_: Throwable) {
-            null
-        }
-        if (!fromAuth.isNullOrBlank()) return fromAuth
-
+        // Prefer the active session JWT and stored session UID over supabase.auth.currentUserOrNull(),
+        // because SDK auth state may lag briefly behind saveSession() during account switches.
         val fromJwt = com.example.util.JwtUtils.getUserIdFromJwt(SupabaseInstance.activeUserAccessToken)
         if (!fromJwt.isNullOrBlank()) return fromJwt
 
@@ -304,11 +303,29 @@ object ProfilePictureStore {
                 if (!jwtUid.isNullOrBlank()) return jwtUid
             } catch (_: Throwable) {}
         }
+
+        val fromAuth = try {
+            SupabaseInstance.client?.auth?.currentUserOrNull()?.id?.takeIf { it.isNotBlank() }
+        } catch (_: Throwable) {
+            null
+        }
+        if (!fromAuth.isNullOrBlank()) return fromAuth
+
         return null
+    }
+
+    internal fun onSessionSwitched(email: String?) {
+        val key = sanitizeEmailKey(email)
+        if (key != "default_user" && loadedEmailKey != key) {
+            avatarVersion.incrementAndGet()
+            _currentAvatar.value = null
+            loadedEmailKey = key
+        }
     }
 
     internal fun onSessionCleared() {
         if (!isUploadingAvatar.get()) {
+            avatarVersion.incrementAndGet()
             _currentAvatar.value = null
             loadedEmailKey = null
         }
@@ -316,19 +333,25 @@ object ProfilePictureStore {
 
     internal suspend fun ensureSupabaseAuthHydrated(context: Context?) {
         val supabase = SupabaseInstance.client ?: return
+        val activeToken = SupabaseInstance.activeUserAccessToken?.trim()
+        val activeJwtUid = com.example.util.JwtUtils.getUserIdFromJwt(activeToken)
         val existingToken = try { supabase.auth.currentAccessTokenOrNull()?.trim() } catch (_: Throwable) { null }
         val existingUser = try { supabase.auth.currentUserOrNull() } catch (_: Throwable) { null }
+        val sdkMatchesActive = activeJwtUid.isNullOrBlank() || existingUser?.id == activeJwtUid
         val hasValidSession = !existingToken.isNullOrBlank() &&
             existingToken != SupabaseInstance.rawKey &&
             !com.example.util.JwtUtils.isExpired(existingToken) &&
-            existingUser != null
+            existingUser != null &&
+            sdkMatchesActive
         if (hasValidSession) {
             SupabaseInstance.activeUserAccessToken = existingToken
             return
         }
         try {
             val prefs = context?.let { getSecurePrefs(it) }
-            val storedAccess = prefs?.getString("key_auth_access_token", null) ?: prefs?.getString("key_access_token", null)
+            val storedAccess = activeToken?.takeIf { it.isNotBlank() }
+                ?: prefs?.getString("key_auth_access_token", null)
+                ?: prefs?.getString("key_access_token", null)
             var access = SupabaseInstance.resolveValidSessionAccessToken(storedAccess)
             var refresh = (prefs?.getString("key_auth_refresh_token", null) ?: prefs?.getString("key_refresh_token", null)).orEmpty()
 
@@ -477,7 +500,52 @@ object ProfilePictureStore {
                 compactDataUri ?: avatarPublicUrl
             }
 
-            // Try updating public.users.avatar_url via Postgrest SDK first
+            val patchBody = org.json.JSONObject().put("avatar_url", effectiveAvatarUrl).toString()
+            val resolvedEmail = resolveActiveUserEmail(context, email)
+
+            // Sync public.profiles.avatar_url (primary profile table connected to each email/id)
+            try {
+                SupabaseInstance.client?.from("profiles")?.update(
+                    buildJsonObject { put("avatar_url", JsonPrimitive(effectiveAvatarUrl)) }
+                ) {
+                    filter { eq("id", userId) }
+                }
+            } catch (_: Throwable) {}
+
+            var updatedProfiles = false
+            val patchProfileByIdReq = Request.Builder()
+                .url("$baseUrl/rest/v1/profiles?id=eq.$userId")
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", bearer)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "return=representation")
+                .patch(patchBody.toRequestBody("application/json".toMediaType()))
+                .build()
+            try {
+                http.newCall(patchProfileByIdReq).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
+                        updatedProfiles = arr.length() > 0
+                    }
+                }
+            } catch (_: Throwable) {}
+
+            if (!updatedProfiles && !resolvedEmail.isNullOrBlank()) {
+                val encodedEmail = java.net.URLEncoder.encode(resolvedEmail, "UTF-8")
+                val patchProfileByEmailReq = Request.Builder()
+                    .url("$baseUrl/rest/v1/profiles?email=ilike.$encodedEmail")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Prefer", "return=representation")
+                    .patch(patchBody.toRequestBody("application/json".toMediaType()))
+                    .build()
+                try {
+                    http.newCall(patchProfileByEmailReq).execute().close()
+                } catch (_: Throwable) {}
+            }
+
+            // Also sync public.users.avatar_url
             try {
                 SupabaseInstance.client?.from("users")?.update(
                     buildJsonObject { put("avatar_url", JsonPrimitive(effectiveAvatarUrl)) }
@@ -486,8 +554,7 @@ object ProfilePictureStore {
                 }
             } catch (_: Throwable) {}
 
-            val patchBody = org.json.JSONObject().put("avatar_url", effectiveAvatarUrl).toString()
-            var updatedRows = false
+            var updatedUsers = false
             val patchByIdReq = Request.Builder()
                 .url("$baseUrl/rest/v1/users?id=eq.$userId")
                 .addHeader("apikey", anonKey)
@@ -500,16 +567,15 @@ object ProfilePictureStore {
                 http.newCall(patchByIdReq).execute().use { res ->
                     if (res.isSuccessful) {
                         val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
-                        updatedRows = arr.length() > 0
+                        updatedUsers = arr.length() > 0
                     }
                 }
             } catch (_: Throwable) {}
 
-            val resolvedEmail = resolveActiveUserEmail(context, email)
-            if (!updatedRows && !resolvedEmail.isNullOrBlank()) {
+            if (!updatedUsers && !resolvedEmail.isNullOrBlank()) {
                 val encodedEmail = java.net.URLEncoder.encode(resolvedEmail, "UTF-8")
                 val patchByEmailReq = Request.Builder()
-                    .url("$baseUrl/rest/v1/users?email=eq.$encodedEmail")
+                    .url("$baseUrl/rest/v1/users?email=ilike.$encodedEmail")
                     .addHeader("apikey", anonKey)
                     .addHeader("Authorization", bearer)
                     .addHeader("Content-Type", "application/json")
@@ -519,6 +585,14 @@ object ProfilePictureStore {
                 try {
                     http.newCall(patchByEmailReq).execute().close()
                 } catch (_: Throwable) {}
+            }
+
+            if (!resolvedEmail.isNullOrBlank()) {
+                val key = sanitizeEmailKey(resolvedEmail)
+                prefs?.edit()
+                    ?.putString("${KEY_AVATAR_URL}_$key", effectiveAvatarUrl)
+                    ?.putBoolean("${KEY_AVATAR_LOCAL_PENDING}_$key", false)
+                    ?.apply()
             }
 
             // Also persist in Supabase Auth user_metadata so login session carries clean avatar_url,
@@ -571,6 +645,16 @@ object ProfilePictureStore {
             try { http.newCall(rpcReq).execute().close() } catch (_: Throwable) {}
 
             val patchBody = "{\"avatar_url\":null}"
+            val patchProfileReq = Request.Builder()
+                .url("$baseUrl/rest/v1/profiles?id=eq.$userId")
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", bearer)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "return=minimal")
+                .patch(patchBody.toRequestBody("application/json".toMediaType()))
+                .build()
+            try { http.newCall(patchProfileReq).execute().close() } catch (_: Throwable) {}
+
             val patchReq = Request.Builder()
                 .url("$baseUrl/rest/v1/users?id=eq.$userId")
                 .addHeader("apikey", anonKey)
@@ -733,22 +817,157 @@ object ProfilePictureStore {
             }
         }
 
-        // 4. Check Supabase Auth user_metadata backup (avatar_data_uri / avatar_url)
+        // 4. Check Supabase Auth user_metadata backup ONLY if the SDK user matches this account
         try {
-            val meta = SupabaseInstance.client?.auth?.currentUserOrNull()?.userMetadata
-            val metaDataUri = meta?.get("avatar_data_uri")?.jsonPrimitive?.contentOrNull
-                ?: meta?.get("avatar_url")?.jsonPrimitive?.contentOrNull
-            if (!metaDataUri.isNullOrBlank() && metaDataUri != "null") {
-                downloadAndDecodeUrl(metaDataUri, bearer, anonKey)?.let { return it }
+            val authUser = SupabaseInstance.client?.auth?.currentUserOrNull()
+            if (authUser != null && !userId.isNullOrBlank() && authUser.id == userId) {
+                val meta = authUser.userMetadata
+                val metaDataUri = meta?.get("avatar_data_uri")?.jsonPrimitive?.contentOrNull
+                    ?: meta?.get("avatar_url")?.jsonPrimitive?.contentOrNull
+                if (!metaDataUri.isNullOrBlank() && metaDataUri != "null") {
+                    downloadAndDecodeUrl(metaDataUri, bearer, anonKey)?.let { return it }
+                }
             }
         } catch (_: Throwable) {}
 
         return null
     }
 
+    private data class RemoteAvatarLookup(
+        val avatarUrl: String?,
+        val rowFound: Boolean
+    )
+
+    private suspend fun queryTableAvatarUrl(
+        table: String,
+        supabase: io.github.jan.supabase.SupabaseClient?,
+        baseUrl: String,
+        anonKey: String,
+        bearer: String,
+        userId: String?,
+        email: String?
+    ): RemoteAvatarLookup {
+        var found = false
+        var url: String? = null
+
+        if (supabase != null && !email.isNullOrBlank()) {
+            try {
+                val row = supabase.from(table).select(Columns.list("avatar_url")) {
+                    filter { ilike("email", email.trim()) }
+                    limit(1)
+                }.decodeSingleOrNull<JsonObject>()
+                if (row != null) {
+                    found = true
+                    url = row["avatar_url"]?.jsonPrimitive?.contentOrNull
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                    if (!url.isNullOrBlank()) return RemoteAvatarLookup(url, true)
+                }
+            } catch (_: Throwable) {}
+        }
+
+        if (supabase != null && !userId.isNullOrBlank()) {
+            try {
+                val row = supabase.from(table).select(Columns.list("avatar_url")) {
+                    filter { eq("id", userId) }
+                    limit(1)
+                }.decodeSingleOrNull<JsonObject>()
+                if (row != null) {
+                    found = true
+                    url = row["avatar_url"]?.jsonPrimitive?.contentOrNull
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                    if (!url.isNullOrBlank()) return RemoteAvatarLookup(url, true)
+                }
+            } catch (_: Throwable) {}
+        }
+
+        val http = com.example.data.remote.ApiNetworkClient.okHttpClient
+
+        if (!email.isNullOrBlank() && baseUrl.isNotBlank()) {
+            try {
+                val encodedEmail = java.net.URLEncoder.encode(email.trim(), "UTF-8")
+                val req = Request.Builder()
+                    .url("$baseUrl/rest/v1/$table?select=id,avatar_url&email=ilike.$encodedEmail&limit=1")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Cache-Control", "no-cache")
+                    .get()
+                    .build()
+                http.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
+                        if (arr.length() > 0) {
+                            found = true
+                            val obj = arr.getJSONObject(0)
+                            if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
+                                url = obj.optString("avatar_url", "")
+                                    .trim()
+                                    .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                            }
+                            if (!url.isNullOrBlank()) return RemoteAvatarLookup(url, true)
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        if (!userId.isNullOrBlank() && baseUrl.isNotBlank()) {
+            try {
+                val req = Request.Builder()
+                    .url("$baseUrl/rest/v1/$table?select=avatar_url&id=eq.$userId&limit=1")
+                    .addHeader("apikey", anonKey)
+                    .addHeader("Authorization", bearer)
+                    .addHeader("Cache-Control", "no-cache")
+                    .get()
+                    .build()
+                http.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
+                        if (arr.length() > 0) {
+                            found = true
+                            val obj = arr.getJSONObject(0)
+                            if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
+                                url = obj.optString("avatar_url", "")
+                                    .trim()
+                                    .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                            }
+                            if (!url.isNullOrBlank()) return RemoteAvatarLookup(url, true)
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        return RemoteAvatarLookup(url, found)
+    }
+
+    private suspend fun fetchRemoteAvatarUrlForAccount(
+        supabase: io.github.jan.supabase.SupabaseClient?,
+        baseUrl: String,
+        anonKey: String,
+        bearer: String,
+        userId: String?,
+        email: String?
+    ): RemoteAvatarLookup {
+        // 1. Query public.profiles.avatar_url first (connected to each email / userId)
+        val profilesLookup = queryTableAvatarUrl("profiles", supabase, baseUrl, anonKey, bearer, userId, email)
+        if (!profilesLookup.avatarUrl.isNullOrBlank()) {
+            return profilesLookup
+        }
+
+        // 2. Fall back to public.users.avatar_url if profiles.avatar_url is empty/missing
+        val usersLookup = queryTableAvatarUrl("users", supabase, baseUrl, anonKey, bearer, userId, email)
+        if (!usersLookup.avatarUrl.isNullOrBlank()) {
+            return usersLookup
+        }
+
+        return RemoteAvatarLookup(null, profilesLookup.rowFound || usersLookup.rowFound)
+    }
+
     /**
-     * Called whenever `public.users` is fetched during login or profile sync so `avatar_url`
-     * from `public.users` is immediately downloaded and shown on the dashboard.
+     * Called whenever `public.profiles` / `public.users` is fetched during login or profile sync
+     * so `avatar_url` for that exact email/account is downloaded and isolated from other accounts.
      */
     fun syncAvatarFromUsersRow(
         context: Context,
@@ -761,13 +980,30 @@ object ProfilePictureStore {
             val cleanUrl = remoteAvatarUrl?.trim()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
             val resolvedEmail = resolveActiveUserEmail(context, email)
             val key = sanitizeEmailKey(resolvedEmail)
+            if (loadedEmailKey != null && loadedEmailKey != key && key != "default_user") {
+                _currentAvatar.value = null
+            }
+            if (key != "default_user" || loadedEmailKey == null) {
+                loadedEmailKey = key
+            }
+
             val userFile = getAvatarFile(context, resolvedEmail)
             val prefs = getSecurePrefs(context)
             val wasExplicitlyRemoved = prefs.getBoolean("${KEY_AVATAR_REMOVED}_$key", false)
-            if (wasExplicitlyRemoved && cleanUrl.isNullOrBlank()) return@launch
+            if (wasExplicitlyRemoved && cleanUrl.isNullOrBlank()) {
+                _currentAvatar.value = null
+                return@launch
+            }
 
-            // If we already have the avatar loaded in memory AND saved on disk for this user, no need to re-download
-            if (_currentAvatar.value != null && userFile.exists() && userFile.length() > 0 && loadedEmailKey == key) {
+            val cachedUrl = prefs.getString("${KEY_AVATAR_URL}_$key", null)
+            // Only skip downloading if this exact user's file is already loaded AND matches the same avatar_url
+            if (_currentAvatar.value != null &&
+                userFile.exists() &&
+                userFile.length() > 0 &&
+                loadedEmailKey == key &&
+                !cleanUrl.isNullOrBlank() &&
+                cleanUrl == cachedUrl
+            ) {
                 return@launch
             }
 
@@ -783,15 +1019,15 @@ object ProfilePictureStore {
                     val b64 = encodeBitmapBase64(bmp, quality = 85)
                     prefs.edit()
                         .putString("${KEY_AVATAR_B64}_$key", b64)
-                        .putString(KEY_AVATAR_B64, b64)
+                        .putString("${KEY_AVATAR_URL}_$key", cleanUrl)
+                        .putBoolean("${KEY_AVATAR_LOCAL_PENDING}_$key", false)
                         .putBoolean("${KEY_AVATAR_REMOVED}_$key", false)
+                        .remove(KEY_AVATAR_B64)
                         .apply()
                     return@launch
                 }
             }
-            if (_currentAvatar.value == null) {
-                loadAvatar(context, resolvedEmail)
-            }
+            loadAvatar(context, resolvedEmail)
         }
     }
 
@@ -813,22 +1049,27 @@ object ProfilePictureStore {
             loadedEmailKey = key
         }
 
-        val userFile = getAvatarFile(context, resolvedEmail)
+        // Clean up any legacy unscoped avatar file/key so it can never bleed into other accounts
         val defaultFile = File(context.filesDir, "profile_avatar_default_user.jpg")
         val prefs = getSecurePrefs(context)
+        if (key != "default_user") {
+            if (prefs.contains(KEY_AVATAR_B64)) {
+                prefs.edit().remove(KEY_AVATAR_B64).apply()
+            }
+            if (defaultFile.exists()) {
+                try { defaultFile.delete() } catch (_: Throwable) {}
+            }
+        }
+
+        val userFile = getAvatarFile(context, resolvedEmail)
         val legacyPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val wasExplicitlyRemoved = prefs.getBoolean("${KEY_AVATAR_REMOVED}_$key", false)
 
-        // 1. Show cached local file or Base64 backup immediately
-        if (!wasExplicitlyRemoved && _currentAvatar.value == null) {
-            val candidateFile = when {
-                userFile.exists() && userFile.length() > 0 -> userFile
-                defaultFile.exists() && defaultFile.length() > 0 -> defaultFile
-                else -> null
-            }
-            if (candidateFile != null) {
+        // 1. Show ONLY this account's cached local file or Base64 backup (never fall back to unscoped/other user keys)
+        if (!wasExplicitlyRemoved && _currentAvatar.value == null && key != "default_user") {
+            if (userFile.exists() && userFile.length() > 0) {
                 try {
-                    val bytes = candidateFile.readBytes()
+                    val bytes = userFile.readBytes()
                     val bmp = decodeBytesToValidBitmap(bytes)
                     if (bmp != null && !isUploadingAvatar.get() && avatarVersion.get() == startVersion) {
                         _currentAvatar.value = bmp
@@ -837,9 +1078,7 @@ object ProfilePictureStore {
             }
             if (_currentAvatar.value == null) {
                 val b64 = prefs.getString("${KEY_AVATAR_B64}_$key", null)
-                    ?: prefs.getString(KEY_AVATAR_B64, null)
                     ?: legacyPrefs.getString("${KEY_AVATAR_B64}_$key", null)
-                    ?: legacyPrefs.getString(KEY_AVATAR_B64, null)
                 if (!b64.isNullOrBlank()) {
                     val bmp = decodeBase64Bitmap(b64)
                     if (bmp != null && !isUploadingAvatar.get() && avatarVersion.get() == startVersion) {
@@ -850,7 +1089,7 @@ object ProfilePictureStore {
             }
         }
 
-        // 2. Query public.users.avatar_url and Supabase Storage "avatars" bucket
+        // 2. Query public.profiles.avatar_url (and public.users fallback) + Storage "avatars" bucket for this exact account
         ensureSupabaseAuthHydrated(context)
         if (isUploadingAvatar.get() || avatarVersion.get() != startVersion) return@withContext
 
@@ -862,81 +1101,25 @@ object ProfilePictureStore {
         val anonKey = SupabaseInstance.rawKey
         val baseUrl = SupabaseInstance.safeUrl.trimEnd('/')
 
-        if (supabase != null && (!userId.isNullOrBlank() || !resolvedEmail.isNullOrBlank())) {
-            var remoteAvatarUrl: String? = null
-            var checkedUsersTable = false
-
-            if (!userId.isNullOrBlank()) {
-                try {
-                    val row = supabase.from("users").select(Columns.list("avatar_url")) {
-                        filter { eq("id", userId) }
-                        limit(1)
-                    }.decodeSingleOrNull<JsonObject>()
-                    if (row != null) {
-                        checkedUsersTable = true
-                        remoteAvatarUrl = row["avatar_url"]?.jsonPrimitive?.contentOrNull
-                            ?.trim()
-                            ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
-                    }
-                } catch (_: Throwable) {}
-            }
-
-            if ((!checkedUsersTable || remoteAvatarUrl.isNullOrBlank()) && !userId.isNullOrBlank() && baseUrl.isNotBlank()) {
-                try {
-                    val req = Request.Builder()
-                        .url("$baseUrl/rest/v1/users?select=avatar_url&id=eq.$userId&limit=1")
-                        .addHeader("apikey", anonKey)
-                        .addHeader("Authorization", bearer)
-                        .addHeader("Cache-Control", "no-cache")
-                        .get()
-                        .build()
-                    com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
-                        if (res.isSuccessful) {
-                            val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
-                            if (arr.length() > 0) {
-                                checkedUsersTable = true
-                                val obj = arr.getJSONObject(0)
-                                if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
-                                    remoteAvatarUrl = obj.optString("avatar_url", "")
-                                        .trim()
-                                        .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
-                                }
-                            }
-                        }
-                    }
-                } catch (_: Throwable) {}
-            }
-
-            if ((!checkedUsersTable || remoteAvatarUrl.isNullOrBlank()) && !resolvedEmail.isNullOrBlank() && baseUrl.isNotBlank()) {
-                try {
-                    val encodedEmail = java.net.URLEncoder.encode(resolvedEmail, "UTF-8")
-                    val req = Request.Builder()
-                        .url("$baseUrl/rest/v1/users?select=id,avatar_url&email=eq.$encodedEmail&limit=1")
-                        .addHeader("apikey", anonKey)
-                        .addHeader("Authorization", bearer)
-                        .addHeader("Cache-Control", "no-cache")
-                        .get()
-                        .build()
-                    com.example.data.remote.ApiNetworkClient.okHttpClient.newCall(req).execute().use { res ->
-                        if (res.isSuccessful) {
-                            val arr = JSONArray(res.body?.string().orEmpty().ifBlank { "[]" })
-                            if (arr.length() > 0) {
-                                checkedUsersTable = true
-                                val obj = arr.getJSONObject(0)
-                                if (obj.has("avatar_url") && !obj.isNull("avatar_url")) {
-                                    remoteAvatarUrl = obj.optString("avatar_url", "")
-                                        .trim()
-                                        .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
-                                }
-                            }
-                        }
-                    }
-                } catch (_: Throwable) {}
-            }
+        if ((supabase != null || baseUrl.isNotBlank()) && (!userId.isNullOrBlank() || !resolvedEmail.isNullOrBlank())) {
+            val lookup = fetchRemoteAvatarUrlForAccount(
+                supabase = supabase,
+                baseUrl = baseUrl,
+                anonKey = anonKey,
+                bearer = bearer,
+                userId = userId,
+                email = resolvedEmail
+            )
+            val remoteAvatarUrl = lookup.avatarUrl
 
             if (isUploadingAvatar.get() || avatarVersion.get() != startVersion) return@withContext
 
-            if (!remoteAvatarUrl.isNullOrBlank() || (!wasExplicitlyRemoved && _currentAvatar.value == null)) {
+            val cachedUrl = prefs.getString("${KEY_AVATAR_URL}_$key", null)
+            val isLocalPending = prefs.getBoolean("${KEY_AVATAR_LOCAL_PENDING}_$key", false)
+            val shouldDownloadRemote = !remoteAvatarUrl.isNullOrBlank() &&
+                (remoteAvatarUrl != cachedUrl || _currentAvatar.value == null || !userFile.exists())
+
+            if (shouldDownloadRemote || (remoteAvatarUrl.isNullOrBlank() && !wasExplicitlyRemoved)) {
                 val bmp = downloadRemoteAvatarBitmap(
                     userId = userId,
                     remoteAvatarUrl = remoteAvatarUrl,
@@ -949,34 +1132,30 @@ object ProfilePictureStore {
                     val b64 = encodeBitmapBase64(bmp, quality = 85)
                     prefs.edit()
                         .putString("${KEY_AVATAR_B64}_$key", b64)
-                        .putString(KEY_AVATAR_B64, b64)
+                        .apply {
+                            if (!remoteAvatarUrl.isNullOrBlank()) {
+                                putString("${KEY_AVATAR_URL}_$key", remoteAvatarUrl)
+                            }
+                        }
+                        .putBoolean("${KEY_AVATAR_LOCAL_PENDING}_$key", false)
                         .putBoolean("${KEY_AVATAR_REMOVED}_$key", false)
+                        .remove(KEY_AVATAR_B64)
                         .apply()
-
-                    // If public.users.avatar_url was blank when we recovered the avatar from Storage/Auth, sync it to public.users.avatar_url
-                    if (remoteAvatarUrl.isNullOrBlank() && !userId.isNullOrBlank()) {
-                        val bytes = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
-                        uploadAvatarRestFallback(context, userId, bytes, resolvedEmail, skipStorageUpload = true)
-                    }
                     return@withContext
                 }
             }
 
-            if (remoteAvatarUrl.isNullOrBlank() && _currentAvatar.value != null && !wasExplicitlyRemoved && !userId.isNullOrBlank()) {
-                // Local avatar exists on device but public.users.avatar_url was null; push local avatar up to Supabase
-                try {
-                    val localBytes = if (userFile.exists() && userFile.length() > 0) {
-                        userFile.readBytes()
-                    } else {
-                        val bmp = _currentAvatar.value
-                        if (bmp != null) {
-                            ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
-                        } else null
-                    }
-                    if (localBytes != null && localBytes.isNotEmpty()) {
-                        uploadAvatarRestFallback(context, userId, localBytes, resolvedEmail, skipStorageUpload = false)
-                    }
-                } catch (_: Throwable) {}
+            // If Supabase confirmed this account's row has NO avatar_url and Storage has no image for userId,
+            // clear any stale/poisoned local cache from previous buggy builds so this account shows its own initials.
+            if (lookup.rowFound && remoteAvatarUrl.isNullOrBlank() && !isLocalPending && key != "default_user") {
+                if (avatarVersion.get() == startVersion && !isUploadingAvatar.get()) {
+                    _currentAvatar.value = null
+                    try { if (userFile.exists()) userFile.delete() } catch (_: Throwable) {}
+                    prefs.edit()
+                        .remove("${KEY_AVATAR_B64}_$key")
+                        .remove("${KEY_AVATAR_URL}_$key")
+                        .apply()
+                }
             }
         }
     }
