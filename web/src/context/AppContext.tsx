@@ -15,6 +15,7 @@ import {
 import { hasBiometricEnabled } from '../services/webAuthnService';
 import {
   AirtimePricing,
+  DynamicAccountInfo,
   NetworkId,
   PurchaseExecutionPayload,
   TransactionRecord,
@@ -52,6 +53,8 @@ interface AppContextValue {
   airtimePricing: Record<NetworkId, AirtimePricing>;
   hasTransactionPin: boolean;
   isBiometricEnabled: boolean;
+  isAppLockEnabled: boolean;
+  isNotificationsEnabled: boolean;
   currentPage: AppPage;
   billsTab: BillsInitialTab;
   darkMode: boolean;
@@ -67,9 +70,14 @@ interface AppContextValue {
   setCurrentPage: (page: AppPage) => void;
   navigateToBills: (tab: BillsInitialTab) => void;
   toggleDarkMode: () => void;
+  setAppLockEnabled: (val: boolean) => void;
+  setNotificationsEnabled: (val: boolean) => void;
   showToast: (text: string, type?: 'success' | 'error' | 'info') => void;
   dismissToast: (id: string) => void;
   refreshUserData: (showSuccessToast?: boolean) => Promise<void>;
+  updatePermanentAccountLocal: (accountNumber: string, bankName: string, accountName: string) => void;
+  clearPermanentAccountLocal: () => void;
+  updateDynamicAccountLocal: (account: DynamicAccountInfo) => void;
   onAuthSessionEstablished: () => Promise<void>;
   logout: () => Promise<void>;
   setSelectedReceipt: (tx: TransactionRecord | null) => void;
@@ -94,6 +102,25 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 const THEME_KEY = 'daniel_vtu_dark_mode';
 
+function mergeProfilePreservingSessionAccounts(
+  prev: UserProfile | null,
+  nextProfile: UserProfile
+): UserProfile {
+  if (!prev || prev.id !== nextProfile.id) return nextProfile;
+  return {
+    ...prev,
+    ...nextProfile,
+    virtualAccountNumber: nextProfile.virtualAccountNumber ?? prev.virtualAccountNumber,
+    virtualBankName: nextProfile.virtualBankName ?? prev.virtualBankName,
+    virtualAccountName: nextProfile.virtualAccountName ?? prev.virtualAccountName,
+    dynamicAccountNumber: nextProfile.dynamicAccountNumber ?? prev.dynamicAccountNumber,
+    dynamicBankName: nextProfile.dynamicBankName ?? prev.dynamicBankName,
+    dynamicAccountAmount: nextProfile.dynamicAccountAmount ?? prev.dynamicAccountAmount,
+    dynamicAccountNote: nextProfile.dynamicAccountNote ?? prev.dynamicAccountNote,
+    dynamicAccountExpiresAt: nextProfile.dynamicAccountExpiresAt ?? prev.dynamicAccountExpiresAt,
+  };
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isBooting, setIsBooting] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -103,14 +130,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     useState<Record<NetworkId, AirtimePricing>>(DEFAULT_AIRTIME_PRICING);
   const [hasTransactionPin, setHasTransactionPin] = useState(false);
   const [isBiometricEnabled, setIsBiometricEnabled] = useState(false);
+  const [isAppLockEnabled, setIsAppLockEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('daniel_vtu_app_lock') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [isNotificationsEnabled, setIsNotificationsEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('daniel_vtu_notifications') !== 'false';
+    } catch {
+      return true;
+    }
+  });
 
   const [currentPage, setCurrentPage] = useState<AppPage>('home');
   const [billsTab, setBillsTab] = useState<BillsInitialTab>('ELECTRICITY');
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(THEME_KEY) === 'true';
+      const saved = localStorage.getItem(THEME_KEY);
+      return saved === null ? true : saved === 'true';
     } catch {
-      return false;
+      return true;
     }
   });
 
@@ -152,19 +194,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [dismissToast]
   );
 
+  const updatePermanentAccountLocal = useCallback(
+    (accountNumber: string, bankName: string, accountName: string) => {
+      setProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              ninVerified: true,
+              virtualAccountNumber: accountNumber,
+              virtualBankName: bankName || prev.virtualBankName || 'Flutterwave MFB',
+              virtualAccountName: accountName || prev.virtualAccountName || prev.fullName,
+            }
+          : prev
+      );
+    },
+    []
+  );
+
+  const clearPermanentAccountLocal = useCallback(() => {
+    setProfile((prev) =>
+      prev
+        ? {
+            ...prev,
+            virtualAccountNumber: undefined,
+            virtualBankName: undefined,
+            virtualAccountName: undefined,
+          }
+        : prev
+    );
+  }, []);
+
+  const updateDynamicAccountLocal = useCallback((account: DynamicAccountInfo) => {
+    setProfile((prev) =>
+      prev
+        ? {
+            ...prev,
+            dynamicAccountNumber: account.accountNumber,
+            dynamicBankName: account.bankName,
+            dynamicAccountAmount: account.amount,
+            dynamicAccountNote: account.note,
+            dynamicAccountExpiresAt: account.expiresAt,
+          }
+        : prev
+    );
+  }, []);
+
   const refreshUserData = useCallback(
     async (showSuccessToast = false) => {
       setIsRefreshingWallet(true);
       try {
         const [{ profile: nextProfile, transactions: nextTx }, liveAirtime, pinExists] =
           await Promise.all([
-            fetchUserProfileAndHistory(),
+            fetchUserProfileAndHistory({ syncPermanentAccount: true }),
             fetchLiveAirtimePricing(),
             checkHasTransactionPin(),
           ]);
 
         if (nextProfile) {
-          setProfile(nextProfile);
+          setProfile((prev) => mergeProfilePreservingSessionAccounts(prev, nextProfile));
           setIsBiometricEnabled(hasBiometricEnabled(nextProfile.id));
           setTransactions((prev) => {
             if (nextTx.length === 0) return prev;
@@ -265,12 +352,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     pollingRef.current = window.setInterval(() => {
-      fetchUserProfileAndHistory()
+      fetchUserProfileAndHistory({ syncPermanentAccount: false })
         .then(({ profile: nextProfile, transactions: nextTx }) => {
           if (nextProfile) {
-            setProfile((prev) =>
-              prev ? { ...prev, ...nextProfile } : nextProfile
-            );
+            setProfile((prev) => mergeProfilePreservingSessionAccounts(prev, nextProfile));
           }
           if (nextTx.length > 0) {
             setTransactions((prev) => {
@@ -387,6 +472,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         airtimePricing,
         hasTransactionPin,
         isBiometricEnabled,
+        isAppLockEnabled,
+        isNotificationsEnabled,
         currentPage,
         billsTab,
         darkMode,
@@ -402,9 +489,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setCurrentPage,
         navigateToBills,
         toggleDarkMode: () => setDarkMode((d) => !d),
+        setAppLockEnabled: (val: boolean) => {
+          setIsAppLockEnabled(val);
+          try {
+            localStorage.setItem('daniel_vtu_app_lock', String(val));
+          } catch {
+            // ignore
+          }
+        },
+        setNotificationsEnabled: (val: boolean) => {
+          setIsNotificationsEnabled(val);
+          try {
+            localStorage.setItem('daniel_vtu_notifications', String(val));
+          } catch {
+            // ignore
+          }
+        },
         showToast,
         dismissToast,
         refreshUserData,
+        updatePermanentAccountLocal,
+        clearPermanentAccountLocal,
+        updateDynamicAccountLocal,
         onAuthSessionEstablished,
         logout,
         setSelectedReceipt,

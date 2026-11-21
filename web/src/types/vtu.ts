@@ -114,11 +114,16 @@ export interface UserProfile {
   walletBalance: number;
   cashbackBalance: number;
   avatarUrl?: string;
+  ninHash?: string;
+  ninVerified?: boolean;
   virtualAccountNumber?: string;
   virtualBankName?: string;
   virtualAccountName?: string;
   dynamicAccountNumber?: string;
   dynamicBankName?: string;
+  dynamicAccountAmount?: number;
+  dynamicAccountNote?: string;
+  dynamicAccountExpiresAt?: string;
 }
 
 export interface DynamicAccountInfo {

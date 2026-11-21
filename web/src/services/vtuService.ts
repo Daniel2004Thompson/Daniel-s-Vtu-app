@@ -129,12 +129,15 @@ export async function executeVtuPurchase(params: {
     : payload.recipient.trim();
 
   const serviceKind = buildEdgeServiceType(payload);
-  const resolvedServiceId = payload.serviceId.trim();
-  const networkStr = payload.network
-    ? payload.network === 'NINEMOBILE'
-      ? '9mobile'
-      : payload.network.toLowerCase()
-    : resolvedServiceId;
+  const resolvedServiceId = payload.serviceId.trim().toLowerCase();
+  const networkStr =
+    payload.serviceType === 'DATA'
+      ? resolvedServiceId
+      : payload.network
+      ? payload.network === 'NINEMOBILE'
+        ? resolvedServiceId || 'etisalat'
+        : payload.network.toLowerCase()
+      : resolvedServiceId;
 
   const baseBody: Record<string, unknown> = {
     user_id: userId,
@@ -144,9 +147,9 @@ export async function executeVtuPurchase(params: {
     service_id: resolvedServiceId,
     serviceID: resolvedServiceId,
     network: networkStr,
-    amount: Math.round(payload.amount * 100) / 100,
+    amount: payload.amount % 1 === 0 ? Math.round(payload.amount) : Math.round(payload.amount * 100) / 100,
     phone: cleanRecipient,
-    plan: payload.planCode || '',
+    plan: payload.serviceType === 'ELECTRICITY' && !payload.planCode ? 'prepaid' : payload.planCode || '',
     narration: payload.title,
   };
 
@@ -180,7 +183,7 @@ export async function executeVtuPurchase(params: {
   ) {
     res = await gatewayRequest<Record<string, unknown>>('/functions/v1/Gsubz-VTU-Services', {
       method: 'POST',
-      body: { ...baseBody, service: 'data' },
+      body: { ...baseBody, service: 'data', service_type: 'data' },
     });
   }
 
@@ -200,7 +203,8 @@ export async function executeVtuPurchase(params: {
     !isPending &&
     body.success !== false &&
     statusText !== 'FAILED' &&
-    statusText !== 'ERROR';
+    statusText !== 'ERROR' &&
+    !body.error;
 
   const newBalCandidate =
     typeof body.new_balance === 'number'

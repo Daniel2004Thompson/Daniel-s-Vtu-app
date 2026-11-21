@@ -5,33 +5,66 @@ const API_KEY_STORAGE_PREFIX = 'daniel_vtu_api_key_';
 const WEBHOOK_STORAGE_PREFIX = 'daniel_vtu_webhook_';
 const FORUM_STORAGE_KEY = 'daniel_vtu_forum_topics_v1';
 
+function formatCreatedAt(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s) return 'Active';
+  const parsed = Date.parse(s);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toLocaleString('en-NG', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+  return s.slice(0, 10);
+}
+
 export async function syncApiKeyState(
   userId: string,
   userEmail: string
 ): Promise<UserApiKey | null> {
   if (!userId) return null;
 
-  const res = await gatewayRequest<Record<string, unknown>[]>(
-    `/rest/v1/api_clients?user_id=eq.${encodeURIComponent(
-      userId
-    )}&select=key_prefix,last4,is_active,created_at,rotated_at&limit=1`,
-    { method: 'GET' }
-  );
+  const selectCandidates = [
+    'key_prefix,last4,is_active,created_at,rotated_at,webhook_url',
+    'key_prefix,last4,is_active,created_at,rotated_at',
+    'key_prefix,last4,is_active,created_at,updated_at',
+    'key_prefix,last4,is_active,created_at',
+    '*',
+  ];
 
-  if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) {
+  let row: Record<string, unknown> | null = null;
+  for (const cols of selectCandidates) {
+    const res = await gatewayRequest<Record<string, unknown>[]>(
+      `/rest/v1/api_clients?user_id=eq.${encodeURIComponent(userId)}&select=${cols}&limit=1`,
+      { method: 'GET' }
+    ).catch(() => null);
+    if (res?.ok && Array.isArray(res.data)) {
+      if (res.data.length === 0) {
+        return null;
+      }
+      row = res.data[0];
+      break;
+    }
+  }
+
+  if (!row) {
     return null;
   }
 
-  const row = res.data[0];
   const keyPrefix = String(row.key_prefix || '');
   const last4 = String(row.last4 || '');
   const isActive = row.is_active !== false;
-  const createdAt = String(row.rotated_at || row.created_at || 'Active');
+  const createdAt = formatCreatedAt(row.rotated_at || row.updated_at || row.created_at);
 
   const localKey = localStorage.getItem(`${API_KEY_STORAGE_PREFIX}${userId}`) || '';
   const hasValidLocalKey =
     localKey.length > 0 && (!last4 || localKey.endsWith(last4));
-  const webhookUrl = localStorage.getItem(`${WEBHOOK_STORAGE_PREFIX}${userId}`) || '';
+  const remoteWebhook = typeof row.webhook_url === 'string' ? row.webhook_url.trim() : '';
+  const webhookUrl =
+    remoteWebhook || localStorage.getItem(`${WEBHOOK_STORAGE_PREFIX}${userId}`) || '';
 
   return {
     userId,
@@ -49,32 +82,40 @@ export async function syncApiKeyState(
   };
 }
 
-function extractKeyFromResponse(data: Record<string, unknown> | null): string {
-  if (!data) return '';
-  const fields = [
-    'api_key',
-    'apiKey',
-    'key',
-    'vtu_api_key',
-    'secret_key',
-    'raw_key',
-    'plain_key',
-    'full_key',
-    'token',
-  ];
-  for (const field of fields) {
-    const val = data[field];
-    if (typeof val === 'string' && val.trim() && val.trim().toLowerCase() !== 'null') {
-      return val.trim();
+function extractKeyFromResponse(data: unknown, rawText = ''): string {
+  if (typeof data === 'string') {
+    const trimmed = data.trim();
+    if (trimmed.startsWith('vtu_')) return trimmed;
+  }
+  if (data && typeof data === 'object') {
+    const obj = data as Record<string, unknown>;
+    const fields = [
+      'api_key',
+      'apiKey',
+      'key',
+      'vtu_api_key',
+      'secret_key',
+      'raw_key',
+      'plain_key',
+      'full_key',
+      'token',
+    ];
+    for (const field of fields) {
+      const val = obj[field];
+      if (typeof val === 'string' && val.trim() && val.trim().toLowerCase() !== 'null') {
+        return val.trim();
+      }
+    }
+    for (const container of ['data', 'result', 'api_client', 'client']) {
+      const nested = obj[container];
+      if (nested && typeof nested === 'object') {
+        const found = extractKeyFromResponse(nested);
+        if (found) return found;
+      }
     }
   }
-  for (const container of ['data', 'result', 'api_client', 'client']) {
-    const nested = data[container];
-    if (nested && typeof nested === 'object') {
-      const found = extractKeyFromResponse(nested as Record<string, unknown>);
-      if (found) return found;
-    }
-  }
+  const match = rawText.match(/vtu_(?:live|test|key)_[A-Za-z0-9_-]{8,}/);
+  if (match) return match[0];
   return '';
 }
 
@@ -108,7 +149,7 @@ export async function generateOrRegenerateApiKey(params: {
       body: payload,
     });
     if (res.ok) {
-      const key = extractKeyFromResponse(res.data);
+      const key = extractKeyFromResponse(res.data, res.rawText);
       if (key) {
         localStorage.setItem(`${API_KEY_STORAGE_PREFIX}${params.userId}`, key);
         return { ok: true, apiKey: key };
@@ -116,15 +157,26 @@ export async function generateOrRegenerateApiKey(params: {
       lastError = 'No API key found in server response.';
     } else {
       lastError = extractErrorMessage(res, lastError);
-      if (res.status !== 404) break;
+      if (res.status !== 404 && res.status !== 401 && res.status !== 403) break;
     }
   }
 
   return { ok: false, error: lastError };
 }
 
-export function saveWebhookUrlLocal(userId: string, webhookUrl: string): void {
-  localStorage.setItem(`${WEBHOOK_STORAGE_PREFIX}${userId}`, webhookUrl.trim());
+export async function saveWebhookUrl(userId: string, webhookUrl: string): Promise<void> {
+  const cleanUrl = webhookUrl.trim();
+  localStorage.setItem(`${WEBHOOK_STORAGE_PREFIX}${userId}`, cleanUrl);
+  if (!userId) return;
+  try {
+    await gatewayRequest(`/rest/v1/api_clients?user_id=eq.${encodeURIComponent(userId)}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: { webhook_url: cleanUrl || null },
+    });
+  } catch {
+    // non-fatal if column not present on api_clients
+  }
 }
 
 const SEEDED_FORUM_TOPICS: ForumTopic[] = [

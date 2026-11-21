@@ -25,6 +25,8 @@ export const FundWalletModal: React.FC = () => {
     closeFundModal,
     profile,
     refreshUserData,
+    updatePermanentAccountLocal,
+    updateDynamicAccountLocal,
     showToast,
   } = useApp();
 
@@ -117,12 +119,14 @@ export const FundWalletModal: React.FC = () => {
         email: profile.email,
         amount: num,
         fullName: profile.fullName,
+        phone: profile.phone,
       });
       if (!res.ok) {
         showToast(res.error, 'error');
         return;
       }
       setDynAccount(res.account);
+      updateDynamicAccountLocal(res.account);
       showToast('Dynamic transfer account generated!', 'success');
       await refreshUserData(false);
     } finally {
@@ -147,7 +151,12 @@ export const FundWalletModal: React.FC = () => {
         nin: cleanNin,
       });
       if (res.success && res.accountNumber) {
-        showToast('Permanent virtual account activated!', 'success');
+        updatePermanentAccountLocal(
+          res.accountNumber,
+          res.bankName || 'Flutterwave MFB',
+          res.accountName || profile.fullName
+        );
+        showToast(`Permanent Account Created: ${res.accountNumber}`, 'success');
         await refreshUserData(false);
       } else {
         showToast(res.message, 'error');

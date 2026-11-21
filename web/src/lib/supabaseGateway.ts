@@ -237,6 +237,8 @@ export async function gatewayRequest<T = unknown>(
   options: RequestOptions = {}
 ): Promise<GatewayResponse<T>> {
   const normalizedTarget = targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
+  const lowerTarget = normalizedTarget.toLowerCase();
+  const isEdgeFunction = lowerTarget.includes('/functions/v1/');
   const isProtected =
     !options.skipAuthHeader &&
     !isPublicAuthPath(normalizedTarget) &&
@@ -258,6 +260,17 @@ export async function gatewayRequest<T = unknown>(
     }
   }
 
+  // Fallback matching Android SupabaseAuthManager.postEdgeFunction:
+  // If an Edge Function returns 401/403 (e.g. legacy gateway JWT check rejects user JWT),
+  // retry without the user Authorization header so swift-processor injects the server anon key.
+  if ((res.status === 401 || res.status === 403) && isEdgeFunction && !options.skipAuthHeader) {
+    res = await rawGatewayFetch<T>(normalizedTarget, {
+      ...options,
+      skipAuthHeader: true,
+      accessTokenOverride: null,
+    });
+  }
+
   return res;
 }
 
@@ -268,7 +281,19 @@ export function extractErrorMessage(
   if (res && typeof res === 'object' && 'rawText' in res) {
     const gw = res as GatewayResponse<Record<string, unknown>>;
     const d = gw.data;
+    const nestedError =
+      d?.error && typeof d.error === 'object' ? (d.error as Record<string, unknown>) : null;
+    const detailsObj =
+      d?.details && typeof d.details === 'object' ? (d.details as Record<string, unknown>) : null;
+    const detailsError =
+      detailsObj?.error && typeof detailsObj.error === 'object'
+        ? (detailsObj.error as Record<string, unknown>)
+        : null;
+
     const rawMsg =
+      (typeof detailsError?.message === 'string' && detailsError.message) ||
+      (typeof detailsObj?.message === 'string' && detailsObj.message) ||
+      (typeof nestedError?.message === 'string' && nestedError.message) ||
       (typeof d?.msg === 'string' && d.msg) ||
       (typeof d?.error_description === 'string' && d.error_description) ||
       (typeof d?.message === 'string' && d.message) ||
