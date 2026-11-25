@@ -5,15 +5,18 @@ import {
   ArrowRight,
   Bell,
   Building2,
+  Camera,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Copy,
   Edit3,
   Fingerprint,
+  ImagePlus,
   Info,
   Key,
   KeyRound,
+  Link2,
   Lock,
   LogOut,
   Mail,
@@ -26,8 +29,10 @@ import {
   Sun,
   Terminal,
   Trash2,
+  X,
 } from 'lucide-react';
 import { NetworkBadge } from '../components/BrandBadges';
+import { PinDigitsInput } from '../components/PinPromptModal';
 import { UserAvatar } from '../components/UserAvatar';
 import { useApp } from '../context/AppContext';
 import { detectNetworkFromPhone, NETWORKS, SUPPORT_CONTACT } from '../data/catalog';
@@ -41,8 +46,11 @@ import {
   changeTransactionPin,
   clearPermanentAccount,
   createOrFetchPermanentAccount,
+  removeUserAvatar,
   resolveAccountHolderName,
   sanitizeFullName,
+  setUserAvatarUrl,
+  uploadUserAvatar,
 } from '../services/walletService';
 import {
   authenticateWithBiometric,
@@ -62,6 +70,7 @@ export const ProfileSecurityPage: React.FC = () => {
     darkMode,
     toggleDarkMode,
     setAppLockEnabled,
+    lockAppNow,
     setNotificationsEnabled,
     openSetPinModal,
     setBiometricEnabled,
@@ -71,8 +80,14 @@ export const ProfileSecurityPage: React.FC = () => {
     refreshUserData,
     updatePermanentAccountLocal,
     clearPermanentAccountLocal,
+    updateAvatarUrlLocal,
     showToast,
   } = useApp();
+
+  // Avatar editor modal state
+  const [showAvatarModal, setShowAvatarModal] = useState(false);
+  const [avatarUrlInput, setAvatarUrlInput] = useState('');
+  const [savingAvatar, setSavingAvatar] = useState(false);
 
   // Permanent NIN account state
   const [ninInput, setNinInput] = useState('');
@@ -319,18 +334,99 @@ export const ProfileSecurityPage: React.FC = () => {
     showToast('Device biometric authentication disabled.', 'info');
   };
 
+  const handleAvatarFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setSavingAvatar(true);
+    try {
+      const res = await uploadUserAvatar({
+        userId: profile.id,
+        email: profile.email,
+        file,
+      });
+      if (!res.ok) {
+        showToast(res.error, 'error');
+        return;
+      }
+      updateAvatarUrlLocal(res.avatarUrl);
+      setShowAvatarModal(false);
+      showToast('Profile picture updated!', 'success');
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
+
+  const handleSaveAvatarUrl = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingAvatar(true);
+    try {
+      const res = await setUserAvatarUrl({
+        userId: profile.id,
+        email: profile.email,
+        imageUrl: avatarUrlInput,
+      });
+      if (!res.ok) {
+        showToast(res.error, 'error');
+        return;
+      }
+      updateAvatarUrlLocal(res.avatarUrl);
+      setAvatarUrlInput('');
+      setShowAvatarModal(false);
+      showToast('Profile picture URL saved!', 'success');
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
+
+  const handleRemoveAvatar = async () => {
+    setSavingAvatar(true);
+    try {
+      const res = await removeUserAvatar({
+        userId: profile.id,
+        email: profile.email,
+      });
+      if (!res.ok) {
+        showToast(res.error, 'error');
+        return;
+      }
+      updateAvatarUrlLocal(undefined);
+      setShowAvatarModal(false);
+      showToast('Profile picture removed.', 'info');
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       {/* Navy Profile Hero Card (matches ProfileSecurityScreen.kt & Screenshots 1 & 3) */}
       <div className="rounded-3xl border border-[#1B3A5A] bg-[#0A192F] p-6 text-white shadow-xl sm:p-7">
         <div className="flex flex-col items-center text-center">
-          <UserAvatar
-            avatarUrl={profile.avatarUrl}
-            fullName={displayFullName}
-            sizeClass="h-24 w-24"
-            textClass="text-2xl"
-            className="shadow-md ring-2 ring-white/85"
-          />
+          <div className="relative">
+            <UserAvatar
+              avatarUrl={profile.avatarUrl}
+              fullName={displayFullName}
+              sizeClass="h-24 w-24"
+              textClass="text-2xl"
+              className="shadow-md ring-2 ring-white/85"
+            />
+            <button
+              type="button"
+              aria-label="Edit profile picture"
+              onClick={() => {
+                setAvatarUrlInput(
+                  profile.avatarUrl && /^https?:\/\//i.test(profile.avatarUrl)
+                    ? profile.avatarUrl
+                    : ''
+                );
+                setShowAvatarModal(true);
+              }}
+              className="absolute bottom-0 right-0 flex h-8 w-8 items-center justify-center rounded-full border-2 border-[#0A192F] bg-[#00875A] text-white shadow-md transition hover:bg-[#00B074]"
+            >
+              <Camera className="h-4 w-4" />
+            </button>
+          </div>
           <h1 className="mt-3 text-2xl font-extrabold">{displayFullName}</h1>
           <p className="text-xs text-slate-300">{profile.email}</p>
 
@@ -616,7 +712,7 @@ export const ProfileSecurityPage: React.FC = () => {
           </div>
 
           {/* App Lock on Launch */}
-          <div className="flex items-center justify-between p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-500/15 text-cyan-500">
                 <Lock className="h-5 w-5" />
@@ -630,21 +726,32 @@ export const ProfileSecurityPage: React.FC = () => {
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={isAppLockEnabled}
-              onClick={() => setAppLockEnabled(!isAppLockEnabled)}
-              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                isAppLockEnabled ? 'bg-cyan-500' : 'bg-slate-300 dark:bg-slate-700'
-              }`}
-            >
-              <span
-                className={`inline-block h-5 w-5 translate-y-0.5 rounded-full bg-white shadow transition-transform ${
-                  isAppLockEnabled ? 'translate-x-5' : 'translate-x-0.5'
+            <div className="flex items-center gap-2.5">
+              {isAppLockEnabled && (
+                <button
+                  type="button"
+                  onClick={lockAppNow}
+                  className="rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-bold text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-300"
+                >
+                  Lock App Now
+                </button>
+              )}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={isAppLockEnabled}
+                onClick={() => setAppLockEnabled(!isAppLockEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                  isAppLockEnabled ? 'bg-cyan-500' : 'bg-slate-300 dark:bg-slate-700'
                 }`}
-              />
-            </button>
+              >
+                <span
+                  className={`inline-block h-5 w-5 translate-y-0.5 rounded-full bg-white shadow transition-transform ${
+                    isAppLockEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
 
           {/* Real-Time Notifications */}
@@ -912,7 +1019,7 @@ export const ProfileSecurityPage: React.FC = () => {
 
       <div className="py-2 text-center">
         <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
-          Daniel VTU • Version 1.0.0
+          Daniel VTU • Version 6.0.0
         </p>
         <p className="text-[11px] text-slate-400 dark:text-slate-500">
           Secured with Supabase &amp; WebAuthn Biometrics
@@ -957,31 +1064,33 @@ export const ProfileSecurityPage: React.FC = () => {
             onSubmit={handleChangePin}
             className="w-full max-w-sm space-y-4 rounded-3xl border border-slate-200 bg-white p-6 dark:border-[#334E68] dark:bg-[#102A43]"
           >
-            <div className="flex items-center gap-2">
-              <Shield className="h-5 w-5 text-[#00B074]" />
-              <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-                Change Transaction PIN
-              </h3>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Shield className="h-5 w-5 text-[#00B074]" />
+                <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                  Change Transaction PIN
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowChangePin(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-[#1B3A5A]"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
+            <PinDigitsInput
+              label="Current 4-Digit PIN"
               value={oldPin}
-              onChange={(e) => setOldPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-              placeholder="Current 4-digit PIN"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center font-mono text-lg font-bold tracking-[0.5em] dark:border-[#334E68] dark:bg-[#0A192F] dark:text-white"
+              onChange={setOldPin}
+              autoFocus
             />
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
+            <PinDigitsInput
+              label="New 4-Digit PIN"
               value={newPin}
-              onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-              placeholder="New 4-digit PIN"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center font-mono text-lg font-bold tracking-[0.5em] dark:border-[#334E68] dark:bg-[#0A192F] dark:text-white"
+              onChange={setNewPin}
             />
-            <div className="flex gap-3">
+            <div className="flex gap-3 pt-1">
               <button
                 type="button"
                 onClick={() => setShowChangePin(false)}
@@ -991,13 +1100,93 @@ export const ProfileSecurityPage: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={savingPin}
-                className="flex-1 rounded-xl bg-[#00875A] py-2.5 text-xs font-bold text-white"
+                disabled={savingPin || oldPin.length !== 4 || newPin.length !== 4}
+                className="flex-1 rounded-xl bg-[#00875A] py-2.5 text-xs font-bold text-white disabled:opacity-50"
               >
                 {savingPin ? 'Saving...' : 'Update PIN'}
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Profile Picture Editor Modal */}
+      {showAvatarModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm space-y-4 rounded-3xl border border-slate-200 bg-white p-6 dark:border-[#334E68] dark:bg-[#102A43]">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Camera className="h-5 w-5 text-[#00B074]" />
+                <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                  Update Profile Picture
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAvatarModal(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-[#1B3A5A]"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex justify-center">
+              <UserAvatar
+                avatarUrl={profile.avatarUrl}
+                fullName={displayFullName}
+                sizeClass="h-20 w-20"
+                textClass="text-xl"
+                className="ring-2 ring-[#00875A]/40"
+              />
+            </div>
+
+            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-[#00875A] px-4 py-3 text-xs font-bold text-white shadow-sm hover:bg-[#005A3C]">
+              <ImagePlus className="h-4 w-4" />
+              {savingAvatar ? 'Uploading Photo...' : 'Upload Photo from Device'}
+              <input
+                type="file"
+                accept="image/*"
+                disabled={savingAvatar}
+                onChange={handleAvatarFileSelected}
+                className="hidden"
+              />
+            </label>
+
+            <form onSubmit={handleSaveAvatarUrl} className="space-y-2.5 border-t border-slate-100 pt-3 dark:border-[#334E68]">
+              <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600 dark:text-slate-300">
+                <Link2 className="h-3.5 w-3.5 text-[#00B074]" />
+                Or Paste Image URL (https://)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={avatarUrlInput}
+                  onChange={(e) => setAvatarUrlInput(e.target.value)}
+                  placeholder="https://example.com/photo.jpg"
+                  className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-[#00875A] dark:border-[#334E68] dark:bg-[#0A192F] dark:text-white"
+                />
+                <button
+                  type="submit"
+                  disabled={savingAvatar || !avatarUrlInput.trim()}
+                  className="rounded-xl bg-[#0A192F] px-3.5 py-2 text-xs font-bold text-white hover:bg-[#1B3A5A] disabled:opacity-50"
+                >
+                  Save URL
+                </button>
+              </div>
+            </form>
+
+            {profile.avatarUrl && (
+              <button
+                type="button"
+                disabled={savingAvatar}
+                onClick={handleRemoveAvatar}
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-red-200 py-2.5 text-xs font-bold text-red-600 hover:bg-red-50 dark:border-red-900/50 dark:text-red-300 dark:hover:bg-red-950/30"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Remove Current Photo
+              </button>
+            )}
+          </div>
         </div>
       )}
 

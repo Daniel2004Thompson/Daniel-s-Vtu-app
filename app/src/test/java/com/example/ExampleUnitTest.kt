@@ -539,6 +539,37 @@ class ExampleUnitTest {
         assertTrue("Payload must contain plan", payload.contains("\"plan\":\"476\""))
         assertTrue("Payload must not contain price field", !payload.contains("\"price\":"))
     }
+
+    @Test
+    fun networkProvider_detects0707AndInternationalFormats() {
+        assertEquals(
+            com.example.data.model.NetworkProvider.MTN,
+            com.example.data.model.NetworkProvider.detectFromPhone("07079552497")
+        )
+        assertEquals(
+            com.example.data.model.NetworkProvider.MTN,
+            com.example.data.model.NetworkProvider.detectFromPhone("+2347079552497")
+        )
+        assertEquals(
+            com.example.data.model.NetworkProvider.MTN,
+            com.example.data.model.NetworkProvider.detectFromPhone("2347079552497")
+        )
+        assertEquals(
+            com.example.data.model.NetworkProvider.MTN,
+            com.example.data.model.NetworkProvider.detectFromPhone("+234 707 955 2497")
+        )
+        assertEquals(
+            com.example.data.model.NetworkProvider.MTN,
+            com.example.data.model.NetworkProvider.detectFromPhone("002347079552497")
+        )
+        assertEquals(
+            com.example.data.model.NetworkProvider.MTN,
+            com.example.data.model.NetworkProvider.detectFromPhone("07025123456")
+        )
+        assertEquals("MTN", com.example.data.model.NetworkProvider.detectProviderName("+2347079552497"))
+        assertEquals("MTN", com.example.data.model.NetworkProvider.detectProviderName("07079552497"))
+        assertEquals("Airtel", com.example.data.model.NetworkProvider.detectProviderName("+2349027314213"))
+    }
 }
 
 

@@ -220,7 +220,7 @@ fun AirtimeScreen(
                 OutlinedTextField(
                     value = phoneNumber,
                     onValueChange = { input ->
-                        if (input.length <= 14) {
+                        if (input.length <= 18) {
                             phoneNumber = input
                             // Auto detect network
                             val detected = NetworkProvider.detectFromPhone(input)

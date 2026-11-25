@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Bolt, GraduationCap, Tv } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Bolt, GraduationCap, RefreshCw, Tv } from 'lucide-react';
 import { ProviderDotBadge } from '../components/BrandBadges';
 import { useApp } from '../context/AppContext';
 import {
@@ -9,10 +9,18 @@ import {
   formatCompactNaira,
   formatNaira,
 } from '../data/catalog';
+import { fetchLiveCableProviders, fetchLiveEducationExams } from '../services/vtuService';
+import { CableProvider, EducationExam } from '../types/vtu';
 
 export const BillsPage: React.FC = () => {
-  const { billsTab, profile, isProcessingPurchase, runProtectedPurchase, showToast } = useApp();
+  const { billsTab, profile, transactions, isProcessingPurchase, runProtectedPurchase, showToast } =
+    useApp();
   const [activeTab, setActiveTab] = useState(billsTab);
+
+  // Live catalog pricing
+  const [cableProviders, setCableProviders] = useState<CableProvider[]>(CABLE_PROVIDERS);
+  const [educationExams, setEducationExams] = useState<EducationExam[]>(EDUCATION_EXAMS);
+  const [syncingPrices, setSyncingPrices] = useState(false);
 
   // Electricity state
   const [selectedDisco, setSelectedDisco] = useState(ELECTRICITY_DISCOS[0]);
@@ -21,22 +29,100 @@ export const BillsPage: React.FC = () => {
   const [elecAmount, setElecAmount] = useState('2000');
 
   // Cable TV state
-  const [selectedCable, setSelectedCable] = useState(CABLE_PROVIDERS[0]);
-  const [selectedBouquet, setSelectedBouquet] = useState(CABLE_PROVIDERS[0].bouquets[0]);
+  const [selectedCableId, setSelectedCableId] = useState(CABLE_PROVIDERS[0].id);
+  const [selectedBouquetId, setSelectedBouquetId] = useState(CABLE_PROVIDERS[0].bouquets[0].id);
   const [smartcardNumber, setSmartcardNumber] = useState('');
 
   // Education state
-  const [selectedExam, setSelectedExam] = useState(EDUCATION_EXAMS[0]);
+  const [selectedExamId, setSelectedExamId] = useState(EDUCATION_EXAMS[0].id);
   const [eduRecipient, setEduRecipient] = useState(profile?.phone || '');
+
+  const selectedCable = useMemo(
+    () => cableProviders.find((p) => p.id === selectedCableId) || cableProviders[0],
+    [cableProviders, selectedCableId]
+  );
+
+  const selectedBouquet = useMemo(
+    () =>
+      selectedCable.bouquets.find((b) => b.id === selectedBouquetId) || selectedCable.bouquets[0],
+    [selectedCable, selectedBouquetId]
+  );
+
+  const selectedExam = useMemo(
+    () => educationExams.find((ex) => ex.id === selectedExamId) || educationExams[0],
+    [educationExams, selectedExamId]
+  );
+
+  const recentMeters = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { recipient: string; provider: string }[] = [];
+    for (const tx of transactions) {
+      if (tx.serviceType === 'ELECTRICITY' && tx.recipient && !seen.has(tx.recipient)) {
+        seen.add(tx.recipient);
+        list.push({ recipient: tx.recipient, provider: tx.provider });
+        if (list.length >= 5) break;
+      }
+    }
+    return list;
+  }, [transactions]);
+
+  const recentSmartcards = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { recipient: string; provider: string }[] = [];
+    for (const tx of transactions) {
+      if (tx.serviceType === 'CABLE_TV' && tx.recipient && !seen.has(tx.recipient)) {
+        seen.add(tx.recipient);
+        list.push({ recipient: tx.recipient, provider: tx.provider });
+        if (list.length >= 5) break;
+      }
+    }
+    return list;
+  }, [transactions]);
+
+  const recentEduRecipients = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const tx of transactions) {
+      if (tx.serviceType === 'EDUCATION' && tx.recipient && !seen.has(tx.recipient)) {
+        seen.add(tx.recipient);
+        list.push(tx.recipient);
+        if (list.length >= 5) break;
+      }
+    }
+    return list;
+  }, [transactions]);
+
+  const syncLiveBillsCatalog = async (notify = false) => {
+    setSyncingPrices(true);
+    try {
+      const [liveCable, liveEdu] = await Promise.all([
+        fetchLiveCableProviders(CABLE_PROVIDERS),
+        fetchLiveEducationExams(EDUCATION_EXAMS),
+      ]);
+      setCableProviders(liveCable);
+      setEducationExams(liveEdu);
+      if (notify) showToast('Live Cable TV & Education prices synced!', 'success');
+    } finally {
+      setSyncingPrices(false);
+    }
+  };
+
+  useEffect(() => {
+    syncLiveBillsCatalog(false);
+  }, []);
 
   useEffect(() => {
     setActiveTab(billsTab);
   }, [billsTab]);
 
-  const handleCableChange = (provider: (typeof CABLE_PROVIDERS)[number]) => {
-    setSelectedCable(provider);
-    setSelectedBouquet(provider.bouquets[0]);
+  const handleCableChange = (provider: CableProvider) => {
+    setSelectedCableId(provider.id);
+    if (provider.bouquets.length > 0) {
+      setSelectedBouquetId(provider.bouquets[0].id);
+    }
   };
+
+  const electricityMin = Math.min(500, selectedDisco.minAmount);
 
   const handlePayElectricity = (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,8 +132,8 @@ export const BillsPage: React.FC = () => {
       showToast('Enter a valid meter number (at least 8 digits).', 'error');
       return;
     }
-    if (!Number.isFinite(amt) || amt < selectedDisco.minAmount) {
-      showToast(`Minimum amount for ${selectedDisco.shortName} is ₦${selectedDisco.minAmount}.`, 'error');
+    if (!Number.isFinite(amt) || amt < electricityMin) {
+      showToast(`Minimum amount for ${selectedDisco.shortName} is ₦${electricityMin}.`, 'error');
       return;
     }
 
@@ -112,8 +198,20 @@ export const BillsPage: React.FC = () => {
             Instant electricity meter tokens, Cable TV bouquets, and Examination PINs
           </p>
         </div>
-        <div className="rounded-xl bg-[#E8F8F2] px-3 py-1.5 text-xs font-bold text-[#00875A] dark:bg-emerald-950/60 dark:text-emerald-300">
-          Wallet: {formatNaira(profile?.walletBalance ?? 0)}
+        <div className="flex items-center gap-2">
+          {(activeTab === 'CABLE_TV' || activeTab === 'EDUCATION') && (
+            <button
+              type="button"
+              onClick={() => syncLiveBillsCatalog(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-[#102A43] dark:text-slate-200"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${syncingPrices ? 'animate-spin' : ''}`} />
+              Refresh Prices
+            </button>
+          )}
+          <div className="rounded-xl bg-[#E8F8F2] px-3 py-1.5 text-xs font-bold text-[#00875A] dark:bg-emerald-950/60 dark:text-emerald-300">
+            Wallet: {formatNaira(profile?.walletBalance ?? 0)}
+          </div>
         </div>
       </div>
 
@@ -216,16 +314,30 @@ export const BillsPage: React.FC = () => {
                 placeholder="Enter meter number"
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 font-mono text-sm font-bold outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
               />
+              {recentMeters.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {recentMeters.map((m) => (
+                    <button
+                      key={m.recipient}
+                      type="button"
+                      onClick={() => setMeterNumber(m.recipient)}
+                      className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] font-bold text-slate-700 hover:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200"
+                    >
+                      {m.recipient} ({m.provider})
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
           <div>
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <label className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                Amount (min ₦{selectedDisco.minAmount.toLocaleString()})
+                Amount (min ₦{electricityMin.toLocaleString()})
               </label>
-              <div className="flex gap-1.5">
-                {[1000, 2000, 5000, 10000].map((v) => (
+              <div className="flex flex-wrap gap-1.5">
+                {[500, 1000, 2000, 5000, 10000].map((v) => (
                   <button
                     key={v}
                     type="button"
@@ -239,7 +351,7 @@ export const BillsPage: React.FC = () => {
             </div>
             <input
               type="number"
-              min={selectedDisco.minAmount}
+              min={electricityMin}
               required
               value={elecAmount}
               onChange={(e) => setElecAmount(e.target.value)}
@@ -266,7 +378,7 @@ export const BillsPage: React.FC = () => {
           className="space-y-5 rounded-3xl border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-[#102A43]"
         >
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {CABLE_PROVIDERS.map((prov) => {
+            {cableProviders.map((prov) => {
               const active = selectedCable.id === prov.id;
               return (
                 <button
@@ -311,6 +423,20 @@ export const BillsPage: React.FC = () => {
               }
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm font-bold outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
             />
+            {recentSmartcards.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {recentSmartcards.map((sc) => (
+                  <button
+                    key={sc.recipient}
+                    type="button"
+                    onClick={() => setSmartcardNumber(sc.recipient)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-[11px] font-bold text-slate-700 hover:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200"
+                  >
+                    {sc.recipient} ({sc.provider})
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div>
@@ -324,7 +450,7 @@ export const BillsPage: React.FC = () => {
                   <button
                     key={bq.id}
                     type="button"
-                    onClick={() => setSelectedBouquet(bq)}
+                    onClick={() => setSelectedBouquetId(bq.id)}
                     className={`flex items-center justify-between rounded-2xl border p-3.5 text-left transition ${
                       active
                         ? 'border-[#00875A] bg-[#E8F8F2] dark:bg-emerald-950/50'
@@ -365,13 +491,13 @@ export const BillsPage: React.FC = () => {
           className="space-y-5 rounded-3xl border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-[#102A43]"
         >
           <div className="grid gap-3 sm:grid-cols-2">
-            {EDUCATION_EXAMS.map((exam) => {
+            {educationExams.map((exam) => {
               const active = selectedExam.id === exam.id;
               return (
                 <button
                   key={exam.id}
                   type="button"
-                  onClick={() => setSelectedExam(exam)}
+                  onClick={() => setSelectedExamId(exam.id)}
                   className={`flex items-start gap-3.5 rounded-2xl border p-4 text-left transition ${
                     active
                       ? 'border-[#00875A] bg-[#E8F8F2] dark:bg-emerald-950/50'
@@ -398,9 +524,20 @@ export const BillsPage: React.FC = () => {
           </div>
 
           <div>
-            <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-200">
-              Recipient Phone / JAMB Profile Code
-            </label>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                Recipient Phone / JAMB Profile Code
+              </label>
+              {profile?.phone && (
+                <button
+                  type="button"
+                  onClick={() => setEduRecipient(profile.phone)}
+                  className="text-xs font-bold text-[#00875A] hover:underline"
+                >
+                  Use My Number
+                </button>
+              )}
+            </div>
             <input
               type="text"
               required
@@ -409,6 +546,20 @@ export const BillsPage: React.FC = () => {
               placeholder="08031234567"
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
             />
+            {recentEduRecipients.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {recentEduRecipients.map((rec) => (
+                  <button
+                    key={rec}
+                    type="button"
+                    onClick={() => setEduRecipient(rec)}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-[11px] font-bold text-slate-700 hover:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200"
+                  >
+                    {rec}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <button

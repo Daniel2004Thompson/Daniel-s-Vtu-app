@@ -24,8 +24,8 @@ enum class NetworkProvider(
         brandColor = NetworkMtn,
         textColor = Color(0xFF1E1E1E),
         prefixes = listOf(
-            "0703", "0704", "0706", "0803", "0806", "0810", "0813",
-            "0814", "0816", "0903", "0906", "0913", "0916"
+            "0703", "0704", "0706", "0707", "07025", "07026", "0803", "0806",
+            "0810", "0813", "0814", "0816", "0903", "0906", "0913", "0916"
         )
     ),
     AIRTEL(
@@ -66,18 +66,27 @@ enum class NetworkProvider(
             return when {
                 clean.startsWith("+2340") -> "0" + clean.removePrefix("+2340")
                 clean.startsWith("+234") -> "0" + clean.removePrefix("+234")
-                clean.startsWith("2340") && clean.length >= 14 -> "0" + clean.removePrefix("2340")
-                clean.startsWith("234") && clean.length == 13 -> "0" + clean.removePrefix("234")
-                clean.length == 10 && !clean.startsWith("0") && clean.all { it.isDigit() } -> "0$clean"
+                clean.startsWith("002340") -> "0" + clean.removePrefix("002340")
+                clean.startsWith("00234") -> "0" + clean.removePrefix("00234")
+                clean.startsWith("2340") && clean.length >= 7 -> "0" + clean.removePrefix("2340")
+                clean.startsWith("234") && clean.length >= 6 -> "0" + clean.removePrefix("234")
+                clean.length == 10 &&
+                    !clean.startsWith("0") &&
+                    (clean.startsWith("7") || clean.startsWith("8") || clean.startsWith("9")) &&
+                    clean.all { it.isDigit() } -> "0$clean"
                 else -> clean
             }
         }
 
         fun detectFromPhone(phone: String): NetworkProvider? {
             val local = normalizeNigerianPhone(phone)
+            if (local.length >= 5) {
+                val prefix5 = local.substring(0, 5)
+                entries.firstOrNull { it.prefixes.contains(prefix5) }?.let { return it }
+            }
             if (local.length >= 4) {
-                val prefix = local.substring(0, 4)
-                return entries.firstOrNull { it.prefixes.contains(prefix) }
+                val prefix4 = local.substring(0, 4)
+                return entries.firstOrNull { it.prefixes.contains(prefix4) }
             }
             return null
         }

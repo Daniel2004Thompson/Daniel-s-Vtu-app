@@ -1,28 +1,29 @@
 import React, { useState } from 'react';
 import {
+  ArrowRight,
   Building2,
   CheckCircle2,
   Copy,
-  CreditCard,
   ShieldCheck,
   X,
   Zap,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { formatNaira } from '../data/catalog';
+import { formatCompactNaira } from '../data/catalog';
 import {
   createDynamicAccount,
   createOrFetchPermanentAccount,
-  initializeFlutterwavePayment,
-  verifyFlutterwavePayment,
+  resolveAccountHolderName,
+  sanitizeFullName,
 } from '../services/walletService';
-import { DynamicAccountInfo } from '../types/vtu';
+import { DynamicAccountInfo, FundTab } from '../types/vtu';
 
 export const FundWalletModal: React.FC = () => {
   const {
     showFundModal,
     fundInitialTab,
     closeFundModal,
+    setCurrentPage,
     profile,
     refreshUserData,
     updatePermanentAccountLocal,
@@ -30,25 +31,30 @@ export const FundWalletModal: React.FC = () => {
     showToast,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'card' | 'dynamic' | 'permanent'>(fundInitialTab);
-  const [cardAmount, setCardAmount] = useState('2000');
-  const [loadingCard, setLoadingCard] = useState(false);
-  const [pendingTxRef, setPendingTxRef] = useState<string | null>(() =>
-    localStorage.getItem('daniel_vtu_pending_flw_ref')
-  );
-
+  const [activeTab, setActiveTab] = useState<FundTab>(fundInitialTab);
   const [dynAmount, setDynAmount] = useState('1000');
   const [dynLoading, setDynLoading] = useState(false);
   const [dynAccount, setDynAccount] = useState<DynamicAccountInfo | null>(null);
 
   const [ninInput, setNinInput] = useState('');
   const [permLoading, setPermLoading] = useState(false);
+  const [permError, setPermError] = useState<string | null>(null);
 
   React.useEffect(() => {
-    if (showFundModal) setActiveTab(fundInitialTab);
+    if (showFundModal) {
+      setActiveTab(fundInitialTab);
+      setPermError(null);
+    }
   }, [showFundModal, fundInitialTab]);
 
   if (!showFundModal || !profile) return null;
+
+  const displayFullName =
+    sanitizeFullName(profile.fullName, profile.email) || profile.fullName || 'Daniel VTU User';
+  const permHolderName = profile.virtualAccountNumber
+    ? resolveAccountHolderName(profile.virtualAccountName, profile.fullName, profile.email) ||
+      displayFullName
+    : '';
 
   const copyValue = async (val: string, label: string) => {
     try {
@@ -56,52 +62,6 @@ export const FundWalletModal: React.FC = () => {
       showToast(`${label} copied!`, 'success');
     } catch {
       showToast(`Failed to copy ${label}`, 'error');
-    }
-  };
-
-  const handleCardCheckout = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const num = Number(cardAmount);
-    if (!Number.isFinite(num) || num < 100) {
-      showToast('Minimum deposit amount is ₦100.', 'error');
-      return;
-    }
-    setLoadingCard(true);
-    try {
-      const res = await initializeFlutterwavePayment({
-        amount: num,
-        email: profile.email,
-        name: profile.fullName,
-        phone: profile.phone,
-      });
-      if (!res.ok) {
-        showToast(res.error, 'error');
-        return;
-      }
-      localStorage.setItem('daniel_vtu_pending_flw_ref', res.txRef);
-      setPendingTxRef(res.txRef);
-      window.open(res.paymentUrl, '_blank', 'noopener,noreferrer');
-      showToast('Flutterwave checkout opened. Click Verify after paying.', 'info');
-    } finally {
-      setLoadingCard(false);
-    }
-  };
-
-  const handleVerifyPending = async () => {
-    if (!pendingTxRef) return;
-    setLoadingCard(true);
-    try {
-      const res = await verifyFlutterwavePayment(pendingTxRef);
-      if (res.ok) {
-        localStorage.removeItem('daniel_vtu_pending_flw_ref');
-        setPendingTxRef(null);
-        showToast(`Payment verified! Wallet credited ${formatNaira(res.amount)}`, 'success');
-        await refreshUserData(false);
-      } else {
-        showToast(res.message || 'Payment not yet confirmed.', 'info');
-      }
-    } finally {
-      setLoadingCard(false);
     }
   };
 
@@ -118,7 +78,7 @@ export const FundWalletModal: React.FC = () => {
         userId: profile.id,
         email: profile.email,
         amount: num,
-        fullName: profile.fullName,
+        fullName: displayFullName,
         phone: profile.phone,
       });
       if (!res.ok) {
@@ -136,17 +96,18 @@ export const FundWalletModal: React.FC = () => {
 
   const handleCreatePermanent = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanNin = ninInput.replace(/\D/g, '');
+    const cleanNin = ninInput.replace(/\D/g, '').slice(0, 11);
     if (cleanNin.length !== 11) {
-      showToast('Please enter a valid 11-digit NIN.', 'error');
+      setPermError('Please enter a valid 11-digit NIN.');
       return;
     }
     setPermLoading(true);
+    setPermError(null);
     try {
       const res = await createOrFetchPermanentAccount({
         userId: profile.id,
         email: profile.email,
-        fullName: profile.fullName,
+        fullName: displayFullName,
         phone: profile.phone,
         nin: cleanNin,
       });
@@ -154,11 +115,13 @@ export const FundWalletModal: React.FC = () => {
         updatePermanentAccountLocal(
           res.accountNumber,
           res.bankName || 'Flutterwave MFB',
-          res.accountName || profile.fullName
+          res.accountName || displayFullName
         );
+        setNinInput('');
         showToast(`Permanent Account Created: ${res.accountNumber}`, 'success');
         await refreshUserData(false);
       } else {
+        setPermError(res.message);
         showToast(res.message, 'error');
       }
     } finally {
@@ -168,200 +131,163 @@ export const FundWalletModal: React.FC = () => {
 
   const quickAmounts = [500, 1000, 2000, 5000, 10000];
   const hasPermVa = Boolean(profile.virtualAccountNumber);
+  const shownDynNumber = dynAccount?.accountNumber || profile.dynamicAccountNumber;
+  const shownDynBank = dynAccount?.bankName || profile.dynamicBankName || 'Wema / Partner Bank';
+  const shownDynAmount = dynAccount?.amount || profile.dynamicAccountAmount;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
-      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-[#102A43]">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-[#334E68] dark:bg-[#102A43]">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-lg font-extrabold text-slate-900 dark:text-white">
               Fund Your Wallet
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-300">
-              Instant deposits via Flutterwave checkout or bank transfer
+              Instant deposits via Dynamic or Permanent Bank Transfer
             </p>
           </div>
           <button
             type="button"
             onClick={closeFundModal}
+            aria-label="Close modal"
             className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Method Tabs */}
-        <div className="mt-4 grid grid-cols-3 gap-2 rounded-2xl bg-slate-100 p-1 dark:bg-slate-900/70">
-          <button
-            type="button"
-            onClick={() => setActiveTab('card')}
-            className={`flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold transition ${
-              activeTab === 'card'
-                ? 'bg-white text-[#00875A] shadow-sm dark:bg-[#1B3A5A] dark:text-emerald-300'
-                : 'text-slate-600 dark:text-slate-300'
-            }`}
-          >
-            <CreditCard className="h-3.5 w-3.5" /> Card / Pay
-          </button>
+        {/* 2 Funding Tabs matching Android FundWalletSheet.kt */}
+        <div className="mt-4 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1 dark:bg-[#0A192F]/80">
           <button
             type="button"
             onClick={() => setActiveTab('dynamic')}
-            className={`flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold transition ${
+            className={`flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold transition ${
               activeTab === 'dynamic'
-                ? 'bg-white text-[#00875A] shadow-sm dark:bg-[#1B3A5A] dark:text-emerald-300'
+                ? 'bg-white text-[#00875A] shadow-sm dark:bg-[#1B3A5A] dark:text-[#00B074]'
                 : 'text-slate-600 dark:text-slate-300'
             }`}
           >
-            <Zap className="h-3.5 w-3.5" /> Instant Bank
+            <Zap className="h-3.5 w-3.5" /> Dynamic Account
           </button>
           <button
             type="button"
             onClick={() => setActiveTab('permanent')}
-            className={`flex items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold transition ${
+            className={`flex items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold transition ${
               activeTab === 'permanent'
-                ? 'bg-white text-[#00875A] shadow-sm dark:bg-[#1B3A5A] dark:text-emerald-300'
+                ? 'bg-white text-[#00875A] shadow-sm dark:bg-[#1B3A5A] dark:text-[#00B074]'
                 : 'text-slate-600 dark:text-slate-300'
             }`}
           >
-            <Building2 className="h-3.5 w-3.5" /> Permanent
+            <Building2 className="h-3.5 w-3.5" /> Permanent Account
           </button>
         </div>
 
-        {/* Tab 1: Flutterwave Card/Checkout */}
-        {activeTab === 'card' && (
-          <form onSubmit={handleCardCheckout} className="mt-5 space-y-4">
-            <div className="flex flex-wrap gap-2">
-              {quickAmounts.map((amt) => (
-                <button
-                  key={amt}
-                  type="button"
-                  onClick={() => setCardAmount(String(amt))}
-                  className={`rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
-                    cardAmount === String(amt)
-                      ? 'border-[#00875A] bg-[#E8F8F2] text-[#00875A] dark:bg-emerald-950/60 dark:text-emerald-300'
-                      : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300'
-                  }`}
-                >
-                  ₦{amt.toLocaleString('en-US')}
-                </button>
-              ))}
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">
-                Deposit Amount (₦)
-              </label>
-              <input
-                type="number"
-                min={100}
-                value={cardAmount}
-                onChange={(e) => setCardAmount(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-base font-bold text-slate-900 outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loadingCard}
-              className="w-full rounded-xl bg-[#00875A] py-3 text-sm font-bold text-white shadow-md shadow-emerald-900/15 transition hover:bg-[#005A3C] disabled:opacity-50"
-            >
-              {loadingCard ? 'Connecting to Flutterwave...' : 'Pay via Flutterwave Checkout'}
-            </button>
-
-            {pendingTxRef && (
-              <div className="rounded-2xl border border-amber-400/40 bg-amber-50 p-3.5 dark:bg-amber-950/30">
-                <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
-                  Pending payment ref: <span className="font-mono">{pendingTxRef}</span>
-                </p>
-                <button
-                  type="button"
-                  onClick={handleVerifyPending}
-                  disabled={loadingCard}
-                  className="mt-2 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-700"
-                >
-                  Verify Completed Payment
-                </button>
-              </div>
-            )}
-          </form>
-        )}
-
-        {/* Tab 2: Dynamic Virtual Account */}
+        {/* Tab 1: Dynamic Virtual Account */}
         {activeTab === 'dynamic' && (
           <div className="mt-5 space-y-4">
-            <form onSubmit={handleGenerateDynamic} className="space-y-3">
+            <form onSubmit={handleGenerateDynamic} className="space-y-4">
+              <div>
+                <p className="mb-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Quick Amount
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {quickAmounts.map((amt) => (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={() => setDynAmount(String(amt))}
+                      className={`rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
+                        dynAmount === String(amt)
+                          ? 'border-[#00875A] bg-[#E8F8F2] text-[#00875A] dark:bg-emerald-950/60 dark:text-emerald-300'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-[#334E68] dark:text-slate-300'
+                      }`}
+                    >
+                      ₦{amt.toLocaleString('en-US')}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div>
                 <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  Transfer Amount (₦)
+                  Amount to Deposit (₦)
                 </label>
                 <div className="flex gap-2">
                   <input
                     type="number"
                     min={100}
+                    required
                     value={dynAmount}
                     onChange={(e) => setDynAmount(e.target.value)}
-                    className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-900 outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
+                    placeholder="Enter amount (e.g. 2000)"
+                    className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-900 outline-none focus:border-[#00875A] dark:border-[#334E68] dark:bg-[#0A192F]/80 dark:text-white"
                   />
                   <button
                     type="submit"
                     disabled={dynLoading}
                     className="rounded-xl bg-[#00875A] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#005A3C] disabled:opacity-50"
                   >
-                    {dynLoading ? 'Creating...' : 'Get Account'}
+                    {dynLoading ? 'Creating...' : 'Create Account'}
                   </button>
                 </div>
               </div>
             </form>
 
-            {(dynAccount || profile.dynamicAccountNumber) && (
-              <div className="space-y-2.5 rounded-2xl border border-emerald-500/30 bg-[#E8F8F2] p-4 dark:bg-emerald-950/40">
+            {shownDynNumber && (
+              <div className="space-y-2.5 rounded-2xl border border-[#00B875]/40 bg-[#E8F8F2] p-4 dark:bg-emerald-950/40">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-[#00875A]">
-                    One-Time / Dynamic Transfer Account
+                  <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#00875A] dark:text-[#00B074]">
+                    Dynamic Dedicated Account
                   </span>
-                  <span className="rounded-full bg-[#00875A] px-2 py-0.5 text-[10px] font-bold text-white">
+                  <span className="rounded-full bg-[#00B875] px-2 py-0.5 text-[10px] font-bold text-white">
                     AUTO SYNC
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-mono text-2xl font-extrabold text-slate-900 dark:text-white">
-                      {dynAccount?.accountNumber || profile.dynamicAccountNumber}
+                      {shownDynNumber}
                     </p>
-                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                      {dynAccount?.bankName || profile.dynamicBankName || 'Partner Bank'} •{' '}
-                      {dynAccount?.accountName || 'Wallet Topup'}
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      {shownDynBank} • Wallet Topup
                     </p>
+                    {shownDynAmount ? (
+                      <p className="mt-0.5 text-xs font-bold text-[#00875A] dark:text-[#00B074]">
+                        Target Transfer: {formatCompactNaira(shownDynAmount)}
+                      </p>
+                    ) : null}
                   </div>
                   <button
                     type="button"
-                    onClick={() =>
-                      copyValue(
-                        dynAccount?.accountNumber || profile.dynamicAccountNumber || '',
-                        'Account Number'
-                      )
-                    }
-                    className="rounded-xl bg-white p-2.5 text-[#00875A] shadow-sm hover:bg-slate-50 dark:bg-slate-800"
+                    onClick={() => copyValue(shownDynNumber, 'Account Number')}
+                    className="rounded-xl bg-white p-2.5 text-[#00875A] shadow-sm hover:bg-slate-50 dark:bg-[#1B3A5A] dark:text-[#00B074]"
                   >
                     <Copy className="h-4 w-4" />
                   </button>
                 </div>
-                {dynAccount?.note && (
-                  <p className="text-[11px] text-slate-600 dark:text-slate-300">
-                    {dynAccount.note}
-                  </p>
-                )}
               </div>
             )}
+
+            <button
+              type="button"
+              onClick={() => {
+                closeFundModal();
+                setCurrentPage('dynamic');
+              }}
+              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[#00875A]/40 py-2.5 text-xs font-bold text-[#00875A] hover:bg-[#E8F8F2] dark:text-[#00B074] dark:hover:bg-emerald-950/40"
+            >
+              Open Full Dynamic Account Page <ArrowRight className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
 
-        {/* Tab 3: Permanent Dedicated Virtual Account */}
+        {/* Tab 2: Permanent Dedicated Virtual Account */}
         {activeTab === 'permanent' && (
           <div className="mt-5 space-y-4">
             {hasPermVa ? (
-              <div className="space-y-3 rounded-2xl border border-emerald-500/30 bg-[#E8F8F2] p-4 dark:bg-emerald-950/40">
-                <div className="flex items-center gap-2 text-xs font-bold text-[#00875A]">
+              <div className="space-y-3 rounded-2xl border border-emerald-500/35 bg-[#E8F8F2] p-4 dark:bg-emerald-950/40">
+                <div className="flex items-center gap-2 text-xs font-bold text-[#00875A] dark:text-[#00B074]">
                   <CheckCircle2 className="h-4 w-4" /> Dedicated Permanent Account Active
                 </div>
                 <div className="flex items-center justify-between">
@@ -369,11 +295,11 @@ export const FundWalletModal: React.FC = () => {
                     <p className="font-mono text-2xl font-extrabold text-slate-900 dark:text-white">
                       {profile.virtualAccountNumber}
                     </p>
-                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    <p className="text-xs font-semibold text-[#FB9129]">
                       {profile.virtualBankName || 'Flutterwave MFB'}
                     </p>
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {profile.virtualAccountName || profile.fullName}
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                      {permHolderName}
                     </p>
                   </div>
                   <button
@@ -381,14 +307,18 @@ export const FundWalletModal: React.FC = () => {
                     onClick={() =>
                       copyValue(profile.virtualAccountNumber!, 'Permanent Account')
                     }
-                    className="rounded-xl bg-white p-2.5 text-[#00875A] shadow-sm hover:bg-slate-50 dark:bg-slate-800"
+                    className="rounded-xl bg-white p-2.5 text-[#00875A] shadow-sm hover:bg-slate-50 dark:bg-[#1B3A5A] dark:text-[#00B074]"
                   >
                     <Copy className="h-4 w-4" />
                   </button>
                 </div>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                  Any bank transfer sent to this account credits your Daniel VTU wallet
+                  automatically in real time.
+                </p>
               </div>
             ) : (
-              <form onSubmit={handleCreatePermanent} className="space-y-3">
+              <form onSubmit={handleCreatePermanent} className="space-y-3.5">
                 <div className="rounded-2xl border border-amber-400/40 bg-amber-50 p-3.5 text-xs text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
                   <div className="flex items-center gap-1.5 font-bold">
                     <ShieldCheck className="h-4 w-4" /> NIN Verification Required
@@ -407,17 +337,25 @@ export const FundWalletModal: React.FC = () => {
                     inputMode="numeric"
                     maxLength={11}
                     value={ninInput}
-                    onChange={(e) => setNinInput(e.target.value.replace(/\D/g, '').slice(0, 11))}
-                    placeholder="12345678901"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm font-bold outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
+                    onChange={(e) => {
+                      setNinInput(e.target.value.replace(/\D/g, '').slice(0, 11));
+                      setPermError(null);
+                    }}
+                    placeholder="Enter 11-digit NIN"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm font-bold outline-none focus:border-[#00875A] dark:border-[#334E68] dark:bg-[#0A192F]/80 dark:text-white"
                   />
                 </div>
+                {permError && (
+                  <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-600 dark:bg-red-950/40 dark:text-red-300">
+                    {permError}
+                  </p>
+                )}
                 <button
                   type="submit"
                   disabled={permLoading || ninInput.length !== 11}
                   className="w-full rounded-xl bg-[#00875A] py-3 text-sm font-bold text-white hover:bg-[#005A3C] disabled:opacity-50"
                 >
-                  {permLoading ? 'Verifying NIN...' : 'Activate Permanent Account'}
+                  {permLoading ? 'Verifying NIN...' : 'Verify NIN & Create Permanent Account'}
                 </button>
               </form>
             )}

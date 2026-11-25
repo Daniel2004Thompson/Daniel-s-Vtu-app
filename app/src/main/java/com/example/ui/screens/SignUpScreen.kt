@@ -280,7 +280,7 @@ fun SignUpScreen(
                         // Phone Number Input
                         OutlinedTextField(
                             value = phone,
-                            onValueChange = { if (it.length <= 11) phone = it },
+                            onValueChange = { if (it.length <= 18) phone = it },
                             label = { Text("Phone Number") },
                             placeholder = { Text("08012345678") },
                             leadingIcon = {

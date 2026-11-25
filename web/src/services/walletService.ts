@@ -2,9 +2,12 @@ import {
   extractErrorMessage,
   gatewayRequest,
   getEmailFromToken,
+  getOptionalAnonKey,
+  getSupabaseUrl,
   getUserIdFromToken,
   loadStoredSession,
   sanitizeFriendlyError,
+  uploadBinaryToStorage,
 } from '../lib/supabaseGateway';
 import {
   DynamicAccountInfo,
@@ -12,10 +15,61 @@ import {
   TransactionRecord,
   UserProfile,
 } from '../types/vtu';
+import { fetchAndMergeAuthUser } from './authService';
 
 const PERMANENT_ACCOUNT_MERCHANT_PREFIX = 'Thompson Daniel';
 const resetPermanentAccountUsers = new Set<string>();
 const autoCheckedPermanentUsers = new Set<string>();
+
+const DELETED_TX_KEY_PREFIX = 'daniel_vtu_deleted_txs_';
+const CLEARED_TS_KEY_PREFIX = 'daniel_vtu_cleared_ts_';
+
+export function resetSessionAccountCaches(): void {
+  resetPermanentAccountUsers.clear();
+  autoCheckedPermanentUsers.clear();
+}
+
+export function getDeletedTransactionRefs(userId: string): Set<string> {
+  if (!userId) return new Set();
+  try {
+    const raw = localStorage.getItem(`${DELETED_TX_KEY_PREFIX}${userId}`);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+export function markTransactionDeleted(userId: string, reference: string): void {
+  if (!userId || !reference) return;
+  const current = getDeletedTransactionRefs(userId);
+  current.add(reference);
+  try {
+    localStorage.setItem(`${DELETED_TX_KEY_PREFIX}${userId}`, JSON.stringify([...current]));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+export function getTransactionsClearedTimestamp(userId: string): number {
+  if (!userId) return 0;
+  try {
+    const val = Number(localStorage.getItem(`${CLEARED_TS_KEY_PREFIX}${userId}`) || '0');
+    return Number.isFinite(val) ? val : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function markAllTransactionsCleared(userId: string): void {
+  if (!userId) return;
+  try {
+    localStorage.setItem(`${CLEARED_TS_KEY_PREFIX}${userId}`, String(Date.now()));
+  } catch {
+    // ignore quota errors
+  }
+}
 
 function cleanStr(val: unknown): string {
   if (typeof val !== 'string') return '';
@@ -233,24 +287,47 @@ function extractAccountNameFromEdge(
   return resolveAccountHolderName(null, fallbackFullName, email);
 }
 
-async function persistPermanentAccountToUsers(
-  userId: string,
-  accountNumber: string,
-  bankName: string
-): Promise<void> {
+async function persistPermanentAccountToBackend(params: {
+  userId: string;
+  email: string;
+  accountNumber: string;
+  bankName: string;
+  accountName: string;
+}): Promise<void> {
+  const { userId, email, accountNumber, bankName, accountName } = params;
   if (!userId || !accountNumber) return;
-  try {
-    await gatewayRequest(`/rest/v1/users?id=eq.${encodeURIComponent(userId)}`, {
+
+  await Promise.allSettled([
+    gatewayRequest(`/rest/v1/users?id=eq.${encodeURIComponent(userId)}`, {
       method: 'PATCH',
       headers: { Prefer: 'return=minimal' },
       body: {
         permanent_account_number: accountNumber,
         ...(bankName ? { permanent_account_bank: bankName } : {}),
       },
-    });
-  } catch {
-    // non-fatal best-effort persistence
-  }
+    }),
+    gatewayRequest(`/rest/v1/virtual_accounts`, {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: {
+        user_id: userId,
+        ...(email ? { email: email.trim().toLowerCase() } : {}),
+        account_number: accountNumber,
+        bank_name: bankName || 'Flutterwave MFB',
+        account_name: accountName || PERMANENT_ACCOUNT_MERCHANT_PREFIX,
+      },
+    }),
+    gatewayRequest(`/auth/v1/user`, {
+      method: 'PUT',
+      body: {
+        data: {
+          permanent_account_number: accountNumber,
+          permanent_account_bank: bankName || 'Flutterwave MFB',
+          ...(accountName ? { permanent_account_name: accountName } : {}),
+        },
+      },
+    }),
+  ]);
 }
 
 export async function clearPermanentAccount(
@@ -258,18 +335,36 @@ export async function clearPermanentAccount(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!userId) return { ok: false, error: 'Missing user ID.' };
   resetPermanentAccountUsers.add(userId);
-  const res = await gatewayRequest(`/rest/v1/users?id=eq.${encodeURIComponent(userId)}`, {
-    method: 'PATCH',
-    headers: { Prefer: 'return=minimal' },
-    body: {
-      permanent_account_number: null,
-      permanent_account_bank: null,
-    },
-  });
-  if (!res.ok) {
+  autoCheckedPermanentUsers.delete(userId);
+
+  const [usersRes] = await Promise.all([
+    gatewayRequest(`/rest/v1/users?id=eq.${encodeURIComponent(userId)}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: {
+        permanent_account_number: null,
+        permanent_account_bank: null,
+      },
+    }),
+    gatewayRequest(`/rest/v1/virtual_accounts?user_id=eq.${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    }).catch(() => null),
+    gatewayRequest(`/auth/v1/user`, {
+      method: 'PUT',
+      body: {
+        data: {
+          permanent_account_number: null,
+          permanent_account_bank: null,
+          permanent_account_name: null,
+        },
+      },
+    }).catch(() => null),
+  ]);
+
+  if (!usersRes.ok) {
     return {
       ok: false,
-      error: extractErrorMessage(res, 'Could not unlink permanent account right now.'),
+      error: extractErrorMessage(usersRes, 'Could not unlink permanent account right now.'),
     };
   }
   return { ok: true };
@@ -380,7 +475,7 @@ async function fetchUsersRowWithFallback(
   if (email && !filter.startsWith('email=')) {
     for (const cols of selectCandidates) {
       const byEmail = await gatewayRequest<Record<string, unknown>[]>(
-        `/rest/v1/users?select=${cols}&email=eq.${encodeURIComponent(email)}&limit=1`,
+        `/rest/v1/users?select=${cols}&email=ilike.${encodeURIComponent(email)}&limit=1`,
         { method: 'GET' }
       ).catch(() => null);
       if (byEmail?.ok && Array.isArray(byEmail.data) && byEmail.data.length > 0) {
@@ -407,13 +502,14 @@ export async function fetchUserProfileAndHistory(options?: {
 
   const filter = userId
     ? `id=eq.${encodeURIComponent(userId)}`
-    : `email=eq.${encodeURIComponent(email)}`;
+    : `email=ilike.${encodeURIComponent(email)}`;
 
   const profileFilter = email
     ? `email=ilike.${encodeURIComponent(email)}`
     : `id=eq.${encodeURIComponent(userId)}`;
 
-  const [row, profileRes, vaTableRes] = await Promise.all([
+  const [liveAuthUser, row, profileRes, vaTableByIdRes, vaTableByEmailRes] = await Promise.all([
+    fetchAndMergeAuthUser().catch(() => session?.user || null),
     fetchUsersRowWithFallback(filter, email),
     gatewayRequest<Record<string, unknown>[]>(
       `/rest/v1/profiles?select=id,email,full_name,phone,avatar_url&${profileFilter}&limit=1`,
@@ -422,6 +518,12 @@ export async function fetchUserProfileAndHistory(options?: {
     userId
       ? gatewayRequest<Record<string, unknown>[]>(
           `/rest/v1/virtual_accounts?user_id=eq.${encodeURIComponent(userId)}&limit=1`,
+          { method: 'GET' }
+        ).catch(() => null)
+      : Promise.resolve(null),
+    email
+      ? gatewayRequest<Record<string, unknown>[]>(
+          `/rest/v1/virtual_accounts?email=ilike.${encodeURIComponent(email)}&limit=1`,
           { method: 'GET' }
         ).catch(() => null)
       : Promise.resolve(null),
@@ -443,11 +545,14 @@ export async function fetchUserProfileAndHistory(options?: {
   }
 
   const vaRow: Record<string, unknown> | null =
-    vaTableRes && vaTableRes.ok && Array.isArray(vaTableRes.data) && vaTableRes.data.length > 0
-      ? vaTableRes.data[0]
-      : null;
+    (vaTableByIdRes && vaTableByIdRes.ok && Array.isArray(vaTableByIdRes.data) && vaTableByIdRes.data.length > 0
+      ? vaTableByIdRes.data[0]
+      : null) ||
+    (vaTableByEmailRes && vaTableByEmailRes.ok && Array.isArray(vaTableByEmailRes.data) && vaTableByEmailRes.data.length > 0
+      ? vaTableByEmailRes.data[0]
+      : null);
 
-  const meta = (session?.user?.user_metadata || {}) as Record<string, unknown>;
+  const meta = ((liveAuthUser || session?.user)?.user_metadata || {}) as Record<string, unknown>;
   const resolvedId = cleanStr(row?.id || profileRow?.id) || userId;
   const resolvedEmail = cleanStr(row?.email || profileRow?.email) || email;
 
@@ -500,8 +605,8 @@ export async function fetchUserProfileAndHistory(options?: {
     : '';
 
   // Mirror Android PermanentAccountViewModel.checkExisting():
-  // When no permanent account is found in DB yet (or once per user session), query Create-Permanent-Account
-  // so existing Flutterwave permanent accounts are restored automatically and persisted to public.users.
+  // When no permanent account is found in DB yet (or once per session), query Create-Permanent-Account
+  // so existing Flutterwave permanent accounts are restored automatically and persisted.
   const shouldSyncPerm =
     options?.syncPermanentAccount !== false &&
     !isResetInSession &&
@@ -529,6 +634,20 @@ export async function fetchUserProfileAndHistory(options?: {
     }
   }
 
+  // Strict avatar resolution priority matching Android ProfilePictureManager.kt:
+  // 1) public.profiles.avatar_url -> 2) public.users.avatar_url -> 3) Auth metadata -> 4) Storage fallback when anonKey set
+  let avatarUrl =
+    cleanStr(profileRow?.avatar_url) ||
+    cleanStr(row?.avatar_url) ||
+    cleanStr(meta.avatar_url || meta.avatar_data_uri) ||
+    undefined;
+
+  if (!avatarUrl && resolvedId && getOptionalAnonKey()) {
+    avatarUrl = `${getSupabaseUrl()}/storage/v1/object/public/avatars/${encodeURIComponent(
+      resolvedId
+    )}/avatar.jpg`;
+  }
+
   const profile: UserProfile = {
     id: resolvedId,
     email: resolvedEmail,
@@ -536,7 +655,7 @@ export async function fetchUserProfileAndHistory(options?: {
     phone,
     walletBalance: Number(row?.wallet_balance ?? 0) || 0,
     cashbackBalance: Number(row?.cashback_balance ?? 0) || 0,
-    avatarUrl: cleanStr(profileRow?.avatar_url) || cleanStr(row?.avatar_url) || undefined,
+    avatarUrl,
     ninHash,
     ninVerified: Boolean(ninHash || virtualAccountNumber),
     virtualAccountNumber: virtualAccountNumber || undefined,
@@ -551,7 +670,7 @@ export async function fetchUserProfileAndHistory(options?: {
   try {
     const rpcRes = await gatewayRequest<unknown>('/rest/v1/rpc/get_my_transactions', {
       method: 'POST',
-      body: { p_limit: 25 },
+      body: { p_limit: 40 },
     });
     if (rpcRes.ok && Array.isArray(rpcRes.data) && rpcRes.data.length > 0) {
       const rpcTx = parseTransactionArray(rpcRes.data);
@@ -566,7 +685,181 @@ export async function fetchUserProfileAndHistory(options?: {
     // RPC optional if transaction_history column already has data
   }
 
+  const deletedRefs = getDeletedTransactionRefs(resolvedId);
+  const clearedTs = getTransactionsClearedTimestamp(resolvedId);
+  if (deletedRefs.size > 0 || clearedTs > 0) {
+    transactions = transactions.filter(
+      (tx) => !deletedRefs.has(tx.reference) && tx.timestamp > clearedTs
+    );
+  }
+
   return { profile, transactions };
+}
+
+async function persistAvatarUrlEverywhere(
+  userId: string,
+  email: string,
+  avatarValue: string | null
+): Promise<boolean> {
+  const payload = { avatar_url: avatarValue };
+  const results = await Promise.allSettled([
+    gatewayRequest('/rest/v1/rpc/set_my_avatar', { method: 'POST', body: {} }),
+    userId
+      ? gatewayRequest(`/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=representation' },
+          body: payload,
+        })
+      : Promise.resolve(null),
+    email
+      ? gatewayRequest(`/rest/v1/profiles?email=ilike.${encodeURIComponent(email)}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=representation' },
+          body: payload,
+        })
+      : Promise.resolve(null),
+    userId
+      ? gatewayRequest(`/rest/v1/users?id=eq.${encodeURIComponent(userId)}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=representation' },
+          body: payload,
+        })
+      : Promise.resolve(null),
+    email
+      ? gatewayRequest(`/rest/v1/users?email=ilike.${encodeURIComponent(email)}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=representation' },
+          body: payload,
+        })
+      : Promise.resolve(null),
+    gatewayRequest('/auth/v1/user', {
+      method: 'PUT',
+      body: {
+        data: {
+          avatar_url: avatarValue,
+          avatar_base64: null,
+          avatar_data_uri: null,
+        },
+      },
+    }),
+  ]);
+
+  return results.some((r) => r.status === 'fulfilled' && r.value && r.value.ok);
+}
+
+function resizeImageFileToDataUri(file: File, maxDim = 256, quality = 0.72): Promise<{
+  dataUri: string;
+  blob: Blob;
+}> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error('Canvas context unavailable'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUri = canvas.toDataURL('image/jpeg', quality);
+        canvas.toBlob(
+          (blob) => {
+            URL.revokeObjectURL(objectUrl);
+            if (!blob) {
+              reject(new Error('Failed to encode image'));
+              return;
+            }
+            resolve({ dataUri, blob });
+          },
+          'image/jpeg',
+          quality
+        );
+      } catch (err) {
+        URL.revokeObjectURL(objectUrl);
+        reject(err);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Invalid image file selected'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+export async function uploadUserAvatar(params: {
+  userId: string;
+  email: string;
+  file: File;
+}): Promise<{ ok: true; avatarUrl: string } | { ok: false; error: string }> {
+  const { userId, email, file } = params;
+  if (!userId) return { ok: false, error: 'Missing user ID.' };
+
+  try {
+    const { dataUri, blob } = await resizeImageFileToDataUri(file, 256, 0.72);
+    let finalUrl = dataUri;
+
+    const uploadedStorage = await uploadBinaryToStorage(
+      `avatars/${encodeURIComponent(userId)}/avatar.jpg`,
+      blob,
+      'image/jpeg'
+    );
+    if (uploadedStorage && getOptionalAnonKey()) {
+      finalUrl = `${getSupabaseUrl()}/storage/v1/object/public/avatars/${encodeURIComponent(
+        userId
+      )}/avatar.jpg?t=${Date.now()}`;
+    }
+
+    const persisted = await persistAvatarUrlEverywhere(userId, email, finalUrl);
+    if (!persisted) {
+      return { ok: false, error: 'Could not save profile picture to your account.' };
+    }
+    await fetchAndMergeAuthUser();
+    return { ok: true, avatarUrl: finalUrl };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Could not process image file.',
+    };
+  }
+}
+
+export async function setUserAvatarUrl(params: {
+  userId: string;
+  email: string;
+  imageUrl: string;
+}): Promise<{ ok: true; avatarUrl: string } | { ok: false; error: string }> {
+  const cleanUrl = params.imageUrl.trim();
+  if (!/^https?:\/\/.+/i.test(cleanUrl)) {
+    return { ok: false, error: 'Please enter a valid https:// image URL.' };
+  }
+  const ok = await persistAvatarUrlEverywhere(params.userId, params.email, cleanUrl);
+  if (!ok) {
+    return { ok: false, error: 'Could not save avatar URL right now.' };
+  }
+  await fetchAndMergeAuthUser();
+  return { ok: true, avatarUrl: cleanUrl };
+}
+
+export async function removeUserAvatar(params: {
+  userId: string;
+  email: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  await gatewayRequest('/rest/v1/rpc/remove_my_avatar', {
+    method: 'POST',
+    body: {},
+  }).catch(() => null);
+  await persistAvatarUrlEverywhere(params.userId, params.email, null);
+  await fetchAndMergeAuthUser();
+  return { ok: true };
 }
 
 export async function checkHasTransactionPin(): Promise<boolean> {
@@ -630,68 +923,6 @@ export async function changeTransactionPin(
     return { ok: false, error: extractErrorMessage(res, 'Current PIN is incorrect.') };
   }
   return { ok: true };
-}
-
-export async function initializeFlutterwavePayment(params: {
-  amount: number;
-  email: string;
-  name: string;
-  phone?: string;
-}): Promise<{ ok: true; paymentUrl: string; txRef: string } | { ok: false; error: string }> {
-  const txRef = `FLW-VTU-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
-  const redirectUrl = `${window.location.origin}/?payment_verify=1`;
-
-  const res = await gatewayRequest<Record<string, unknown>>('/functions/v1/flutterwave-payment', {
-    method: 'POST',
-    body: {
-      action: 'initialize',
-      amount: params.amount,
-      email: params.email,
-      name: params.name,
-      ...(params.phone ? { phone: params.phone } : {}),
-      tx_ref: txRef,
-      redirect_url: redirectUrl,
-    },
-  });
-
-  if (res.ok && res.data) {
-    const link = cleanStr(res.data.payment_url || (res.data.data as Record<string, unknown> | undefined)?.link);
-    if (link.startsWith('https://')) {
-      return { ok: true, paymentUrl: link, txRef };
-    }
-  }
-
-  return {
-    ok: false,
-    error: extractErrorMessage(res, 'Unable to initialize payment with server.'),
-  };
-}
-
-export async function verifyFlutterwavePayment(
-  txRef: string
-): Promise<{ ok: boolean; status: string; amount: number; message: string }> {
-  const res = await gatewayRequest<Record<string, unknown>>('/functions/v1/flutterwave-payment', {
-    method: 'POST',
-    body: { action: 'verify', tx_ref: txRef },
-  });
-
-  if (res.ok && res.data) {
-    const status = cleanStr(res.data.status || '');
-    const success = Boolean(res.data.success) && status.toLowerCase() === 'successful';
-    return {
-      ok: success,
-      status: status || (success ? 'successful' : 'pending'),
-      amount: Number(res.data.amount || 0),
-      message: cleanStr(res.data.message) || 'Payment verification completed.',
-    };
-  }
-
-  return {
-    ok: false,
-    status: 'failed',
-    amount: 0,
-    message: extractErrorMessage(res, 'Unable to verify payment right now.'),
-  };
 }
 
 export async function createDynamicAccount(params: {
@@ -792,13 +1023,23 @@ export async function createOrFetchPermanentAccount(params: {
       : {}),
   };
 
-  const res = await gatewayRequest<Record<string, unknown>>(
+  let res = await gatewayRequest<Record<string, unknown>>(
     '/functions/v1/Create-Permanent-Account',
     {
       method: 'POST',
       body: payload,
     }
   );
+
+  if (res.status === 404) {
+    res = await gatewayRequest<Record<string, unknown>>(
+      '/functions/v1/create-permanent-account',
+      {
+        method: 'POST',
+        body: payload,
+      }
+    );
+  }
 
   const json = res.data || {};
   const containers = collectContainers(json);
@@ -826,7 +1067,13 @@ export async function createOrFetchPermanentAccount(params: {
   if (accountNumber) {
     if (params.userId) {
       resetPermanentAccountUsers.delete(params.userId);
-      await persistPermanentAccountToUsers(params.userId, accountNumber, bankName);
+      await persistPermanentAccountToBackend({
+        userId: params.userId,
+        email: params.email,
+        accountNumber,
+        bankName,
+        accountName: accountName || sanitizedName,
+      });
     }
     return {
       success: true,

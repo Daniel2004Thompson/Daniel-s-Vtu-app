@@ -38,6 +38,31 @@ class ExampleRobolectricTest {
     val mtn = com.example.data.model.NetworkProvider.detectFromPhone("08031234567")
     assertEquals(com.example.data.model.NetworkProvider.MTN, mtn)
 
+    assertEquals(
+      com.example.data.model.NetworkProvider.MTN,
+      com.example.data.model.NetworkProvider.detectFromPhone("07079552497")
+    )
+    assertEquals(
+      com.example.data.model.NetworkProvider.MTN,
+      com.example.data.model.NetworkProvider.detectFromPhone("+2347079552497")
+    )
+    assertEquals(
+      com.example.data.model.NetworkProvider.MTN,
+      com.example.data.model.NetworkProvider.detectFromPhone("2347079552497")
+    )
+    assertEquals(
+      com.example.data.model.NetworkProvider.MTN,
+      com.example.data.model.NetworkProvider.detectFromPhone("+234 707 955 2497")
+    )
+    assertEquals(
+      com.example.data.model.NetworkProvider.MTN,
+      com.example.data.model.NetworkProvider.detectFromPhone("002347079552497")
+    )
+    assertEquals(
+      com.example.data.model.NetworkProvider.MTN,
+      com.example.data.model.NetworkProvider.detectFromPhone("07025123456")
+    )
+
     val airtel = com.example.data.model.NetworkProvider.detectFromPhone("08021234567")
     assertEquals(com.example.data.model.NetworkProvider.AIRTEL, airtel)
 

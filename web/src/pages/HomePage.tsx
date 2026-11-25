@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   ArrowRight,
+  Bell,
   Bolt,
   Copy,
   Eye,
@@ -37,6 +38,7 @@ export const HomePage: React.FC = () => {
     profile,
     transactions,
     airtimePricing,
+    unreadNotificationCount,
     isBiometricEnabled,
     isRefreshingWallet,
     refreshUserData,
@@ -81,7 +83,7 @@ export const HomePage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Greeting & Detected Network Pill (matches Android HomeScreen header) */}
+      {/* Greeting & Detected Network Pill + Bell Button (matches Android HomeScreen header) */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
@@ -129,6 +131,20 @@ export const HomePage: React.FC = () => {
               </p>
             )}
           </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setCurrentPage('notifications')}
+          className="relative inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 shadow-sm hover:border-[#00875A]/45 dark:border-[#334E68] dark:bg-[#102A43] dark:text-slate-200"
+        >
+          <Bell className="h-4 w-4 text-[#00875A] dark:text-[#00B074]" />
+          <span>Alerts</span>
+          {unreadNotificationCount > 0 && (
+            <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-extrabold text-white">
+              {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+            </span>
+          )}
         </button>
       </div>
 
@@ -180,7 +196,7 @@ export const HomePage: React.FC = () => {
             </div>
 
             <span className="rounded-full border border-[#8C6D2D]/70 bg-[#2B3324]/90 px-3 py-1 text-xs font-bold text-[#F6B93B]">
-              Bonus:{(profile?.cashbackBalance ?? 0).toFixed(1)}
+              Bonus: ₦{(profile?.cashbackBalance ?? 0).toFixed(1)}
             </span>
           </div>
 
@@ -197,7 +213,7 @@ export const HomePage: React.FC = () => {
           <div className="relative mt-5 flex gap-3 border-t border-white/10 pt-4">
             <button
               type="button"
-              onClick={() => openFundModal('card')}
+              onClick={() => openFundModal('dynamic')}
               className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-[#38D399]/55 bg-[#189E65] py-2.5 text-sm font-bold text-white shadow-md transition hover:bg-[#148655]"
             >
               <Plus className="h-4 w-4" /> Fund Wallet
@@ -214,7 +230,7 @@ export const HomePage: React.FC = () => {
 
         {/* Dedicated & Dynamic Virtual Accounts Column */}
         <div className="flex flex-col justify-between gap-3.5 lg:col-span-5">
-          {/* Permanent Virtual Account (matches HomeScreen.kt lines 786-890) */}
+          {/* Permanent Virtual Account (matches HomeScreen.kt) */}
           <div
             onClick={() => openFundModal('permanent')}
             className={`cursor-pointer rounded-2xl border p-4 transition hover:shadow-md ${
@@ -283,9 +299,9 @@ export const HomePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Dynamic Virtual Account (matches HomeScreen.kt lines 903-1018) */}
+          {/* Dynamic Virtual Account Banner -> Opens DynamicAccountPage */}
           <div
-            onClick={() => openFundModal('dynamic')}
+            onClick={() => setCurrentPage('dynamic')}
             className="cursor-pointer rounded-2xl border border-[#00B875]/45 bg-[#00B875]/12 p-4 transition hover:bg-[#00B875]/18"
           >
             <div className="flex items-center justify-between gap-3">
@@ -317,7 +333,7 @@ export const HomePage: React.FC = () => {
         </div>
       </div>
 
-      {/* Quick Services — Exact Android 2-col top + 3-col bottom layout (zero orphan gap) */}
+      {/* Quick Services — Exact Android 2-col top + 3-col bottom layout */}
       <div>
         <h2 className="mb-3 text-base font-extrabold text-slate-900 dark:text-white">
           Quick Services
@@ -491,7 +507,6 @@ export const HomePage: React.FC = () => {
 
         {/* Side Column: Developer Hub + Zero Transaction Fees Banner + Contact Support */}
         <div className="space-y-4 lg:col-span-5">
-          {/* Developer Hub Banner */}
           <div
             onClick={() => setCurrentPage('developer')}
             className="cursor-pointer rounded-2xl border border-[#1B3A5A] bg-[#0A192F] p-4 text-white shadow-lg transition hover:bg-[#102A43]"
@@ -517,7 +532,6 @@ export const HomePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Zero Transaction Fees Promotional Banner (matches HomeScreen.kt lines 1254-1297) */}
           <div className="flex items-center gap-3.5 rounded-2xl border border-slate-200 bg-slate-100 p-4 dark:border-[#334E68]/70 dark:bg-[#1B3A5A]">
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#00875A] to-[#0A192F] text-emerald-300 shadow-inner">
               <Sparkles className="h-7 w-7" />
@@ -532,7 +546,6 @@ export const HomePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Dedicated Contact Support Card */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-[#334E68]/70 dark:bg-[#102A43]">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">
               Need Help? Contact Support

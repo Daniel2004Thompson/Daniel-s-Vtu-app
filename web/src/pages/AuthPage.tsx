@@ -8,14 +8,17 @@ import {
   Lock,
   Mail,
   Phone,
+  RefreshCw,
   ShieldCheck,
   User,
   Zap,
 } from 'lucide-react';
-import { DanielVtuLogo } from '../components/BrandBadges';
+import { DanielVtuLogo, NetworkBadge } from '../components/BrandBadges';
 import { useApp } from '../context/AppContext';
+import { detectNetworkFromPhone, NETWORKS } from '../data/catalog';
 import {
   requestPasswordReset,
+  resendSignInOtp,
   signInStep1,
   signUpWithEmail,
   updatePassword,
@@ -38,14 +41,21 @@ export const AuthPage: React.FC = () => {
   const [mode, setMode] = useState<AuthMode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState('');
   const [infoBanner, setInfoBanner] = useState('');
+
+  const detectedPhoneNet = phone ? detectNetworkFromPhone(phone) : null;
+  const isDuplicateEmailError = error.toLowerCase().includes('already been registered');
 
   const resetMessages = () => {
     setError('');
@@ -95,11 +105,31 @@ export const AuthPage: React.FC = () => {
     }
   };
 
+  const handleResendOtp = async () => {
+    setResending(true);
+    resetMessages();
+    try {
+      const res = await resendSignInOtp(email);
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setInfoBanner(`A fresh 6-digit verification code has been sent to ${email.trim()}.`);
+      showToast('Verification code resent!', 'info');
+    } finally {
+      setResending(false);
+    }
+  };
+
   const handleSignUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     resetMessages();
     if (!fullName.trim() || !phone.trim() || !email.trim() || password.length < 6) {
       setError('Fill in all fields (password must be at least 6 characters).');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
       return;
     }
     setLoading(true);
@@ -226,7 +256,7 @@ export const AuthPage: React.FC = () => {
             Seamless Airtime, Data Bundles, Bills &amp; Developer APIs in One Place.
           </h1>
           <p className="text-sm leading-relaxed text-slate-300">
-            Fund your wallet with Flutterwave or dedicated virtual bank accounts, enjoy instant
+            Fund your wallet with dedicated permanent or dynamic virtual bank accounts, enjoy instant
             cashback on airtime, print prepaid electricity tokens, and vend data at wholesale SME
             prices.
           </p>
@@ -282,11 +312,16 @@ export const AuthPage: React.FC = () => {
               type="button"
               onClick={() => {
                 resetMessages();
-                setMode('signin');
+                setMode(mode === 'signup_otp' ? 'signup' : 'signin');
               }}
               className="mb-4 inline-flex items-center gap-1.5 text-xs font-bold text-[#00875A] hover:underline"
             >
-              <ArrowLeft className="h-3.5 w-3.5" /> Back to Sign In
+              <ArrowLeft className="h-3.5 w-3.5" />{' '}
+              {mode === 'signin_otp'
+                ? 'Change Email / Back'
+                : mode === 'signup_otp'
+                ? 'Back to Sign Up'
+                : 'Back to Sign In'}
             </button>
           )}
 
@@ -346,6 +381,7 @@ export const AuthPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setShowPassword((s) => !s)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
                       className="absolute right-3 top-3 text-slate-400 hover:text-slate-600"
                     >
                       {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -424,6 +460,30 @@ export const AuthPage: React.FC = () => {
                 >
                   {loading ? 'Verifying...' : 'Verify & Continue'}
                 </button>
+
+                {mode === 'signin_otp' && (
+                  <div className="flex items-center justify-between pt-1 text-xs">
+                    <button
+                      type="button"
+                      disabled={resending}
+                      onClick={handleResendOtp}
+                      className="inline-flex items-center gap-1 font-bold text-[#00875A] hover:underline disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${resending ? 'animate-spin' : ''}`} />
+                      {resending ? 'Sending...' : 'Resend Code'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetMessages();
+                        setMode('signin');
+                      }}
+                      className="font-semibold text-slate-500 hover:underline dark:text-slate-300"
+                    >
+                      Change Email?
+                    </button>
+                  </div>
+                )}
               </form>
             </>
           )}
@@ -456,9 +516,23 @@ export const AuthPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    Phone Number
-                  </label>
+                  <div className="mb-1 flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      Phone Number
+                    </label>
+                    {detectedPhoneNet && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-bold"
+                        style={{
+                          backgroundColor: NETWORKS[detectedPhoneNet].brandColor,
+                          color: NETWORKS[detectedPhoneNet].textColor,
+                        }}
+                      >
+                        <NetworkBadge network={detectedPhoneNet} size="sm" />
+                        {NETWORKS[detectedPhoneNet].displayName}
+                      </span>
+                    )}
+                  </div>
                   <div className="relative">
                     <Phone className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
                     <input
@@ -507,6 +581,7 @@ export const AuthPage: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setShowPassword((s) => !s)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
                       className="absolute right-3 top-2.5 text-slate-400"
                     >
                       {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -514,9 +589,56 @@ export const AuthPage: React.FC = () => {
                   </div>
                 </div>
 
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                    Confirm Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
+                    <input
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Re-enter password"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-10 text-sm outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((s) => !s)}
+                      aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                      className="absolute right-3 top-2.5 text-slate-400"
+                    >
+                      {showConfirmPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                  {confirmPassword && confirmPassword !== password && (
+                    <p className="mt-1 text-[11px] font-semibold text-red-500">
+                      Passwords do not match
+                    </p>
+                  )}
+                </div>
+
                 {error && (
                   <div className="rounded-xl bg-red-50 px-3.5 py-2.5 text-xs font-medium text-red-600 dark:bg-red-950/50 dark:text-red-300">
-                    {error}
+                    <p>{error}</p>
+                    {isDuplicateEmailError && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetMessages();
+                          setMode('signin');
+                        }}
+                        className="mt-1 font-bold underline"
+                      >
+                        Go to Sign In instead →
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -593,6 +715,7 @@ export const AuthPage: React.FC = () => {
                   type="text"
                   inputMode="numeric"
                   maxLength={8}
+                  autoFocus
                   value={otpCode}
                   onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
                   placeholder="6-digit code"
@@ -623,15 +746,26 @@ export const AuthPage: React.FC = () => {
                 Enter a strong new password (at least 6 characters).
               </p>
               <form onSubmit={handleSetNewPassword} className="mt-5 space-y-4">
-                <input
-                  type="password"
-                  minLength={6}
-                  required
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="New password"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
-                />
+                <div className="relative">
+                  <Lock className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    minLength={6}
+                    required
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="New password"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-10 text-sm outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword((s) => !s)}
+                    aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-3 text-slate-400"
+                  >
+                    {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
                 {error && (
                   <div className="rounded-xl bg-red-50 px-3.5 py-2.5 text-xs font-medium text-red-600 dark:bg-red-950/50 dark:text-red-300">
                     {error}

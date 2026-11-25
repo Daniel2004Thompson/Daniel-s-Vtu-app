@@ -1,4 +1,8 @@
-import { extractErrorMessage, gatewayRequest } from '../lib/supabaseGateway';
+import {
+  extractErrorMessage,
+  gatewayRequest,
+  getValidAccessToken,
+} from '../lib/supabaseGateway';
 import { ForumTopic, UserApiKey } from '../types/vtu';
 
 const API_KEY_STORAGE_PREFIX = 'daniel_vtu_api_key_';
@@ -126,6 +130,14 @@ export async function generateOrRegenerateApiKey(params: {
   regenerate: boolean;
   currentKey?: string;
 }): Promise<{ ok: true; apiKey: string } | { ok: false; error: string }> {
+  const token = await getValidAccessToken();
+  if (!token) {
+    return {
+      ok: false,
+      error: 'Session expired. Please sign in again to generate an API key.',
+    };
+  }
+
   const payload: Record<string, unknown> = {
     user_id: params.userId,
     userId: params.userId,
@@ -147,6 +159,7 @@ export async function generateOrRegenerateApiKey(params: {
     const res = await gatewayRequest<Record<string, unknown>>(`/functions/v1/${fn}`, {
       method: 'POST',
       body: payload,
+      accessTokenOverride: token,
     });
     if (res.ok) {
       const key = extractKeyFromResponse(res.data, res.rawText);
@@ -157,7 +170,7 @@ export async function generateOrRegenerateApiKey(params: {
       lastError = 'No API key found in server response.';
     } else {
       lastError = extractErrorMessage(res, lastError);
-      if (res.status !== 404 && res.status !== 401 && res.status !== 403) break;
+      if (res.status !== 404) break;
     }
   }
 

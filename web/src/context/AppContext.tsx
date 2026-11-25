@@ -4,32 +4,31 @@ import {
   getValidAccessToken,
   loadStoredSession,
   saveStoredSession,
+  SESSION_EXPIRED_EVENT,
 } from '../lib/supabaseGateway';
 import { signOutUser } from '../services/authService';
 import { executeVtuPurchase, fetchLiveAirtimePricing } from '../services/vtuService';
 import {
   checkHasTransactionPin,
   fetchUserProfileAndHistory,
-  verifyFlutterwavePayment,
+  markAllTransactionsCleared,
+  markTransactionDeleted,
+  resetSessionAccountCaches,
 } from '../services/walletService';
 import { hasBiometricEnabled } from '../services/webAuthnService';
 import {
   AirtimePricing,
+  AppPage,
   DynamicAccountInfo,
+  FundTab,
+  InAppNotification,
   NetworkId,
   PurchaseExecutionPayload,
   TransactionRecord,
   UserProfile,
 } from '../types/vtu';
 
-export type AppPage =
-  | 'home'
-  | 'airtime'
-  | 'data'
-  | 'bills'
-  | 'transactions'
-  | 'developer'
-  | 'security';
+export type { AppPage, FundTab };
 
 export type BillsInitialTab = 'ELECTRICITY' | 'CABLE_TV' | 'EDUCATION';
 
@@ -48,8 +47,11 @@ interface PendingPinRequest {
 interface AppContextValue {
   isBooting: boolean;
   isAuthenticated: boolean;
+  isAppLocked: boolean;
   profile: UserProfile | null;
   transactions: TransactionRecord[];
+  notifications: InAppNotification[];
+  unreadNotificationCount: number;
   airtimePricing: Record<NetworkId, AirtimePricing>;
   hasTransactionPin: boolean;
   isBiometricEnabled: boolean;
@@ -62,7 +64,7 @@ interface AppContextValue {
   isProcessingPurchase: boolean;
   selectedReceipt: TransactionRecord | null;
   showFundModal: boolean;
-  fundInitialTab: 'card' | 'dynamic' | 'permanent';
+  fundInitialTab: FundTab;
   showWithdrawModal: boolean;
   showSetPinModal: boolean;
   pendingPinRequest: PendingPinRequest | null;
@@ -71,17 +73,26 @@ interface AppContextValue {
   navigateToBills: (tab: BillsInitialTab) => void;
   toggleDarkMode: () => void;
   setAppLockEnabled: (val: boolean) => void;
+  lockAppNow: () => void;
+  unlockApp: () => void;
   setNotificationsEnabled: (val: boolean) => void;
+  pushNotification: (n: Omit<InAppNotification, 'id' | 'timestamp' | 'isRead'>) => void;
+  markNotificationRead: (id: string) => void;
+  markAllNotificationsRead: () => void;
+  clearAllNotifications: () => void;
+  deleteTransaction: (reference: string) => void;
+  clearAllTransactions: () => void;
   showToast: (text: string, type?: 'success' | 'error' | 'info') => void;
   dismissToast: (id: string) => void;
   refreshUserData: (showSuccessToast?: boolean) => Promise<void>;
   updatePermanentAccountLocal: (accountNumber: string, bankName: string, accountName: string) => void;
   clearPermanentAccountLocal: () => void;
   updateDynamicAccountLocal: (account: DynamicAccountInfo) => void;
+  updateAvatarUrlLocal: (avatarUrl?: string) => void;
   onAuthSessionEstablished: () => Promise<void>;
   logout: () => Promise<void>;
   setSelectedReceipt: (tx: TransactionRecord | null) => void;
-  openFundModal: (tab?: 'card' | 'dynamic' | 'permanent') => void;
+  openFundModal: (tab?: FundTab) => void;
   closeFundModal: () => void;
   openWithdrawModal: () => void;
   closeWithdrawModal: () => void;
@@ -101,6 +112,28 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | null>(null);
 
 const THEME_KEY = 'daniel_vtu_dark_mode';
+const NOTIF_STORAGE_PREFIX = 'daniel_vtu_notifications_list_';
+
+function loadNotificationsForUser(userId: string): InAppNotification[] {
+  if (!userId) return [];
+  try {
+    const raw = localStorage.getItem(`${NOTIF_STORAGE_PREFIX}${userId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveNotificationsForUser(userId: string, list: InAppNotification[]): void {
+  if (!userId) return;
+  try {
+    localStorage.setItem(`${NOTIF_STORAGE_PREFIX}${userId}`, JSON.stringify(list.slice(0, 60)));
+  } catch {
+    // ignore storage quota errors
+  }
+}
 
 function mergeProfilePreservingSessionAccounts(
   prev: UserProfile | null,
@@ -110,6 +143,7 @@ function mergeProfilePreservingSessionAccounts(
   return {
     ...prev,
     ...nextProfile,
+    avatarUrl: nextProfile.avatarUrl ?? prev.avatarUrl,
     virtualAccountNumber: nextProfile.virtualAccountNumber ?? prev.virtualAccountNumber,
     virtualBankName: nextProfile.virtualBankName ?? prev.virtualBankName,
     virtualAccountName: nextProfile.virtualAccountName ?? prev.virtualAccountName,
@@ -124,8 +158,10 @@ function mergeProfilePreservingSessionAccounts(
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isBooting, setIsBooting] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAppLocked, setIsAppLocked] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
+  const [notifications, setNotifications] = useState<InAppNotification[]>([]);
   const [airtimePricing, setAirtimePricing] =
     useState<Record<NetworkId, AirtimePricing>>(DEFAULT_AIRTIME_PRICING);
   const [hasTransactionPin, setHasTransactionPin] = useState(false);
@@ -160,13 +196,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isProcessingPurchase, setIsProcessingPurchase] = useState(false);
   const [selectedReceipt, setSelectedReceipt] = useState<TransactionRecord | null>(null);
   const [showFundModal, setShowFundModal] = useState(false);
-  const [fundInitialTab, setFundInitialTab] = useState<'card' | 'dynamic' | 'permanent'>('card');
+  const [fundInitialTab, setFundInitialTab] = useState<FundTab>('dynamic');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [showSetPinModal, setShowSetPinModal] = useState(false);
   const [pendingPinRequest, setPendingPinRequest] = useState<PendingPinRequest | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const pollingRef = useRef<number | null>(null);
+  const lastKnownBalanceRef = useRef<{ userId: string; balance: number } | null>(null);
+  const notifEnabledRef = useRef(isNotificationsEnabled);
+  notifEnabledRef.current = isNotificationsEnabled;
 
   useEffect(() => {
     const root = document.documentElement;
@@ -193,6 +232,78 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     },
     [dismissToast]
   );
+
+  const pushNotificationForUser = useCallback(
+    (userId: string, item: Omit<InAppNotification, 'id' | 'timestamp' | 'isRead'>) => {
+      if (!userId || !notifEnabledRef.current) return;
+      const entry: InAppNotification = {
+        ...item,
+        id: `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: Date.now(),
+        isRead: false,
+      };
+      setNotifications((prev) => {
+        const next = [entry, ...prev].slice(0, 60);
+        saveNotificationsForUser(userId, next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const pushNotification = useCallback(
+    (item: Omit<InAppNotification, 'id' | 'timestamp' | 'isRead'>) => {
+      if (profile?.id) {
+        pushNotificationForUser(profile.id, item);
+      }
+    },
+    [profile?.id, pushNotificationForUser]
+  );
+
+  const markNotificationRead = useCallback(
+    (id: string) => {
+      setNotifications((prev) => {
+        const next = prev.map((n) => (n.id === id ? { ...n, isRead: true } : n));
+        if (profile?.id) saveNotificationsForUser(profile.id, next);
+        return next;
+      });
+    },
+    [profile?.id]
+  );
+
+  const markAllNotificationsRead = useCallback(() => {
+    setNotifications((prev) => {
+      const next = prev.map((n) => ({ ...n, isRead: true }));
+      if (profile?.id) saveNotificationsForUser(profile.id, next);
+      return next;
+    });
+  }, [profile?.id]);
+
+  const clearAllNotifications = useCallback(() => {
+    setNotifications([]);
+    if (profile?.id) saveNotificationsForUser(profile.id, []);
+  }, [profile?.id]);
+
+  const deleteTransaction = useCallback(
+    (reference: string) => {
+      if (!profile?.id) return;
+      markTransactionDeleted(profile.id, reference);
+      setTransactions((prev) => prev.filter((t) => t.reference !== reference));
+      if (selectedReceipt?.reference === reference) {
+        setSelectedReceipt(null);
+      }
+      showToast('Transaction deleted.', 'info');
+    },
+    [profile?.id, selectedReceipt?.reference, showToast]
+  );
+
+  const clearAllTransactions = useCallback(() => {
+    if (!profile?.id) return;
+    markAllTransactionsCleared(profile.id);
+    setTransactions([]);
+    setSelectedReceipt(null);
+    showToast('Transaction history cleared.', 'info');
+  }, [profile?.id, showToast]);
 
   const updatePermanentAccountLocal = useCallback(
     (accountNumber: string, bankName: string, accountName: string) => {
@@ -239,6 +350,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   }, []);
 
+  const updateAvatarUrlLocal = useCallback((avatarUrl?: string) => {
+    setProfile((prev) => (prev ? { ...prev, avatarUrl } : prev));
+  }, []);
+
+  const checkAndNotifyDeposit = useCallback(
+    (nextProfile: UserProfile) => {
+      const prev = lastKnownBalanceRef.current;
+      if (prev && prev.userId === nextProfile.id && nextProfile.walletBalance > prev.balance + 0.01) {
+        const diff = nextProfile.walletBalance - prev.balance;
+        const formatted = `₦${diff.toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`;
+        showToast(`Wallet credited with ${formatted}!`, 'success');
+        pushNotificationForUser(nextProfile.id, {
+          title: 'Wallet Deposit Received',
+          message: `Your Daniel VTU wallet was credited with ${formatted}.`,
+          serviceType: 'WALLET_FUNDING',
+          amount: diff,
+        });
+      }
+      lastKnownBalanceRef.current = {
+        userId: nextProfile.id,
+        balance: nextProfile.walletBalance,
+      };
+    },
+    [pushNotificationForUser, showToast]
+  );
+
   const refreshUserData = useCallback(
     async (showSuccessToast = false) => {
       setIsRefreshingWallet(true);
@@ -251,8 +391,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ]);
 
         if (nextProfile) {
+          checkAndNotifyDeposit(nextProfile);
           setProfile((prev) => mergeProfilePreservingSessionAccounts(prev, nextProfile));
           setIsBiometricEnabled(hasBiometricEnabled(nextProfile.id));
+          setNotifications((prev) =>
+            prev.length > 0 ? prev : loadNotificationsForUser(nextProfile.id)
+          );
           setTransactions((prev) => {
             if (nextTx.length === 0) return prev;
             const seen = new Set(nextTx.map((t) => t.reference));
@@ -280,35 +424,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsRefreshingWallet(false);
       }
     },
-    [showToast]
+    [checkAndNotifyDeposit, showToast]
   );
 
-  const handleFlutterwaveCallback = useCallback(async () => {
-    const params = new URLSearchParams(window.location.search);
-    const txRef =
-      params.get('tx_ref') || localStorage.getItem('daniel_vtu_pending_flw_ref') || '';
-    const isVerifyFlag =
-      params.get('payment_verify') === '1' || params.get('status') === 'successful';
-
-    if (!txRef || !isVerifyFlag) return;
-
-    localStorage.removeItem('daniel_vtu_pending_flw_ref');
-    window.history.replaceState({}, document.title, window.location.pathname);
-
-    showToast('Verifying Flutterwave payment...', 'info');
-    const result = await verifyFlutterwavePayment(txRef);
-    if (result.ok) {
-      showToast(
-        `Wallet credited with ₦${result.amount.toLocaleString('en-US')}!`,
-        'success'
-      );
-      await refreshUserData(false);
-    } else {
-      showToast(result.message || 'Payment verification pending.', 'info');
-    }
-  }, [refreshUserData, showToast]);
-
   const onAuthSessionEstablished = useCallback(async () => {
+    resetSessionAccountCaches();
+    lastKnownBalanceRef.current = null;
     setIsAuthenticated(true);
     await refreshUserData(false);
     const pinExists = await checkHasTransactionPin();
@@ -316,8 +437,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!pinExists) {
       setShowSetPinModal(true);
     }
-    await handleFlutterwaveCallback();
-  }, [handleFlutterwaveCallback, refreshUserData]);
+  }, [refreshUserData]);
 
   useEffect(() => {
     let active = true;
@@ -327,6 +447,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (stored) {
           const token = await getValidAccessToken();
           if (token && active) {
+            const lockSaved = localStorage.getItem('daniel_vtu_app_lock') === 'true';
+            if (lockSaved) {
+              setIsAppLocked(true);
+            }
             await onAuthSessionEstablished();
           } else {
             saveStoredSession(null);
@@ -341,7 +465,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [onAuthSessionEstablished]);
 
-  // Background wallet balance sync every 12 seconds when authenticated
+  // Listen for unrecoverable 401 session expiration events from protected calls
+  useEffect(() => {
+    const handler = () => {
+      if (!isAuthenticated) return;
+      saveStoredSession(null);
+      resetSessionAccountCaches();
+      setIsAuthenticated(false);
+      setIsAppLocked(false);
+      setProfile(null);
+      setTransactions([]);
+      setNotifications([]);
+      setPendingPinRequest(null);
+      showToast('Your session expired. Please sign in again.', 'info');
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, handler);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handler);
+  }, [isAuthenticated, showToast]);
+
+  // Background wallet balance sync every 12 seconds when authenticated (3s when on Dynamic Account page)
   useEffect(() => {
     if (!isAuthenticated) {
       if (pollingRef.current) {
@@ -351,10 +493,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
+    const intervalMs = currentPage === 'dynamic' ? 3500 : 12000;
     pollingRef.current = window.setInterval(() => {
       fetchUserProfileAndHistory({ syncPermanentAccount: false })
         .then(({ profile: nextProfile, transactions: nextTx }) => {
           if (nextProfile) {
+            checkAndNotifyDeposit(nextProfile);
             setProfile((prev) => mergeProfilePreservingSessionAccounts(prev, nextProfile));
           }
           if (nextTx.length > 0) {
@@ -367,7 +511,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         })
         .catch(() => {});
-    }, 12000);
+    }, intervalMs);
 
     return () => {
       if (pollingRef.current) {
@@ -375,13 +519,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         pollingRef.current = null;
       }
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, currentPage, checkAndNotifyDeposit]);
 
   const logout = useCallback(async () => {
     await signOutUser();
+    resetSessionAccountCaches();
+    lastKnownBalanceRef.current = null;
     setIsAuthenticated(false);
+    setIsAppLocked(false);
     setProfile(null);
     setTransactions([]);
+    setNotifications([]);
     setHasTransactionPin(false);
     setIsBiometricEnabled(false);
     setPendingPinRequest(null);
@@ -434,6 +582,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setSelectedReceipt(result.transaction);
 
             if (typeof result.newBalance === 'number') {
+              lastKnownBalanceRef.current = {
+                userId: profile.id,
+                balance: result.newBalance,
+              };
               setProfile((prev) =>
                 prev ? { ...prev, walletBalance: result.newBalance! } : prev
               );
@@ -441,8 +593,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
             if (result.success) {
               showToast(result.message, 'success');
+              pushNotificationForUser(profile.id, {
+                title: `${payload.title} Successful`,
+                message: result.transaction.tokenOrDetails
+                  ? `${result.message} • Token: ${result.transaction.tokenOrDetails}`
+                  : `${result.message} (${payload.recipient})`,
+                serviceType: payload.serviceType,
+                amount: result.transaction.amount,
+                reference: result.transaction.reference,
+                token: result.transaction.tokenOrDetails,
+              });
             } else if (result.pending) {
               showToast('Purchase is being confirmed.', 'info');
+              pushNotificationForUser(profile.id, {
+                title: `${payload.title} Pending`,
+                message: 'Your order is being processed by the network.',
+                serviceType: payload.serviceType,
+                amount: result.transaction.amount,
+                reference: result.transaction.reference,
+              });
             } else {
               showToast(result.message || 'Purchase failed', 'error');
             }
@@ -459,16 +628,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       );
     },
-    [profile, refreshUserData, requestPinAuthorization, showToast]
+    [profile, pushNotificationForUser, refreshUserData, requestPinAuthorization, showToast]
   );
+
+  const unreadNotificationCount = notifications.reduce((acc, n) => acc + (n.isRead ? 0 : 1), 0);
 
   return (
     <AppContext.Provider
       value={{
         isBooting,
         isAuthenticated,
+        isAppLocked,
         profile,
         transactions,
+        notifications,
+        unreadNotificationCount,
         airtimePricing,
         hasTransactionPin,
         isBiometricEnabled,
@@ -497,6 +671,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             // ignore
           }
         },
+        lockAppNow: () => setIsAppLocked(true),
+        unlockApp: () => setIsAppLocked(false),
         setNotificationsEnabled: (val: boolean) => {
           setIsNotificationsEnabled(val);
           try {
@@ -505,16 +681,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             // ignore
           }
         },
+        pushNotification,
+        markNotificationRead,
+        markAllNotificationsRead,
+        clearAllNotifications,
+        deleteTransaction,
+        clearAllTransactions,
         showToast,
         dismissToast,
         refreshUserData,
         updatePermanentAccountLocal,
         clearPermanentAccountLocal,
         updateDynamicAccountLocal,
+        updateAvatarUrlLocal,
         onAuthSessionEstablished,
         logout,
         setSelectedReceipt,
-        openFundModal: (tab = 'card') => {
+        openFundModal: (tab = 'dynamic') => {
           setFundInitialTab(tab);
           setShowFundModal(true);
         },

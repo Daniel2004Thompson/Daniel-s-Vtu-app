@@ -8,6 +8,7 @@ import {
 
 let tempVerifiedEmail = '';
 let tempVerifiedPassword = '';
+let tempPasswordRefreshToken = '';
 let otpWasRateLimited = false;
 
 interface AuthPayloadResponse extends Partial<StoredSession> {
@@ -16,6 +17,37 @@ interface AuthPayloadResponse extends Partial<StoredSession> {
   error?: string;
   error_description?: string;
   identities?: unknown[];
+}
+
+export async function fetchAndMergeAuthUser(): Promise<StoredSession['user'] | null> {
+  const session = loadStoredSession();
+  if (!session?.access_token) return null;
+
+  try {
+    const res = await gatewayRequest<{
+      id?: string;
+      email?: string;
+      user_metadata?: Record<string, unknown>;
+    }>('/auth/v1/user', { method: 'GET' });
+    if (res.ok && res.data?.id) {
+      const mergedUser: NonNullable<StoredSession['user']> = {
+        id: res.data.id,
+        email: res.data.email || session.user?.email,
+        user_metadata: {
+          ...(session.user?.user_metadata || {}),
+          ...(res.data.user_metadata || {}),
+        },
+      };
+      saveStoredSession({
+        ...session,
+        user: mergedUser,
+      });
+      return mergedUser;
+    }
+  } catch {
+    // non-fatal metadata hydration failure
+  }
+  return session.user || null;
 }
 
 export async function signUpWithEmail(params: {
@@ -70,14 +102,16 @@ export async function verifySignUpOtp(
     });
 
     if (res.ok && res.data?.access_token) {
+      const prevRefresh = loadStoredSession()?.refresh_token || '';
       const session: StoredSession = {
         access_token: res.data.access_token,
-        refresh_token: res.data.refresh_token || '',
+        refresh_token: res.data.refresh_token || prevRefresh,
         expires_at: res.data.expires_at,
         user: res.data.user,
       };
       saveStoredSession(session);
-      return { ok: true, session };
+      await fetchAndMergeAuthUser();
+      return { ok: true, session: loadStoredSession() || session };
     }
     if (!res.ok) {
       lastError = extractErrorMessage(res);
@@ -99,6 +133,7 @@ export async function signInStep1(
   const cleanEmail = email.trim();
   saveStoredSession(null);
   otpWasRateLimited = false;
+  tempPasswordRefreshToken = '';
 
   const pwRes = await gatewayRequest<AuthPayloadResponse>('/auth/v1/token?grant_type=password', {
     method: 'POST',
@@ -110,9 +145,10 @@ export async function signInStep1(
     return { ok: false, error: extractErrorMessage(pwRes) };
   }
 
-  // Credentials verified — hold only in memory for rate-limit fallback, do not persist session yet
+  // Credentials verified — hold only in memory for rate-limit / refresh_token fallback, do not persist session yet
   tempVerifiedEmail = cleanEmail;
   tempVerifiedPassword = password;
+  tempPasswordRefreshToken = pwRes.data.refresh_token || '';
 
   const otpRes = await gatewayRequest<AuthPayloadResponse>('/auth/v1/otp', {
     method: 'POST',
@@ -145,6 +181,21 @@ export async function signInStep1(
   return { ok: true };
 }
 
+export async function resendSignInOtp(
+  email: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const cleanEmail = email.trim();
+  const otpRes = await gatewayRequest<AuthPayloadResponse>('/auth/v1/otp', {
+    method: 'POST',
+    skipAuthHeader: true,
+    body: { email: cleanEmail, create_user: false },
+  });
+  if (!otpRes.ok) {
+    return { ok: false, error: extractErrorMessage(otpRes) };
+  }
+  return { ok: true };
+}
+
 /**
  * Step 2 of 2-step Sign In: verifies the 6-digit email OTP to start the session.
  */
@@ -166,14 +217,16 @@ export async function verifySignInOtp(
     if (res.ok && res.data?.access_token) {
       const session: StoredSession = {
         access_token: res.data.access_token,
-        refresh_token: res.data.refresh_token || '',
+        refresh_token: res.data.refresh_token || tempPasswordRefreshToken || '',
         expires_at: res.data.expires_at,
         user: res.data.user,
       };
       saveStoredSession(session);
       tempVerifiedPassword = '';
+      tempPasswordRefreshToken = '';
       otpWasRateLimited = false;
-      return { ok: true, session };
+      await fetchAndMergeAuthUser();
+      return { ok: true, session: loadStoredSession() || session };
     }
     if (!res.ok) {
       lastError = extractErrorMessage(res);
@@ -195,14 +248,16 @@ export async function verifySignInOtp(
     if (fallbackRes.ok && fallbackRes.data?.access_token) {
       const session: StoredSession = {
         access_token: fallbackRes.data.access_token,
-        refresh_token: fallbackRes.data.refresh_token || '',
+        refresh_token: fallbackRes.data.refresh_token || tempPasswordRefreshToken || '',
         expires_at: fallbackRes.data.expires_at,
         user: fallbackRes.data.user,
       };
       saveStoredSession(session);
       tempVerifiedPassword = '';
+      tempPasswordRefreshToken = '';
       otpWasRateLimited = false;
-      return { ok: true, session };
+      await fetchAndMergeAuthUser();
+      return { ok: true, session: loadStoredSession() || session };
     }
   }
 
@@ -212,6 +267,7 @@ export async function verifySignInOtp(
 export async function signOutUser(): Promise<void> {
   tempVerifiedEmail = '';
   tempVerifiedPassword = '';
+  tempPasswordRefreshToken = '';
   otpWasRateLimited = false;
   const session = loadStoredSession();
   if (session?.access_token) {
@@ -248,12 +304,14 @@ export async function verifyPasswordResetOtp(
   if (!res.ok || !res.data?.access_token) {
     return { ok: false, error: extractErrorMessage(res) };
   }
+  const prevRefresh = loadStoredSession()?.refresh_token || '';
   saveStoredSession({
     access_token: res.data.access_token,
-    refresh_token: res.data.refresh_token || '',
+    refresh_token: res.data.refresh_token || prevRefresh,
     expires_at: res.data.expires_at,
     user: res.data.user,
   });
+  await fetchAndMergeAuthUser();
   return { ok: true };
 }
 
@@ -290,12 +348,14 @@ export async function verifyEmailChangeOtp(
   });
   if (!res.ok) return { ok: false, error: extractErrorMessage(res) };
   if (res.data?.access_token) {
+    const prevRefresh = loadStoredSession()?.refresh_token || '';
     saveStoredSession({
       access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token || '',
+      refresh_token: res.data.refresh_token || prevRefresh,
       expires_at: res.data.expires_at,
       user: res.data.user,
     });
+    await fetchAndMergeAuthUser();
   }
   return { ok: true };
 }

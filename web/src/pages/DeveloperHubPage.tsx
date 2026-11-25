@@ -656,7 +656,13 @@ export const DeveloperHubPage: React.FC = () => {
                         <p className="mt-1 text-slate-600 dark:text-slate-300">{rep.content}</p>
                       </div>
                     ))}
-                    <div className="flex gap-2 pt-1">
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        submitReply(topic.id);
+                      }}
+                      className="flex gap-2 pt-1"
+                    >
                       <input
                         type="text"
                         value={replyByTopic[topic.id] || ''}
@@ -667,13 +673,12 @@ export const DeveloperHubPage: React.FC = () => {
                         className="flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-[#00875A] dark:border-[#334E68] dark:bg-[#0A192F] dark:text-white"
                       />
                       <button
-                        type="button"
-                        onClick={() => submitReply(topic.id)}
+                        type="submit"
                         className="rounded-xl bg-[#00875A] p-2 text-white hover:bg-[#005A3C]"
                       >
                         <Send className="h-4 w-4" />
                       </button>
-                    </div>
+                    </form>
                   </div>
                 )}
               </div>

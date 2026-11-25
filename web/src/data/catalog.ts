@@ -25,8 +25,8 @@ export const NETWORKS: Record<NetworkId, NetworkMeta> = {
     brandColor: '#FFCC00',
     textColor: '#1E1E1E',
     prefixes: [
-      '0703', '0704', '0706', '0803', '0806', '0810', '0813',
-      '0814', '0816', '0903', '0906', '0913', '0916',
+      '0703', '0704', '0706', '0707', '07025', '07026', '0803', '0806',
+      '0810', '0813', '0814', '0816', '0903', '0906', '0913', '0916',
     ],
     dataServiceIds: ['mtn_sme', 'mtn_gifting'],
   },
@@ -294,17 +294,26 @@ export function normalizeNigerianPhone(phone: string): string {
   const clean = phone.trim().replace(/[\s\-()]/g, '');
   if (clean.startsWith('+2340')) return '0' + clean.slice(5);
   if (clean.startsWith('+234')) return '0' + clean.slice(4);
-  if (clean.startsWith('2340') && clean.length >= 14) return '0' + clean.slice(4);
-  if (clean.startsWith('234') && clean.length === 13) return '0' + clean.slice(3);
-  if (clean.length === 10 && !clean.startsWith('0') && /^\d+$/.test(clean)) return '0' + clean;
+  if (clean.startsWith('002340')) return '0' + clean.slice(6);
+  if (clean.startsWith('00234')) return '0' + clean.slice(5);
+  if (clean.startsWith('2340') && clean.length >= 7) return '0' + clean.slice(4);
+  if (clean.startsWith('234') && clean.length >= 6) return '0' + clean.slice(3);
+  if (clean.length === 10 && !clean.startsWith('0') && /^[789]\d{9}$/.test(clean)) {
+    return '0' + clean;
+  }
   return clean;
 }
 
 export function detectNetworkFromPhone(phone: string): NetworkId | null {
   const local = normalizeNigerianPhone(phone);
   if (local.length < 4) return null;
-  const prefix = local.slice(0, 4);
-  const found = NETWORK_LIST.find((net) => net.prefixes.includes(prefix));
+  if (local.length >= 5) {
+    const prefix5 = local.slice(0, 5);
+    const match5 = NETWORK_LIST.find((net) => net.prefixes.includes(prefix5));
+    if (match5) return match5.id;
+  }
+  const prefix4 = local.slice(0, 4);
+  const found = NETWORK_LIST.find((net) => net.prefixes.includes(prefix4));
   return found?.id ?? null;
 }
 

@@ -986,7 +986,7 @@ fun ProfileSecurityScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "Daniel VTU • Version 1.0.0",
+                        text = "Daniel VTU • Version 6.0.0",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Phone, Smartphone, Sparkles } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { History, Phone, ShieldCheck, Sparkles } from 'lucide-react';
 import { NetworkBadge } from '../components/BrandBadges';
 import { useApp } from '../context/AppContext';
 import {
@@ -17,15 +17,37 @@ const QUICK_AMOUNTS = [100, 200, 500, 1000, 2000, 5000];
 export const AirtimePage: React.FC = () => {
   const {
     profile,
+    transactions,
     airtimePricing,
     isProcessingPurchase,
     runProtectedPurchase,
     showToast,
   } = useApp();
 
-  const [selectedNetwork, setSelectedNetwork] = useState<NetworkId>('MTN');
+  const [selectedNetwork, setSelectedNetwork] = useState<NetworkId>(
+    () => detectNetworkFromPhone(profile?.phone || '') || 'MTN'
+  );
   const [phone, setPhone] = useState(profile?.phone || '');
   const [amount, setAmount] = useState('500');
+
+  const recentContacts = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { phone: string; network: NetworkId | null }[] = [];
+    for (const tx of transactions) {
+      if (tx.serviceType === 'AIRTIME' && tx.recipient) {
+        const normalized = normalizeNigerianPhone(tx.recipient);
+        if (normalized.length >= 10 && !seen.has(normalized)) {
+          seen.add(normalized);
+          list.push({
+            phone: normalized,
+            network: detectNetworkFromPhone(normalized),
+          });
+          if (list.length >= 5) break;
+        }
+      }
+    }
+    return list;
+  }, [transactions]);
 
   const handlePhoneChange = (val: string) => {
     setPhone(val);
@@ -63,7 +85,7 @@ export const AirtimePage: React.FC = () => {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white">
             Buy Airtime
@@ -140,6 +162,27 @@ export const AirtimePage: React.FC = () => {
               {NETWORKS[selectedNetwork].displayName}
             </span>
           </div>
+
+          {recentContacts.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1.5 flex items-center gap-1 text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                <History className="h-3 w-3" /> Recent Contacts
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {recentContacts.map((c) => (
+                  <button
+                    key={c.phone}
+                    type="button"
+                    onClick={() => handlePhoneChange(c.phone)}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:border-[#00875A] hover:text-[#00875A] dark:border-[#334E68] dark:bg-[#0A192F] dark:text-slate-200"
+                  >
+                    {c.network && <NetworkBadge network={c.network} size="sm" />}
+                    {c.phone}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div>
@@ -180,13 +223,23 @@ export const AirtimePage: React.FC = () => {
         </div>
 
         {numericAmount > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/30 bg-[#E8F8F2] p-4 dark:bg-emerald-950/40">
-            <div className="flex items-center gap-2 text-xs font-bold text-[#00875A] dark:text-emerald-300">
-              <Sparkles className="h-4 w-4" />
-              Instant {pricing.cashbackPercent}% Cashback: {formatCompactNaira(discount)}
+          <div className="space-y-1.5 rounded-2xl border border-emerald-500/30 bg-[#E8F8F2] p-4 dark:bg-emerald-950/40">
+            <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200">
+              <span>Airtime Value</span>
+              <span>{formatCompactNaira(numericAmount)}</span>
             </div>
-            <div className="text-sm font-extrabold text-slate-900 dark:text-white">
-              Payable: {formatCompactNaira(payable)}
+            <div className="flex items-center justify-between text-xs font-bold text-[#00875A] dark:text-emerald-300">
+              <span className="inline-flex items-center gap-1">
+                <Sparkles className="h-3.5 w-3.5" />
+                {NETWORKS[selectedNetwork].displayName} Cashback ({pricing.cashbackPercent}%)
+              </span>
+              <span>-{formatCompactNaira(discount)}</span>
+            </div>
+            <div className="flex items-center justify-between border-t border-emerald-500/20 pt-2 text-sm font-extrabold text-slate-900 dark:text-white">
+              <span>You Pay</span>
+              <span className="text-[#00875A] dark:text-[#00B074]">
+                {formatCompactNaira(payable)}
+              </span>
             </div>
           </div>
         )}
@@ -196,10 +249,10 @@ export const AirtimePage: React.FC = () => {
           disabled={isProcessingPurchase || numericAmount < 50}
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#00875A] py-3.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/15 transition hover:bg-[#005A3C] disabled:opacity-50"
         >
-          <Smartphone className="h-4 w-4" />
+          <ShieldCheck className="h-4 w-4" />
           {isProcessingPurchase
             ? 'Processing Airtime...'
-            : `Buy ${formatCompactNaira(numericAmount)} Airtime`}
+            : `Authorize & Pay ${formatCompactNaira(payable || numericAmount)}`}
         </button>
       </form>
     </div>

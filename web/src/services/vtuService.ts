@@ -3,11 +3,17 @@ import {
   NETWORKS,
   normalizeNigerianPhone,
 } from '../data/catalog';
-import { extractErrorMessage, gatewayRequest } from '../lib/supabaseGateway';
+import {
+  extractErrorMessage,
+  gatewayRequest,
+  getValidAccessToken,
+} from '../lib/supabaseGateway';
 import {
   AirtimePricing,
+  CableProvider,
   DataCategoryId,
   DataPlanItem,
+  EducationExam,
   NetworkId,
   PurchaseExecutionPayload,
   TransactionRecord,
@@ -101,6 +107,97 @@ export async function fetchLiveDataPlans(
     });
 }
 
+export async function fetchLiveCableProviders(
+  fallbackProviders: CableProvider[]
+): Promise<CableProvider[]> {
+  try {
+    const res = await gatewayRequest<VtuPriceRow[]>(
+      '/rest/v1/vtu_prices?select=service_id,plan,price,label,active&active=eq.true&service_id=in.(dstv,gotv,startimes,showmax)&order=price.asc',
+      { method: 'GET' }
+    );
+    if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) {
+      return fallbackProviders;
+    }
+
+    const rowsByService = new Map<string, VtuPriceRow[]>();
+    for (const row of res.data) {
+      if (row.active === false || !row.plan || Number(row.price) <= 0) continue;
+      const sid = String(row.service_id || '').trim().toLowerCase();
+      const existing = rowsByService.get(sid) || [];
+      existing.push(row);
+      rowsByService.set(sid, existing);
+    }
+
+    return fallbackProviders.map((prov) => {
+      const liveRows = rowsByService.get(prov.gsubzServiceId.toLowerCase());
+      if (!liveRows || liveRows.length === 0) return prov;
+
+      const updatedBouquets = prov.bouquets.map((b) => {
+        const match = liveRows.find(
+          (r) => String(r.plan).toLowerCase() === b.planCode.toLowerCase()
+        );
+        return match
+          ? {
+              ...b,
+              name: (match.label && match.label.trim()) || b.name,
+              price: Number(match.price),
+            }
+          : b;
+      });
+
+      const knownCodes = new Set(updatedBouquets.map((b) => b.planCode.toLowerCase()));
+      const extraBouquets = liveRows
+        .filter((r) => !knownCodes.has(String(r.plan).toLowerCase()))
+        .map((r) => ({
+          id: `${prov.id}_${String(r.plan)}`,
+          name: (r.label && r.label.trim()) || String(r.plan),
+          price: Number(r.price),
+          channelsCount: 50,
+          planCode: String(r.plan),
+        }));
+
+      return {
+        ...prov,
+        bouquets: [...updatedBouquets, ...extraBouquets],
+      };
+    });
+  } catch {
+    return fallbackProviders;
+  }
+}
+
+export async function fetchLiveEducationExams(
+  fallbackExams: EducationExam[]
+): Promise<EducationExam[]> {
+  try {
+    const res = await gatewayRequest<VtuPriceRow[]>(
+      '/rest/v1/vtu_prices?select=service_id,plan,price,label,active&active=eq.true&service_id=in.(waec,neco,nabteb,jamb)&order=price.asc',
+      { method: 'GET' }
+    );
+    if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) {
+      return fallbackExams;
+    }
+
+    return fallbackExams.map((exam) => {
+      const match = res.data!.find(
+        (r) =>
+          r.active !== false &&
+          Number(r.price) > 0 &&
+          String(r.service_id || '').trim().toLowerCase() === exam.gsubzServiceId.toLowerCase()
+      );
+      if (!match) return exam;
+      return {
+        ...exam,
+        price: Number(match.price),
+        name: (match.label && match.label.trim()) || exam.name,
+        planCode: String(match.plan || exam.planCode),
+      };
+    });
+  } catch {
+    return fallbackExams;
+  }
+}
+
 function buildEdgeServiceType(payload: PurchaseExecutionPayload): string {
   switch (payload.serviceType) {
     case 'AIRTIME':
@@ -123,6 +220,11 @@ export async function executeVtuPurchase(params: {
   payload: PurchaseExecutionPayload;
 }): Promise<PurchaseExecutionResult> {
   const { userId, email, currentDashboardBalance, payload } = params;
+  const token = await getValidAccessToken();
+  if (!token) {
+    throw new Error('Your session has expired. Please sign in again to complete this purchase.');
+  }
+
   const isPhoneBased = payload.serviceType === 'AIRTIME' || payload.serviceType === 'DATA';
   const cleanRecipient = isPhoneBased
     ? normalizeNigerianPhone(payload.recipient)
@@ -173,6 +275,7 @@ export async function executeVtuPurchase(params: {
   let res = await gatewayRequest<Record<string, unknown>>('/functions/v1/Gsubz-VTU-Services', {
     method: 'POST',
     body: baseBody,
+    accessTokenOverride: token,
   });
 
   // Fallback retry matching Android GsubzVtuService if edge validator rejects "education"
@@ -184,6 +287,7 @@ export async function executeVtuPurchase(params: {
     res = await gatewayRequest<Record<string, unknown>>('/functions/v1/Gsubz-VTU-Services', {
       method: 'POST',
       body: { ...baseBody, service: 'data', service_type: 'data' },
+      accessTokenOverride: token,
     });
   }
 

@@ -11,6 +11,19 @@ export type ServiceTypeId =
   | 'WALLET_FUNDING'
   | 'WITHDRAWAL';
 
+export type AppPage =
+  | 'home'
+  | 'airtime'
+  | 'data'
+  | 'bills'
+  | 'dynamic'
+  | 'transactions'
+  | 'notifications'
+  | 'developer'
+  | 'security';
+
+export type FundTab = 'dynamic' | 'permanent';
+
 export interface NetworkMeta {
   id: NetworkId;
   serviceId: string;
@@ -104,6 +117,18 @@ export interface TransactionRecord {
   tokenOrDetails?: string;
   createdAt?: string;
   timestamp: number;
+}
+
+export interface InAppNotification {
+  id: string;
+  title: string;
+  message: string;
+  serviceType: string;
+  amount: number;
+  reference?: string;
+  token?: string;
+  timestamp: number;
+  isRead: boolean;
 }
 
 export interface UserProfile {

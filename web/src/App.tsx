@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import {
+  Bell,
   Bolt,
   CheckCircle2,
   Home,
   Info,
+  Landmark,
   Menu,
   Moon,
   Plus,
@@ -16,6 +18,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
+import { AppLockOverlay } from './components/AppLockOverlay';
 import { DanielVtuLogo } from './components/BrandBadges';
 import { FundWalletModal } from './components/FundWalletModal';
 import { PinAuthorizeModal, SetTransactionPinModal } from './components/PinPromptModal';
@@ -29,7 +32,9 @@ import { AuthPage } from './pages/AuthPage';
 import { BillsPage } from './pages/BillsPage';
 import { DataPage } from './pages/DataPage';
 import { DeveloperHubPage } from './pages/DeveloperHubPage';
+import { DynamicAccountPage } from './pages/DynamicAccountPage';
 import { HomePage } from './pages/HomePage';
+import { NotificationsPage } from './pages/NotificationsPage';
 import { ProfileSecurityPage } from './pages/ProfileSecurityPage';
 import { TransactionsPage } from './pages/TransactionsPage';
 
@@ -38,6 +43,7 @@ const NAV_ITEMS: { id: AppPage; label: string; icon: React.ComponentType<{ class
   { id: 'airtime', label: 'Airtime', icon: Smartphone },
   { id: 'data', label: 'Data', icon: Wifi },
   { id: 'bills', label: 'Bills', icon: Bolt },
+  { id: 'dynamic', label: 'Dynamic Acct', icon: Landmark },
   { id: 'transactions', label: 'History', icon: Receipt },
   { id: 'developer', label: 'Developers', icon: Terminal },
   { id: 'security', label: 'Security', icon: Shield },
@@ -54,6 +60,7 @@ const MainShell: React.FC = () => {
     darkMode,
     toggleDarkMode,
     openFundModal,
+    unreadNotificationCount,
     toasts,
     dismissToast,
   } = useApp();
@@ -73,6 +80,11 @@ const MainShell: React.FC = () => {
       </div>
     );
   }
+
+  const activeNavLabel =
+    currentPage === 'notifications'
+      ? 'Transaction Alerts'
+      : NAV_ITEMS.find((n) => n.id === currentPage)?.label || 'Home';
 
   return (
     <>
@@ -122,7 +134,7 @@ const MainShell: React.FC = () => {
               </p>
               <button
                 type="button"
-                onClick={() => openFundModal('card')}
+                onClick={() => openFundModal('dynamic')}
                 className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#00875A] py-2 text-xs font-bold text-white hover:bg-[#005A3C]"
               >
                 <Plus className="h-3.5 w-3.5" /> Add Money
@@ -150,40 +162,53 @@ const MainShell: React.FC = () => {
                   </span>
                 </div>
 
-              <div className="hidden text-xs font-semibold text-slate-500 dark:text-slate-300 lg:block">
-                {NAV_ITEMS.find((n) => n.id === currentPage)?.label}
-              </div>
+                <div className="hidden text-xs font-semibold text-slate-500 dark:text-slate-300 lg:block">
+                  {activeNavLabel}
+                </div>
 
-              <div className="flex items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => openFundModal('card')}
-                  className="inline-flex items-center gap-1 rounded-xl bg-[#E8F8F2] px-3 py-1.5 text-xs font-extrabold text-[#00875A] dark:bg-emerald-950/60 dark:text-emerald-300 lg:hidden"
-                >
-                  {formatCompactNaira(profile?.walletBalance ?? 0)}
-                </button>
-                <button
-                  type="button"
-                  onClick={toggleDarkMode}
-                  className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                  aria-label="Toggle theme"
-                >
-                  {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('security')}
-                  className="rounded-full transition hover:opacity-90"
-                  title="Profile & Security"
-                >
-                  <UserAvatar
-                    avatarUrl={profile?.avatarUrl}
-                    fullName={profile?.fullName}
-                    sizeClass="h-9 w-9"
-                    textClass="text-xs"
-                  />
-                </button>
-              </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openFundModal('dynamic')}
+                    className="inline-flex items-center gap-1 rounded-xl bg-[#E8F8F2] px-3 py-1.5 text-xs font-extrabold text-[#00875A] dark:bg-emerald-950/60 dark:text-emerald-300 lg:hidden"
+                  >
+                    {formatCompactNaira(profile?.walletBalance ?? 0)}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('notifications')}
+                    aria-label="Transaction Alerts"
+                    className="relative rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                  >
+                    <Bell className="h-4 w-4" />
+                    {unreadNotificationCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-extrabold text-white">
+                        {unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={toggleDarkMode}
+                    className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                    aria-label="Toggle theme"
+                  >
+                    {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('security')}
+                    className="rounded-full transition hover:opacity-90"
+                    title="Profile & Security"
+                  >
+                    <UserAvatar
+                      avatarUrl={profile?.avatarUrl}
+                      fullName={profile?.fullName}
+                      sizeClass="h-9 w-9"
+                      textClass="text-xs"
+                    />
+                  </button>
+                </div>
               </div>
 
               {/* Responsive Website Menu Drawer (for < lg screens, replacing mobile bottom bar) */}
@@ -218,7 +243,9 @@ const MainShell: React.FC = () => {
               {currentPage === 'airtime' && <AirtimePage />}
               {currentPage === 'data' && <DataPage />}
               {currentPage === 'bills' && <BillsPage />}
+              {currentPage === 'dynamic' && <DynamicAccountPage />}
               {currentPage === 'transactions' && <TransactionsPage />}
+              {currentPage === 'notifications' && <NotificationsPage />}
               {currentPage === 'developer' && <DeveloperHubPage />}
               {currentPage === 'security' && <ProfileSecurityPage />}
             </main>
@@ -228,12 +255,13 @@ const MainShell: React.FC = () => {
             </footer>
           </div>
 
-          {/* Modals */}
+          {/* Modals & Overlays */}
           <PinAuthorizeModal />
           <SetTransactionPinModal />
           <TransactionReceiptModal />
           <FundWalletModal />
           <WithdrawModal />
+          <AppLockOverlay />
         </div>
       )}
 

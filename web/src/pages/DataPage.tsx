@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Phone, RefreshCw, Wifi } from 'lucide-react';
 import { NetworkBadge } from '../components/BrandBadges';
 import { useApp } from '../context/AppContext';
@@ -15,15 +15,37 @@ import { fetchLiveDataPlans } from '../services/vtuService';
 import { DataCategoryId, DataPlanItem, NetworkId } from '../types/vtu';
 
 export const DataPage: React.FC = () => {
-  const { profile, isProcessingPurchase, runProtectedPurchase, showToast } = useApp();
+  const { profile, transactions, isProcessingPurchase, runProtectedPurchase, showToast } = useApp();
 
-  const [selectedNetwork, setSelectedNetwork] = useState<NetworkId>('MTN');
+  const [selectedNetwork, setSelectedNetwork] = useState<NetworkId>(
+    () => detectNetworkFromPhone(profile?.phone || '') || 'MTN'
+  );
   const [selectedCategory, setSelectedCategory] = useState<DataCategoryId>('sme');
   const [phone, setPhone] = useState(profile?.phone || '');
   const [plans, setPlans] = useState<DataPlanItem[]>([]);
   const [loadingPlans, setLoadingPlans] = useState(true);
   const [planError, setPlanError] = useState('');
   const [selectedPlan, setSelectedPlan] = useState<DataPlanItem | null>(null);
+
+  const recentContacts = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { phone: string; provider: string; network: NetworkId | null }[] = [];
+    for (const tx of transactions) {
+      if (tx.serviceType === 'DATA' && tx.recipient && tx.recipient.length >= 10) {
+        const clean = normalizeNigerianPhone(tx.recipient);
+        if (!seen.has(clean)) {
+          seen.add(clean);
+          list.push({
+            phone: clean,
+            provider: tx.provider || 'Recent',
+            network: detectNetworkFromPhone(clean),
+          });
+        }
+        if (list.length >= 6) break;
+      }
+    }
+    return list;
+  }, [transactions]);
 
   const loadPlans = async (net: NetworkId, cat: DataCategoryId) => {
     setLoadingPlans(true);
@@ -116,64 +138,89 @@ export const DataPage: React.FC = () => {
         })}
       </div>
 
-      {/* Phone Input */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-[#102A43]">
-        <div className="mb-1.5 flex items-center justify-between">
-          <label className="text-xs font-bold text-slate-700 dark:text-slate-200">
-            Recipient Phone Number
-          </label>
-          {profile?.phone && (
-            <button
-              type="button"
-              onClick={() => handlePhoneChange(profile.phone)}
-              className="text-xs font-bold text-[#00875A] hover:underline"
-            >
-              Use My Number
-            </button>
+      <form onSubmit={handlePurchase} className="space-y-5">
+        {/* Phone Input & Recent Contacts */}
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-[#102A43]">
+          <div className="mb-1.5 flex items-center justify-between">
+            <label className="text-xs font-bold text-slate-700 dark:text-slate-200">
+              Recipient Phone Number
+            </label>
+            {profile?.phone && (
+              <button
+                type="button"
+                onClick={() => handlePhoneChange(profile.phone)}
+                className="text-xs font-bold text-[#00875A] hover:underline"
+              >
+                Use My Number
+              </button>
+            )}
+          </div>
+          <div className="relative">
+            <Phone className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => handlePhoneChange(e.target.value)}
+              placeholder="08031234567"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-24 text-sm font-bold outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
+            />
+            <span className="absolute right-3 top-2 inline-flex items-center gap-1 rounded-lg bg-slate-200/80 px-2 py-1 text-[10px] font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+              <NetworkBadge network={selectedNetwork} size="sm" />
+              {NETWORKS[selectedNetwork].displayName}
+            </span>
+          </div>
+
+          {recentContacts.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1.5 text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                Recent Contacts
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {recentContacts.map((rc) => (
+                  <button
+                    key={rc.phone}
+                    type="button"
+                    onClick={() => handlePhoneChange(rc.phone)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-700 transition hover:border-[#00875A] hover:bg-[#E8F8F2]/60 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200"
+                  >
+                    {rc.network && <NetworkBadge network={rc.network} size="sm" />}
+                    <span className="font-mono">{rc.phone}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
         </div>
-        <div className="relative">
-          <Phone className="absolute left-3.5 top-3.5 h-4 w-4 text-slate-400" />
-          <input
-            type="tel"
-            value={phone}
-            onChange={(e) => handlePhoneChange(e.target.value)}
-            placeholder="08031234567"
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-4 text-sm font-bold outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
-          />
-        </div>
-      </div>
 
-      {/* Category Tabs */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap gap-2">
-          {DATA_CATEGORIES.map((cat) => (
-            <button
-              key={cat.id}
-              type="button"
-              onClick={() => setSelectedCategory(cat.id)}
-              className={`rounded-xl px-3.5 py-2 text-xs font-bold transition ${
-                selectedCategory === cat.id
-                  ? 'bg-[#00875A] text-white shadow-sm'
-                  : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-[#102A43] dark:text-slate-300'
-              }`}
-            >
-              {cat.label}
-            </button>
-          ))}
+        {/* Category Tabs */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-2">
+            {DATA_CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setSelectedCategory(cat.id)}
+                className={`rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                  selectedCategory === cat.id
+                    ? 'bg-[#00875A] text-white shadow-sm'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-[#102A43] dark:text-slate-300'
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => loadPlans(selectedNetwork, selectedCategory)}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-[#102A43] dark:text-slate-200"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loadingPlans ? 'animate-spin' : ''}`} />
+            Refresh Prices
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => loadPlans(selectedNetwork, selectedCategory)}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-[#102A43] dark:text-slate-200"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loadingPlans ? 'animate-spin' : ''}`} />
-          Refresh Prices
-        </button>
-      </div>
 
-      {/* Live Plans Grid */}
-      <form onSubmit={handlePurchase} className="space-y-5">
+        {/* Live Plans Grid */}
         {loadingPlans ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {[1, 2, 3, 4, 5, 6].map((n) => (

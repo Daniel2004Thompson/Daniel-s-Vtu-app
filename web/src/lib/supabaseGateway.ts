@@ -2,6 +2,8 @@ const DEFAULT_SUPABASE_URL = 'https://yjymxdzdhvbdjramlipg.supabase.co';
 const GATEWAY_PATH = '/functions/v1/swift-processor';
 const SESSION_STORAGE_KEY = 'daniel_vtu_session_v1';
 
+export const SESSION_EXPIRED_EVENT = 'danielvtu:session-expired';
+
 export interface StoredSession {
   access_token: string;
   refresh_token: string;
@@ -99,7 +101,13 @@ function isPublicAuthPath(targetPath: string): boolean {
   );
 }
 
-function isGatewayManagedOnlyPath(targetPath: string): boolean {
+/**
+ * Only virtual-account Edge Functions accept anonymous/gateway-injected fallback auth
+ * if a legacy gateway rejects client JWTs (matching Android SupabaseAuthManager).
+ * Protected user Edge Functions (`Generate-api-key`, `Gsubz-VTU-Services`) MUST always
+ * authenticate using the signed-in user's valid JWT.
+ */
+function isVaFallbackEdgePath(targetPath: string): boolean {
   const lower = targetPath.toLowerCase();
   return (
     lower.includes('/functions/v1/create-dynamic-account') ||
@@ -116,7 +124,9 @@ export async function refreshSessionIfNeeded(force = false): Promise<StoredSessi
   if (!force && !isJwtExpired(current.access_token)) {
     return current;
   }
-  if (!current.refresh_token) return null;
+  if (!current.refresh_token) {
+    return !isJwtExpired(current.access_token, 5) ? current : null;
+  }
 
   if (refreshInFlight) return refreshInFlight;
 
@@ -140,9 +150,9 @@ export async function refreshSessionIfNeeded(force = false): Promise<StoredSessi
         saveStoredSession(next);
         return next;
       }
-      return null;
+      return !isJwtExpired(current.access_token, 5) ? current : null;
     } catch {
-      return null;
+      return !isJwtExpired(current.access_token, 5) ? current : null;
     } finally {
       refreshInFlight = null;
     }
@@ -156,7 +166,7 @@ export async function getValidAccessToken(): Promise<string | null> {
   return session?.access_token || null;
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   headers?: Record<string, string>;
@@ -187,14 +197,16 @@ async function rawGatewayFetch<T = unknown>(
     headers['apikey'] = anonKey;
   }
 
-  if (options.body !== undefined && !headers['Content-Type']) {
+  const isBinaryBody =
+    options.body instanceof Blob ||
+    options.body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(options.body);
+
+  if (options.body !== undefined && !isBinaryBody && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const suppressAuth =
-    options.skipAuthHeader ||
-    isPublicAuthPath(normalizedTarget) ||
-    isGatewayManagedOnlyPath(normalizedTarget);
+  const suppressAuth = options.skipAuthHeader || isPublicAuthPath(normalizedTarget);
 
   if (!suppressAuth) {
     const token = options.accessTokenOverride || loadStoredSession()?.access_token;
@@ -207,10 +219,19 @@ async function rawGatewayFetch<T = unknown>(
     headers['Authorization'] = `Bearer ${anonKey}`;
   }
 
+  let fetchBody: BodyInit | undefined;
+  if (options.body !== undefined) {
+    if (isBinaryBody) {
+      fetchBody = options.body as BodyInit;
+    } else {
+      fetchBody = JSON.stringify(options.body);
+    }
+  }
+
   const response = await fetch(fetchUrl, {
     method,
     headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body: fetchBody,
     cache: 'no-store',
   });
 
@@ -237,12 +258,7 @@ export async function gatewayRequest<T = unknown>(
   options: RequestOptions = {}
 ): Promise<GatewayResponse<T>> {
   const normalizedTarget = targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
-  const lowerTarget = normalizedTarget.toLowerCase();
-  const isEdgeFunction = lowerTarget.includes('/functions/v1/');
-  const isProtected =
-    !options.skipAuthHeader &&
-    !isPublicAuthPath(normalizedTarget) &&
-    !isGatewayManagedOnlyPath(normalizedTarget);
+  const isProtected = !options.skipAuthHeader && !isPublicAuthPath(normalizedTarget);
 
   if (isProtected && !options.accessTokenOverride) {
     await refreshSessionIfNeeded(false);
@@ -260,18 +276,57 @@ export async function gatewayRequest<T = unknown>(
     }
   }
 
-  // Fallback matching Android SupabaseAuthManager.postEdgeFunction:
-  // If an Edge Function returns 401/403 (e.g. legacy gateway JWT check rejects user JWT),
-  // retry without the user Authorization header so swift-processor injects the server anon key.
-  if ((res.status === 401 || res.status === 403) && isEdgeFunction && !options.skipAuthHeader) {
+  // Only virtual-account Edge Functions fall back to gateway-injected anon auth on 401/403
+  if (
+    (res.status === 401 || res.status === 403) &&
+    isVaFallbackEdgePath(normalizedTarget) &&
+    !options.skipAuthHeader
+  ) {
     res = await rawGatewayFetch<T>(normalizedTarget, {
       ...options,
       skipAuthHeader: true,
       accessTokenOverride: null,
     });
+  } else if (res.status === 401 && isProtected) {
+    const lower = res.rawText.toLowerCase();
+    if (
+      lower.includes('invalid jwt') ||
+      lower.includes('jwt expired') ||
+      lower.includes('invalid or expired session') ||
+      lower.includes('not logged in')
+    ) {
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+    }
   }
 
   return res;
+}
+
+export async function uploadBinaryToStorage(
+  bucketPath: string,
+  blob: Blob,
+  contentType = 'image/jpeg'
+): Promise<boolean> {
+  const anonKey = getOptionalAnonKey();
+  if (!anonKey) {
+    // swift-processor proxy forwards JSON bodies; Storage direct upload requires direct Storage endpoint
+    return false;
+  }
+
+  await refreshSessionIfNeeded(false);
+  const cleanPath = bucketPath.replace(/^\/+/, '');
+  for (const method of ['POST', 'PUT'] as const) {
+    const res = await rawGatewayFetch(`/storage/v1/object/${cleanPath}`, {
+      method,
+      headers: {
+        'x-upsert': 'true',
+        'Content-Type': contentType,
+      },
+      body: blob,
+    }).catch(() => null);
+    if (res?.ok) return true;
+  }
+  return false;
 }
 
 export function extractErrorMessage(

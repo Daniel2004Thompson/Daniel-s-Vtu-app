@@ -1,8 +1,106 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Fingerprint, Lock, ShieldCheck, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { setTransactionPin, verifyTransactionPin } from '../services/walletService';
 import { authenticateWithBiometric } from '../services/webAuthnService';
+
+interface PinDigitsInputProps {
+  value: string;
+  onChange: (val: string) => void;
+  autoFocus?: boolean;
+  onComplete?: (pin: string) => void;
+  label?: string;
+}
+
+export const PinDigitsInput: React.FC<PinDigitsInputProps> = ({
+  value,
+  onChange,
+  autoFocus = false,
+  onComplete,
+  label,
+}) => {
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const digits = Array.from({ length: 4 }, (_, i) => value[i] || '');
+
+  useEffect(() => {
+    if (autoFocus) {
+      window.setTimeout(() => {
+        inputRefs.current[0]?.focus();
+      }, 40);
+    }
+  }, [autoFocus]);
+
+  const handleChangeAt = (index: number, raw: string) => {
+    const clean = raw.replace(/\D/g, '');
+    if (!clean) {
+      const next = value.slice(0, index) + value.slice(index + 1);
+      onChange(next.slice(0, 4));
+      return;
+    }
+
+    if (clean.length > 1) {
+      // Handle paste or autofill
+      const merged = clean.slice(0, 4);
+      onChange(merged);
+      const focusIdx = Math.min(3, merged.length - 1);
+      inputRefs.current[focusIdx]?.focus();
+      if (merged.length === 4 && onComplete) onComplete(merged);
+      return;
+    }
+
+    const arr = [value[0] || '', value[1] || '', value[2] || '', value[3] || ''];
+    arr[index] = clean;
+    const nextPin = arr.join('').slice(0, 4);
+    onChange(nextPin);
+
+    if (index < 3) {
+      inputRefs.current[index + 1]?.focus();
+    } else if (nextPin.length === 4 && onComplete) {
+      onComplete(nextPin);
+    }
+  };
+
+  const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && !digits[index] && index > 0) {
+      const arr = [value[0] || '', value[1] || '', value[2] || '', value[3] || ''];
+      arr[index - 1] = '';
+      onChange(arr.join(''));
+      inputRefs.current[index - 1]?.focus();
+    }
+  };
+
+  return (
+    <div>
+      {label && (
+        <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-300">
+          {label}
+        </label>
+      )}
+      <div className="grid grid-cols-4 gap-3">
+        {digits.map((digit, i) => (
+          <input
+            key={i}
+            ref={(el) => {
+              inputRefs.current[i] = el;
+            }}
+            type="password"
+            inputMode="numeric"
+            maxLength={4}
+            value={digit}
+            onChange={(e) => handleChangeAt(i, e.target.value)}
+            onKeyDown={(e) => handleKeyDown(i, e)}
+            aria-label={`PIN digit ${i + 1}`}
+            className={`h-14 w-full rounded-2xl border text-center font-mono text-2xl font-extrabold outline-none transition ${
+              digit
+                ? 'border-[#00875A] bg-[#E8F8F2]/60 text-slate-900 ring-2 ring-[#00875A]/20 dark:bg-emerald-950/50 dark:text-white'
+                : 'border-slate-200 bg-slate-50 text-slate-900 focus:border-[#00875A] dark:border-[#334E68] dark:bg-[#0A192F]/80 dark:text-white'
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+};
 
 export const PinAuthorizeModal: React.FC = () => {
   const {
@@ -40,16 +138,15 @@ export const PinAuthorizeModal: React.FC = () => {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (pin.length !== 4) {
+  const submitPin = async (pinValue: string) => {
+    if (pinValue.length !== 4) {
       setError('Enter your 4-digit Transaction PIN.');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      const res = await verifyTransactionPin(pin);
+      const res = await verifyTransactionPin(pinValue);
       if (!res.ok) {
         setError(res.error);
         setPin('');
@@ -64,9 +161,14 @@ export const PinAuthorizeModal: React.FC = () => {
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitPin(pin);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-[#102A43]">
+      <div className="w-full max-w-sm rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-[#334E68] dark:bg-[#102A43]">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#E8F8F2] text-[#00875A] dark:bg-emerald-950 dark:text-emerald-400">
@@ -119,24 +221,15 @@ export const PinAuthorizeModal: React.FC = () => {
 
         {hasTransactionPin && (
           <form onSubmit={handleSubmit} className={`${isBiometricEnabled ? '' : 'mt-5'} space-y-4`}>
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-300">
-                4-Digit Transaction PIN
-              </label>
-              <input
-                type="password"
-                inputMode="numeric"
-                maxLength={4}
-                autoFocus={!isBiometricEnabled}
-                value={pin}
-                onChange={(e) => {
-                  setError('');
-                  setPin(e.target.value.replace(/\D/g, '').slice(0, 4));
-                }}
-                placeholder="••••"
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center font-mono text-2xl font-bold tracking-[0.75em] text-slate-900 outline-none focus:border-[#00875A] focus:ring-2 focus:ring-[#00875A]/20 dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
-              />
-            </div>
+            <PinDigitsInput
+              label="4-Digit Transaction PIN"
+              value={pin}
+              autoFocus={!isBiometricEnabled}
+              onChange={(val) => {
+                setError('');
+                setPin(val);
+              }}
+            />
 
             {error && (
               <div className="rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-600 dark:bg-red-950/50 dark:text-red-300">
@@ -216,7 +309,7 @@ export const SetTransactionPinModal: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-[#102A43]">
+      <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-[#334E68] dark:bg-[#102A43]">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#E8F8F2] text-[#00875A] dark:bg-emerald-950 dark:text-emerald-400">
@@ -241,34 +334,24 @@ export const SetTransactionPinModal: React.FC = () => {
         </div>
 
         <form onSubmit={handleSave} className="mt-5 space-y-4">
-          <div>
-            <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">
-              Enter New 4-Digit PIN
-            </label>
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
-              value={pin}
-              onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-              placeholder="••••"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center font-mono text-xl font-bold tracking-[0.7em] outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-300">
-              Confirm 4-Digit PIN
-            </label>
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={4}
-              value={confirmPin}
-              onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-              placeholder="••••"
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center font-mono text-xl font-bold tracking-[0.7em] outline-none focus:border-[#00875A] dark:border-slate-700 dark:bg-slate-900/60 dark:text-white"
-            />
-          </div>
+          <PinDigitsInput
+            label="Enter New 4-Digit PIN"
+            value={pin}
+            autoFocus
+            onChange={(val) => {
+              setError('');
+              setPin(val);
+            }}
+          />
+
+          <PinDigitsInput
+            label="Confirm 4-Digit PIN"
+            value={confirmPin}
+            onChange={(val) => {
+              setError('');
+              setConfirmPin(val);
+            }}
+          />
 
           {error && (
             <div className="rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-600 dark:bg-red-950/50 dark:text-red-300">
